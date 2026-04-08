@@ -7,3 +7,5 @@ LLaMA-Factory/LLaMA-Factory-backup
 *.parquet
 *.jsonl
 *.sbatch
+__pycache__/
+*.py[cod]

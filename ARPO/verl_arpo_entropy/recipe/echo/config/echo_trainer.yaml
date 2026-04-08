@@ -1,6 +1,9 @@
 hydra:
   searchpath:
-    # Reuse the base PPO config tree from verl/trainer/config.
+    # First resolve ppo_trainer from ARPO script config so ECHO inherits
+    # the same base schema used by ARPO launch scripts.
+    - file://../scripts/config
+    # Keep the upstream trainer config available for any extra defaults.
     - file://verl/trainer/config
 
 defaults:

@@ -432,6 +432,9 @@ class ActorRolloutRefWorker(Worker):
                 elif self.config.rollout.mode == "sync_with_tool":
                     from verl.workers.rollout.vllm_rollout.vllm_rollout_with_tools import vLLMRolloutWithTools
                     vllm_rollout_cls = vLLMRolloutWithTools
+                elif self.config.rollout.mode == "sync_echo":
+                    from verl.workers.rollout.vllm_rollout.vllm_rollout_echo import vLLMRolloutECHO
+                    vllm_rollout_cls = vLLMRolloutECHO
                 elif self.config.rollout.mode == "agent":
                     from verl.workers.rollout.vllm_rollout.vllm_agent_rollout import vLLMAgentRollout
                     vllm_rollout_cls = vLLMAgentRollout

@@ -1,4 +1,12 @@
 {
+  "echo_dataset":{
+    "file_name": "../dataset/echo_sft_thinkfirst.jsonl",
+    "formatting": "sharegpt",
+    "columns": {  
+      "messages": "conversations",  
+      "system": "system"  
+    }  
+  },
   "final_5w4_still": {
     "file_name": "../dataset/final_5w4_still.jsonl",
     "formatting": "sharegpt",

@@ -18,6 +18,7 @@ import copy
 import logging
 import os
 import re
+from functools import partial
 from collections import defaultdict
 from typing import List, Optional, Union
 
@@ -63,6 +64,14 @@ def collate_fn(data_list: list[dict]) -> dict:
         non_tensors[key] = np.array(val, dtype=object)
 
     return {**tensors, **non_tensors}
+
+
+def _replace_system_prompt_row(example: dict, prompt_key: str, system_text: str) -> dict:
+    msgs = copy.deepcopy(example[prompt_key])
+    msgs[0]["content"] = system_text
+    out = dict(example)
+    out[prompt_key] = msgs
+    return out
 
 
 class RLHFDataset(Dataset):
@@ -114,6 +123,7 @@ class RLHFDataset(Dataset):
         self.chat_template_func = config.get("chat_template_func", None)
         self.need_tools_kwargs = config.get("need_tools_kwargs", False)
         self.filter_prompts = config.get("filter_prompts", True)
+        self.system_prompt = config.get("system_prompt", None)
         self.serialize_dataset = False
         self._download()
         self._read_files_and_tokenize()
@@ -134,8 +144,16 @@ class RLHFDataset(Dataset):
         self.dataframe: datasets.Dataset = datasets.concatenate_datasets(dataframes)
 
         print(f"dataset len: {len(self.dataframe)}")
+        
+        if self.system_prompt:
+            self.dataframe = self.dataframe.map(
+                partial(_replace_system_prompt_row, prompt_key=self.prompt_key, system_text=self.system_prompt),
+                desc="Apply configured system prompt",
+                num_proc=self.num_workers,
+            )
 
         # filter out too long prompts
+        self.filter_overlong_prompts = False
         if self.filter_overlong_prompts:
             tokenizer = self.tokenizer
             prompt_key = self.prompt_key

@@ -30,7 +30,7 @@ export PYTHONPATH="${ABSOLUTE_PATH}"/verl_arpo_entropy:$PYTHONPATH
 # ============================ Basic Configuration ============================
 # Experiment name and project
 PROJECT_NAME="arpo_1_5b_reasoning" # Modify experiment group
-EXPERIMENT_NAME="arpo_qwen" # Modify experiment name
+EXPERIMENT_NAME="arpo_sft_think_first" # Modify experiment name
 
 
 # Configuration file path
@@ -55,7 +55,7 @@ VALID_FILES="${ABSOLUTE_PATH}/rl_datasets/valid.parquet" # Modify validation dat
 
 # ============================ Model Configuration ============================
 # Actor: HF checkpoint dir (LLaMA-Factory SFT writes under arpo_train_sft/checkpoints/...)
-ACTOR_MODEL_PATH="Qwen/Qwen2.5-1.5B-Instruct"
+ACTOR_MODEL_PATH="${REPO_ROOT}/LLaMA-Factory/arpo_train_sft/checkpoints/qwen/checkpoint-6000"
 
 # ============================ Rollout Configuration ==========================
 # Rollout settings

@@ -2,10 +2,12 @@
 
 #================== Basic Configuration ==================#
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7  # List of visible GPUs
-export PYTHONPATH=$(pwd):$PYTHONPATH
+LF_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export PYTHONPATH="${LF_ROOT}/src:${PYTHONPATH}"
 
 # Disable Weights & Biases
-export WANDB_DISABLED=true
+export WANDB_DISABLED=false
+export WANDB_API_KEY=0986ce441bdc0e809cd73f235d468fa624518fe8
 
 #================== Training Parameter Configuration ==================#
 # Distributed training configuration
@@ -16,7 +18,7 @@ MASTER_ADDR="127.0.0.1"  # Address of the master node
 MASTER_PORT=29500        # Port of the master node
 
 # Output directory
-OUTPUT_DIR="<your_output_dir>"
+OUTPUT_DIR="checkpoints/echo_sft_tool_think_first/"
 # Create output directory if it doesn't exist
 mkdir -p ${OUTPUT_DIR}
 

@@ -1,16 +1,16 @@
 ### model
-model_name_or_path: <your_model_path>
+model_name_or_path: Qwen/Qwen2.5-3B-Instruct
 trust_remote_code: true
 
 ### method
 stage: sft
 do_train: true
 finetuning_type: full
-deepspeed: ../examples/deepspeed/ds_z3_offload_config.json  # choices: [ds_z0_config.json, ds_z2_config.json, ds_z3_config.json]
+deepspeed: ../examples/deepspeed/ds_z3_config.json  # ZeRO-3 without CPU offload avoids CPUAdam JIT build path.
 
 ### dataset
-dataset_dir: dataset_info
-dataset: final_5w4_still
+dataset_dir: /scratch/user/saratb_tamu.edu/research/arpo-lens/LLaMA-Factory/arpo_train_sft/dataset_info
+dataset: echo_dataset
 template: qwen
 cutoff_len: 15000
 max_samples: 1000000
@@ -19,7 +19,7 @@ preprocessing_num_workers: 16
 
 ### output
 output_dir: checkpoints/qwen
-logging_steps: 10
+logging_steps: 100
 save_steps: 2000
 plot_loss: true
 overwrite_output_dir: true
@@ -33,6 +33,12 @@ lr_scheduler_type: cosine
 warmup_ratio: 0.1
 bf16: true
 ddp_timeout: 180000000
+
+
+
+#logging
+report_to: wandb
+run_name: arpo_sft_tool # optional
 
 ### eval
 # eval_dataset: alpaca_en_demo

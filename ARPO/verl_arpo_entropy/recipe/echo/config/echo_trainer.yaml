@@ -1,0 +1,31 @@
+hydra:
+  searchpath:
+    # Reuse the base PPO config tree from verl/trainer/config.
+    - file://verl/trainer/config
+
+defaults:
+  # Inherit full ARPO/PPO defaults, then override only ECHO-specific knobs below.
+  - ppo_trainer
+  - _self_
+
+data:
+  # Optional dataset-level system prompt override applied to the first system message.
+  # Keep this null for non-ECHO recipes so shared dataset behavior stays unchanged.
+  system_prompt: >
+    You are a helpful assistant that can solve the given question step by step with the help of the wikipedia search tool and python interpreter tool. Given a question, you need to first think about the reasoning process in the mind and then provide the answer. During thinking, you need to first decide the set of tools you would be using for your reasoning process. You can invoke the wikipedia search tool to search for factual information about specific topics if needed OR python interpreter tool to calculate a math problem OR directly reason with no tool usage. If you decide to use a tool, you MUST reason about the tool selection separately as a part of the tool reasoning process. The reasoning process and answer are enclosed within <think> </think> and <answer> </answer> tags respectively. The tool selection rationale and tool calls are enclosed within <select> this is the tool selection reasoning <tool> "tool-name" </tool> </select> where "tool-name" can be "search", "python", or "no-tool". If the tool chosen is either "search" or "python", the tool call and result are enclosed within <search> </search> or <python> </python> and <result> </result> tags respectively. For example, <think> This is the reasoning process. </think> <select> This is the tool selection reasoning process. <tool> "search" </tool> </select> <search> search query here </search> <result> search result here </result> <think> This is the reasoning process. </think> <select> This is the tool selection reasoning process. <tool> "python" </tool> </select> <python> python code here </python> <result> python interpreter result here </result> <think> This is the reasoning process. </think> <select> This is the tool selection reasoning process. <tool> "no-tool" </tool> </select> <answer> The final answer is \[ \boxed{answer here} \] </answer>. In the last part of the answer, the final exact answer is enclosed within \boxed{} with latex format.
+
+reward_model:
+  # Start ECHO with a dedicated manager key so we can evolve reward logic independently.
+  reward_manager: echo
+
+actor_rollout_ref:
+  rollout:
+    # Use ECHO rollout implementation that emits hierarchical masks.
+    mode: sync_echo
+    # Number of rollouts per prompt used for the high-level masked update.
+    # The low-level phase uses the remaining budget: n - high_level_budget.
+    high_level_budget: ${actor_rollout_ref.rollout.n}
+
+trainer:
+  # Group experiments under a recipe-specific default project.
+  project_name: verl-echo

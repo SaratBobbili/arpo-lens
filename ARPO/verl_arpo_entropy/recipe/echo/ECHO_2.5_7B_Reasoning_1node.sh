@@ -32,7 +32,7 @@ export PYTHONPATH="${VERL_ROOT}:$PYTHONPATH"
 # ============================ Basic Configuration ============================
 # Experiment name and project
 PROJECT_NAME="qwen7B" # Modify experiment group
-EXPERIMENT_NAME="echo7B" # Modify experiment name
+EXPERIMENT_NAME="echo7B_reward_echo" # Modify experiment name
 
 
 # Configuration file path
@@ -72,7 +72,7 @@ SEARCH_CACHE_PATH="${ARPO_ROOT}/search_cache/search_cache.json" # Modify
 # ============================ Reward Model Configuration ==========================
 # Reward model settings
 REWARD_MANAGER="echo"              # Reward manager type
-CUSTOM_REWARD_FUNCTION_PATH="${VERL_ROOT}/verl/utils/reward_score/deep_research.py" # Modify reward function path
+CUSTOM_REWARD_FUNCTION_PATH="${VERL_ROOT}/verl/utils/reward_score/deep_research_echo.py" # Modify reward function path
 CUSTOM_REWARD_FUNCTION_NAME="compute_score"
 
 # ============================ Training Configuration ============================

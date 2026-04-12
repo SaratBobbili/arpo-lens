@@ -32,7 +32,7 @@ export PYTHONPATH="${VERL_ROOT}:$PYTHONPATH"
 # ============================ Basic Configuration ============================
 # Experiment name and project
 PROJECT_NAME="qwen3B" # Modify experiment group
-EXPERIMENT_NAME="echo3B" # Modify experiment name
+EXPERIMENT_NAME="echo3B_reward_echo" # Modify experiment name
 
 
 # Configuration file path

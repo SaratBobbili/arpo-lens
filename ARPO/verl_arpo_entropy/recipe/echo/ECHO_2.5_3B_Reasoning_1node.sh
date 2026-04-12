@@ -72,7 +72,7 @@ SEARCH_CACHE_PATH="${ARPO_ROOT}/search_cache/search_cache.json" # Modify
 # ============================ Reward Model Configuration ==========================
 # Reward model settings
 REWARD_MANAGER="echo"              # Reward manager type
-CUSTOM_REWARD_FUNCTION_PATH="${VERL_ROOT}/verl/utils/reward_score/deep_research.py" # Modify reward function path
+CUSTOM_REWARD_FUNCTION_PATH="${VERL_ROOT}/verl/utils/reward_score/deep_research_echo.py" # Modify reward function path
 CUSTOM_REWARD_FUNCTION_NAME="compute_score"
 
 # ============================ Training Configuration ============================
@@ -154,6 +154,7 @@ python3 -m recipe.echo.main_echo \
     trainer.nnodes=${NNODES} \
     trainer.save_freq=${SAVE_FREQ} \
     trainer.test_freq=${TEST_FREQ} \
+    trainer.max_actor_ckpt_to_keep=1 \
     trainer.total_epochs=${TOTAL_EPOCHS} \
     trainer.default_local_dir=${SAVE_PATH} \
     trainer.val_before_train=False \

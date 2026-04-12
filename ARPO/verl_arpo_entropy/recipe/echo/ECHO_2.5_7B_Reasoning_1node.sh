@@ -154,6 +154,7 @@ python3 -m recipe.echo.main_echo \
     trainer.nnodes=${NNODES} \
     trainer.save_freq=${SAVE_FREQ} \
     trainer.test_freq=${TEST_FREQ} \
+    trainer.max_actor_ckpt_to_keep=1 \
     trainer.total_epochs=${TOTAL_EPOCHS} \
     trainer.default_local_dir=${SAVE_PATH} \
     trainer.val_before_train=False \

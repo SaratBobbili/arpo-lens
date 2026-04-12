@@ -31,8 +31,8 @@ export PYTHONPATH="${VERL_ROOT}:$PYTHONPATH"
 
 # ============================ Basic Configuration ============================
 # Experiment name and project
-PROJECT_NAME="qwen7B" # Modify experiment group
-EXPERIMENT_NAME="echo7B" # Modify experiment name
+PROJECT_NAME="qwen3B" # Modify experiment group
+EXPERIMENT_NAME="echo3B" # Modify experiment name
 
 
 # Configuration file path
@@ -57,7 +57,7 @@ VALID_FILES="${ARPO_ROOT}/rl_datasets/valid.parquet" # Modify validation data pa
 
 # ============================ Model Configuration ============================
 # Actor: HF checkpoint dir (LLaMA-Factory SFT writes under arpo_train_sft/checkpoints/...)
-ACTOR_MODEL_PATH="${REPO_ROOT}/LLaMA-Factory/arpo_train_sft/checkpoints/Qwen2.5-7B"
+ACTOR_MODEL_PATH="${REPO_ROOT}/LLaMA-Factory/arpo_train_sft/checkpoints/Qwen2.5-3B"
 
 # ============================ Rollout Configuration ==========================
 # Rollout settings

@@ -57,7 +57,7 @@ VALID_FILES="${ARPO_ROOT}/rl_datasets/valid.parquet" # Modify validation data pa
 
 # ============================ Model Configuration ============================
 # Actor: HF checkpoint dir (LLaMA-Factory SFT writes under arpo_train_sft/checkpoints/...)
-ACTOR_MODEL_PATH="${REPO_ROOT}/LLaMA-Factory/arpo_train_sft/checkpoints/Qwen2.5-3B"
+ACTOR_MODEL_PATH="${REPO_ROOT}/LLaMA-Factory/arpo_train_sft/checkpoints/Qwen2.5-7B"
 
 # ============================ Rollout Configuration ==========================
 # Rollout settings

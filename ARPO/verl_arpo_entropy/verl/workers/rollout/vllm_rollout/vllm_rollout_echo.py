@@ -44,11 +44,9 @@ _CLOSE_PYTHON_TAG = "</python>"
 _OPEN_RESULT_TAG = "<result>"
 _CLOSE_RESULT_TAG = "</result>"
 _TAG_MATCH_ORDER = (
-    _CLOSE_SELECT_TAG,
     _CLOSE_SEARCH_TAG,
     _CLOSE_PYTHON_TAG,
     _CLOSE_RESULT_TAG,
-    _OPEN_SELECT_TAG,
     _OPEN_SEARCH_TAG,
     _OPEN_PYTHON_TAG,
     _OPEN_RESULT_TAG,
@@ -129,7 +127,6 @@ class vLLMRolloutECHO(vLLMRollout):
         char_high_level_mask = [0] * len(response_text)
         char_low_level_mask = [0] * len(response_text)
 
-        select_depth = 0
         low_tool_depth = 0
         result_depth = 0
         char_idx = 0
@@ -143,33 +140,27 @@ class vLLMRolloutECHO(vLLMRollout):
                     break
 
             if matched_tag is not None:
-                if matched_tag in (_OPEN_SELECT_TAG, _OPEN_SEARCH_TAG, _OPEN_PYTHON_TAG, _OPEN_RESULT_TAG):
-                    if matched_tag == _OPEN_SELECT_TAG:
-                        select_depth += 1
-                    elif matched_tag in (_OPEN_SEARCH_TAG, _OPEN_PYTHON_TAG):
-                        low_tool_depth += 1
-                    elif matched_tag == _OPEN_RESULT_TAG:
-                        result_depth += 1
+                if matched_tag in (_OPEN_SEARCH_TAG, _OPEN_PYTHON_TAG):
+                    low_tool_depth += 1
+                elif matched_tag == _OPEN_RESULT_TAG:
+                    result_depth += 1
 
                 tag_end = min(text_length, char_idx + len(matched_tag))
-                active_high = select_depth > 0 and result_depth == 0
+                active_high = low_tool_depth == 0 and result_depth == 0
                 active_low = low_tool_depth > 0 and result_depth == 0
                 for span_idx in range(char_idx, tag_end):
                     char_high_level_mask[span_idx] = int(active_high)
                     char_low_level_mask[span_idx] = int(active_low)
 
-                if matched_tag in (_CLOSE_SELECT_TAG, _CLOSE_SEARCH_TAG, _CLOSE_PYTHON_TAG, _CLOSE_RESULT_TAG):
-                    if matched_tag == _CLOSE_SELECT_TAG:
-                        select_depth = max(0, select_depth - 1)
-                    elif matched_tag in (_CLOSE_SEARCH_TAG, _CLOSE_PYTHON_TAG):
-                        low_tool_depth = max(0, low_tool_depth - 1)
-                    elif matched_tag == _CLOSE_RESULT_TAG:
-                        result_depth = max(0, result_depth - 1)
+                if matched_tag in (_CLOSE_SEARCH_TAG, _CLOSE_PYTHON_TAG):
+                    low_tool_depth = max(0, low_tool_depth - 1)
+                elif matched_tag == _CLOSE_RESULT_TAG:
+                    result_depth = max(0, result_depth - 1)
 
                 char_idx = tag_end
                 continue
 
-            active_high = select_depth > 0 and result_depth == 0
+            active_high = low_tool_depth == 0 and result_depth == 0
             active_low = low_tool_depth > 0 and result_depth == 0
             char_high_level_mask[char_idx] = int(active_high)
             char_low_level_mask[char_idx] = int(active_low)

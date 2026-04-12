@@ -1,23 +1,20 @@
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
-VERL_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-ARPO_ROOT="$(dirname "$VERL_ROOT")"
-REPO_ROOT="$(dirname "$ARPO_ROOT")"
-cd "$VERL_ROOT"
-echo "Switched to verl root directory: $VERL_ROOT"
+PARENT_DIR="$(dirname "$SCRIPT_DIR")"
+cd "$PARENT_DIR"
+echo "Switched to parent directory: $PARENT_DIR"
 
-export TMPDIR=/scratch/user/saratb_tamu.edu/tmp
-export RAY_TMPDIR=/scratch/user/saratb_tamu.edu/tmp/ray
+
 # ============================ Environment Setup ============================
 # Set basic environment variables
-#export PYTHONUNBUFFERED=1
-#export HYDRA_FULL_ERROR=1
-#export VLLM_ATTENTION_BACKEND=XFORMERS
+#export PYTHONUNBUFFERED=1            
+#export HYDRA_FULL_ERROR=1           
+#export VLLM_ATTENTION_BACKEND=XFORMERS 
 export VERL_LOGGING_LEVEL=WARN
 export RAY_BACKEND_LOG_LEVEL=warning
-#export MKL_SERVICE_FORCE_INTEL=1
-#export MKL_THREADING_LAYER=GNU
-export RAY_memory_usage_threshold=0.8
-#export RAY_memory_monitor_refresh_ms=0
+#export MKL_SERVICE_FORCE_INTEL=1    
+#export MKL_THREADING_LAYER=GNU       
+export RAY_memory_usage_threshold=0.8  
+#export RAY_memory_monitor_refresh_ms=0 
 export NCCL_DEBUG=WARN
 export VLLM_USE_V1=1
 # When set, PyTorch runs without Dynamo (no graph capture / torch.compile)
@@ -25,22 +22,24 @@ export TORCHDYNAMO_DISABLE=1
 unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES
 
 
+ABSOLUTE_PATH="/scratch/user/saratb_tamu.edu/research/arpo-lens/ARPO"
+REPO_ROOT="$(dirname "${ABSOLUTE_PATH}")"
 # Set Python path
-export PYTHONPATH="${VERL_ROOT}:$PYTHONPATH"
+export PYTHONPATH="${ABSOLUTE_PATH}"/verl_arpo_entropy:$PYTHONPATH
 
 # ============================ Basic Configuration ============================
 # Experiment name and project
-PROJECT_NAME="echo_1_5b_reasoning" # Modify experiment group
-EXPERIMENT_NAME="echo_qwen" # Modify experiment name
+PROJECT_NAME="arpo_1_5b_reasoning" # Modify experiment group
+EXPERIMENT_NAME="arpo_sft_qwen3B" # Modify experiment name
 
 
 # Configuration file path
-CONFIG_PATH="${SCRIPT_DIR}/config" # ECHO recipe config colocated with this launch script
-CONFIG_NAME="echo_trainer"
+CONFIG_PATH="${ABSOLUTE_PATH}/scripts/config" # Modify the absolute path of the config folder, relative path is not recommended
+CONFIG_NAME="ppo_trainer.yaml"
 
 # Distributed training settings
-NNODES=1
-N_GPUS_PER_NODE=8
+NNODES=1                            
+N_GPUS_PER_NODE=8                 
 
 # ============================ Data Configuration ============================
 # Data parameters
@@ -51,27 +50,29 @@ MAX_PROMPT_LENGTH=1536              # Maximum prompt length
 MAX_RESPONSE_LENGTH=4096            # Maximum response length
 
 # Data file paths
-TRAIN_FILES="${ARPO_ROOT}/rl_datasets/train_10k.parquet" # Modify training data path
-VALID_FILES="${ARPO_ROOT}/rl_datasets/valid.parquet" # Modify validation data path
+TRAIN_FILES="${ABSOLUTE_PATH}/rl_datasets/train_10k.parquet" # Modify training data path
+VALID_FILES="${ABSOLUTE_PATH}/rl_datasets/valid.parquet" # Modify validation data path
 
 # ============================ Model Configuration ============================
 # Actor: HF checkpoint dir (LLaMA-Factory SFT writes under arpo_train_sft/checkpoints/...)
-ACTOR_MODEL_PATH="${REPO_ROOT}/LLaMA-Factory/arpo_train_sft/checkpoints/qwen/checkpoint-10000"
+ACTOR_MODEL_PATH="dongguanting/Qwen2.5-3B-ARPO"
 
 # ============================ Rollout Configuration ==========================
 # Rollout settings
 ROLLOUT_NAME="vllm"                 # Use vllm engine
-ROLLOUT_MODE="sync_echo"            # ECHO rollout mode with hierarchical masks
+ROLLOUT_MODE="sync_with_tool"       # Synchronous mode with tool support
 ROLLOUT_N=16                         # Number of responses generated per sample
-HIGH_LEVEL_BUDGET=8                 # Number of rollouts used for high-level masked update
-ENABLE_MULTI_TURN=False            # Toggle multi-turn tool interaction in rollout
+INITIAL_ROLLOUTS=8                 # Initial rollout number
+BEAM_SIZE=2                        # Beam size
+BRANCH_PROBABILITY=0.5             # Branch probability
+Entropy_weight=0.2
 # ============================ Rollout Tools Configuration ==========================
-SEARCH_CACHE_PATH="${ARPO_ROOT}/search_cache/search_cache.json" # Modify
+SEARCH_CACHE_PATH="${ABSOLUTE_PATH}/search_cache/search_cache.json" # Modify
 
 # ============================ Reward Model Configuration ==========================
 # Reward model settings
-REWARD_MANAGER="echo"              # Reward manager type
-CUSTOM_REWARD_FUNCTION_PATH="${VERL_ROOT}/verl/utils/reward_score/deep_research.py" # Modify reward function path
+REWARD_MANAGER="naive"              # Reward manager type
+CUSTOM_REWARD_FUNCTION_PATH="${ABSOLUTE_PATH}/verl_arpo_entropy/verl/utils/reward_score/deep_research.py" # Modify reward function path
 CUSTOM_REWARD_FUNCTION_NAME="compute_score"
 
 # ============================ Training Configuration ============================
@@ -82,7 +83,7 @@ TEST_FREQ=5                        # Test frequency
 
 # ============================ Path Configuration ============================
 # Save path
-SAVE_PATH="${ARPO_ROOT}/checkpoints/${EXPERIMENT_NAME}" # Modify save path
+SAVE_PATH="${ABSOLUTE_PATH}/checkpoints/${EXPERIMENT_NAME}" # Modify save path
 ROLLOUT_SAVE_PATH="${SAVE_PATH}/rollout"
 
 # ============================ WandB Configuration ============================
@@ -107,7 +108,7 @@ if [ ! -d "$ROLLOUT_SAVE_PATH" ]; then
 fi
 
 # ============================ Start Training ============================
-python3 -m recipe.echo.main_echo \
+python3 -m verl.trainer.main_ppo \
     --config-path=$CONFIG_PATH \
     --config-name=$CONFIG_NAME \
     algorithm.adv_estimator=grpo \
@@ -136,7 +137,10 @@ python3 -m recipe.echo.main_echo \
     actor_rollout_ref.rollout.mode=${ROLLOUT_MODE} \
     actor_rollout_ref.rollout.gpu_memory_utilization=0.7 \
     actor_rollout_ref.rollout.n=${ROLLOUT_N} \
-    actor_rollout_ref.rollout.high_level_budget=${HIGH_LEVEL_BUDGET} \
+    actor_rollout_ref.rollout.initial_rollouts=${INITIAL_ROLLOUTS} \
+    actor_rollout_ref.rollout.beam_size=${BEAM_SIZE} \
+    actor_rollout_ref.rollout.branch_probability=${BRANCH_PROBABILITY} \
+    actor_rollout_ref.rollout.entropy_weight=${Entropy_weight} \
     actor_rollout_ref.rollout.tools.tool_instances.search.params.cache_file=${SEARCH_CACHE_PATH} \
     actor_rollout_ref.rollout.tools.tool_instances.search.class_path=${SEARCH_CLASS_PATH} \
     actor_rollout_ref.rollout.multi_turn.enable=${ENABLE_MULTI_TURN} \

@@ -1,7 +1,9 @@
 #!/bin/bash
 
+export TMPDIR=/scratch/user/saratb_tamu.edu/tmp
+export RAY_TMPDIR=/scratch/user/saratb_tamu.edu/tmp/ray
 # Overrides model_name_or_path in the YAML config
-MODEL_NAME="Qwen/Qwen2.5-3B-Instruct"
+MODEL_NAME="Qwen/Qwen3.5-9B-Base"
 
 #================== Basic Configuration ==================#
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7  # List of visible GPUs
@@ -11,6 +13,7 @@ export PYTHONPATH="${LF_ROOT}/src:${PYTHONPATH}"
 # Disable Weights & Biases
 export WANDB_DISABLED=false
 export WANDB_API_KEY=0986ce441bdc0e809cd73f235d468fa624518fe8
+export WANDB_PROJECT="echo_sft"
 
 #================== Training Parameter Configuration ==================#
 # Distributed training configuration
@@ -20,8 +23,8 @@ PROC_PER_NODE=8          # Number of processes per node
 MASTER_ADDR="127.0.0.1"  # Address of the master node
 MASTER_PORT=29500        # Port of the master node
 
-# Output directory
-OUTPUT_DIR="checkpoints/echo_sft_tool_think_first/"
+# Output directory derived from MODEL_NAME
+OUTPUT_DIR="checkpoints/${MODEL_NAME##*/}/"
 # Create output directory if it doesn't exist
 mkdir -p ${OUTPUT_DIR}
 
@@ -32,10 +35,11 @@ if ls "${OUTPUT_DIR}"/checkpoint-* 1>/dev/null 2>&1; then
 fi
 
 # Path to the training script
-TRAIN_SCRIPT="../src/llamafactory/launcher.py"
+TRAIN_SCRIPT="${LF_ROOT}/src/llamafactory/launcher.py"
 
 # Path to the training argument configuration file
-TRAIN_ARGS="yaml/qwen.yaml"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TRAIN_ARGS="${SCRIPT_DIR}/yaml/qwen.yaml"
 
 # Command to launch training
 torchrun --nnodes ${NNODES} \
@@ -46,6 +50,8 @@ torchrun --nnodes ${NNODES} \
          ${TRAIN_SCRIPT} \
          ${TRAIN_ARGS} \
          model_name_or_path=${MODEL_NAME} \
+         output_dir=${OUTPUT_DIR} \
+         run_name=${MODEL_NAME##*/} \
          ${RESUME_ARG} 2>&1 | tee ${OUTPUT_DIR}/training.log
 
 # Optionally enable logging redirection

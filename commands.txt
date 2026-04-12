@@ -154,6 +154,7 @@ srun --partition long --cpus-per-task=8 --gres=gpu:1 -t 16:00:00 -J sft_long --p
 
 srun --partition 2xlong --cpus-per-task=8 --gres=gpu:H200:8 -t 2-00:00:00 -J sft-2x --pty bash
 
+srun --partition short --cpus-per-task=8 --gres=gpu:H200:4 -t 4:00:00 -J echo --pty bash
 
 
 python train_classifier_sample.py \

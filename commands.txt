@@ -156,6 +156,8 @@ srun --partition 2xlong --cpus-per-task=8 --gres=gpu:H200:8 -t 2-00:00:00 -J sft
 
 srun --partition short --cpus-per-task=8 --gres=gpu:H200:4 -t 4:00:00 -J echo --pty bash
 
+srun --partition long --cpus-per-task=8 --gres=gpu:H200:8 -t 16:00:00 -J echo_16r --pty bash
+
 
 python train_classifier_sample.py \
   --ref_model_id meta-llama/Meta-Llama-3-8B-Instruct \

@@ -123,6 +123,10 @@ def validate_low_level(text):
     """
     blocks = get_ordered_blocks(text)
 
+    for tag, start, end, content in blocks:
+        if end == -1:
+            return False, f"<{tag}> is not closed"
+
     # Forward: each step-select is followed by the correct block
     for i, (tag, start, end, content) in enumerate(blocks):
         if tag != "select" or i == 0:

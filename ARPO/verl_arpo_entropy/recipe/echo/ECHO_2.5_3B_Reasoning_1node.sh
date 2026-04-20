@@ -63,8 +63,8 @@ ACTOR_MODEL_PATH="${REPO_ROOT}/LLaMA-Factory/arpo_train_sft/checkpoints/echo-sft
 # Rollout settings
 ROLLOUT_NAME="vllm"                 # Use vllm engine
 ROLLOUT_MODE="sync_echo"            # ECHO rollout mode with hierarchical masks
-ROLLOUT_N=4                         # Number of responses generated per sample
-HIGH_LEVEL_BUDGET=2                 # Number of rollouts used for high-level masked update
+ROLLOUT_N=16                         # Number of responses generated per sample
+HIGH_LEVEL_BUDGET=8                 # Number of rollouts used for high-level masked update
 ENABLE_MULTI_TURN=False            # Toggle multi-turn tool interaction in rollout
 # ============================ Rollout Tools Configuration ==========================
 SEARCH_CACHE_PATH="${ARPO_ROOT}/search_cache/search_cache.json" # Modify
@@ -131,7 +131,7 @@ python3 -m recipe.echo.main_echo \
     actor_rollout_ref.actor.kl_loss_type=low_var_kl \
     actor_rollout_ref.actor.fsdp_config.param_offload=False \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
-    actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=$((1*(MAX_PROMPT_LENGTH+MAX_RESPONSE_LENGTH))) \
+    actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=$((4*(MAX_PROMPT_LENGTH+MAX_RESPONSE_LENGTH))) \
     actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
     actor_rollout_ref.rollout.name=${ROLLOUT_NAME} \
     actor_rollout_ref.rollout.mode=${ROLLOUT_MODE} \

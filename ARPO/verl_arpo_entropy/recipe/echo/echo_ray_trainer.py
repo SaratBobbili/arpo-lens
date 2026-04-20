@@ -56,6 +56,30 @@ class RayECHOTrainer(RayPPOTrainer):
             entropy_reward = torch.clamp(entropy_reward, min=entropy_cfg.clamp_min, max=entropy_cfg.clamp_max)
         return entropy_reward * phase_mask.to(torch.float32)
 
+    def _apply_format_gate(self, phase_batch: DataProto, reward_tensor: torch.Tensor, penalty: float):
+        # Reuse the scorer to classify format validity: ECHORewardManager places
+        # the scorer scalar at the last valid response token (zeros elsewhere),
+        # and deep_research_echo.compute_score emits exactly -1 iff the response
+        # fails format / parse checks. Summing over tokens recovers the per-sample
+        # scalar without decoding again here.
+        scorer_tensor, _ = compute_reward(phase_batch, self.reward_fn)
+        per_sample_score = scorer_tensor.to(reward_tensor.device).sum(dim=-1)
+        bad = per_sample_score < 0.0
+        bad_rate = bad.float().mean().item()
+        if not bool(bad.any()):
+            return reward_tensor, bad_rate
+        gated = reward_tensor.clone()
+        gated[bad] = 0.0
+        # last valid response token index per sample; response_mask was set on
+        # phase_batch earlier in the step (line ~193 of fit()).
+        last_idx = phase_batch.batch["response_mask"].to(torch.long).sum(dim=-1) - 1
+        bad_rows = bad.nonzero(as_tuple=True)[0]
+        gated.index_put_(
+            (bad_rows, last_idx[bad_rows].to(gated.device)),
+            torch.full((bad_rows.numel(),), penalty, dtype=gated.dtype, device=gated.device),
+        )
+        return gated, bad_rate
+
     def fit(self):
         """
         The training loop of PPO.
@@ -151,6 +175,9 @@ class RayECHOTrainer(RayPPOTrainer):
                             non_tensor_batch=deepcopy(batch.non_tensor_batch),
                             meta_info=deepcopy(batch.meta_info),
                         )
+                        # Phase tag consumed by ECHORewardManager -> deep_research_echo.compute_score
+                        # to gate the -1 format verdict on the phase-local validator only.
+                        phase_batch.meta_info["phase"] = phase_name
                         phase_reward_extra_infos_dict = {}
 
                         with _timer(f"{phase_name}_gen", timing_raw):
@@ -251,6 +278,13 @@ class RayECHOTrainer(RayPPOTrainer):
                                 phase_mask=phase_mask,
                                 entropy_cfg=phase_reward_cfg.entropy,
                             )
+                            if bool(phase_reward_cfg.entropy.get("format_gate", False)):
+                                reward_tensor, bad_format_rate = self._apply_format_gate(
+                                    phase_batch=phase_batch,
+                                    reward_tensor=reward_tensor,
+                                    penalty=float(phase_reward_cfg.entropy.bad_format_penalty),
+                                )
+                                metrics[f"{phase_prefix}reward/bad_format_rate"] = bad_format_rate
                             metrics[f"{phase_prefix}reward/entropy_reward_mean"] = agg_loss(
                                 loss_mat=reward_tensor,
                                 loss_mask=phase_batch.batch["loss_mask"],

@@ -49,6 +49,10 @@ class ECHORewardManager:
 
         already_print_data_sources = {}
 
+        # Phase tag set by RayECHOTrainer.fit(); forwarded to compute_score via extra_info
+        # so the scorer can gate -1 on the phase-local validator (high_level vs low_level).
+        phase = data.meta_info.get("phase") if data.meta_info else None
+
         for i in range(len(data)):
             data_item = data[i]  # DataProtoItem
 
@@ -72,9 +76,12 @@ class ECHORewardManager:
             data_source = data_item.non_tensor_batch[self.reward_fn_key]
 
             extra_info = data_item.non_tensor_batch.get("extra_info", None)
-            # add tokenizer to extra_info if not exists
-            if extra_info is None or extra_info.get("tokenizer") is None:
-                extra_info = {"tokenizer": self.tokenizer}
+            # Preserve any pre-existing per-sample extra_info; just ensure tokenizer is
+            # present and overlay the phase tag from meta_info.
+            extra_info = dict(extra_info) if extra_info is not None else {}
+            extra_info.setdefault("tokenizer", self.tokenizer)
+            if phase is not None:
+                extra_info["phase"] = phase
 
             score = self.compute_score(
                 data_source=data_source,

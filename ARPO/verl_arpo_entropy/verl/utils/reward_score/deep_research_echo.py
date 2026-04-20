@@ -326,14 +326,29 @@ def compute_score(data_source, solution_str, ground_truth, extra_info=None):
     }
 
     response = solution_str
-    valid, reason, hl_valid, ll_valid = validate_format_echo(response)
+    # Both validators always run so high_level_valid / low_level_valid are available
+    # for logging regardless of which phase is gating the -1 verdict.
+    hl_valid, hl_reason = validate_high_level(response)
+    ll_valid, ll_reason = validate_low_level(response)
     result["high_level_valid"] = hl_valid
     result["low_level_valid"] = ll_valid
 
-    if not valid:
-        print(f"--------bad format: {reason}--------\nsolution_str: {solution_str[:200]}, ground_truth: {ground_truth}")
+    # Phase-aware gating: high_level uses only validate_high_level, low_level uses only
+    # validate_low_level, and missing/other falls back to the combined verdict.
+    phase = extra_info.get("phase") if extra_info else None
+    if phase == "high_level":
+        phase_valid, phase_reason = hl_valid, hl_reason
+    elif phase == "low_level":
+        phase_valid, phase_reason = ll_valid, ll_reason
+    else:
+        phase_valid = hl_valid and ll_valid
+        combined = [r for ok, r in ((hl_valid, f"high-level: {hl_reason}"), (ll_valid, f"low-level: {ll_reason}")) if not ok]
+        phase_reason = "; ".join(combined) if combined else "format is correct"
+
+    if not phase_valid:
+        print(f"--------bad format ({phase or 'combined'}): {phase_reason}--------\nsolution_str: {solution_str[:200]}, ground_truth: {ground_truth}")
         result["score"] = -1
-        result["reason"] = f"bad format: {reason}"
+        result["reason"] = f"bad format: {phase_reason}"
         return result
 
     # Strip EOS token if present

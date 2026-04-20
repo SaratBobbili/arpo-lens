@@ -30,7 +30,10 @@ reward_model:
   #              Emits a scalar on the last response token; can run sync or async.
   #   entropy -> Per-token policy entropy over the phase's loss-mask tokens,
   #              optionally normalized by log(vocab_size) and/or clamped, then
-  #              multiplied by `scale` to set the reward magnitude.
+  #              multiplied by `scale` to set the reward magnitude. A format gate
+  #              (see below) can replace the dense reward with a terminal
+  #              `bad_format_penalty` scalar when the scorer deems the response
+  #              unparseable, mirroring the scorer strategy's -1 convention.
   phase_rewards:
     high_level:
       strategy: scorer
@@ -40,6 +43,14 @@ reward_model:
         normalize: false  # If true, divide entropy by log(vocab_size) for bounded scale.
         clamp_min: null   # Optional lower bound applied after scale/normalize.
         clamp_max: null   # Optional upper bound applied after scale/normalize.
+        # When true, samples whose decoded response fails the scorer's
+        # format/parse checks have their dense entropy reward zeroed and receive
+        # `bad_format_penalty` at the last valid response token instead. Good-
+        # format samples keep the per-token entropy reward untouched.
+        format_gate: true
+        # Terminal scalar written on format-gate failure. Only consulted when
+        # format_gate is true. Matches the scorer strategy's hard-penalty value.
+        bad_format_penalty: -1.0
     low_level:
       strategy: entropy
       entropy:
@@ -47,6 +58,8 @@ reward_model:
         normalize: false
         clamp_min: null
         clamp_max: null
+        format_gate: true
+        bad_format_penalty: -1.0
 
 actor_rollout_ref:
   rollout:

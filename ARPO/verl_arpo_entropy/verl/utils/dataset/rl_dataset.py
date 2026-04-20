@@ -123,7 +123,13 @@ class RLHFDataset(Dataset):
         self.chat_template_func = config.get("chat_template_func", None)
         self.need_tools_kwargs = config.get("need_tools_kwargs", False)
         self.filter_prompts = config.get("filter_prompts", True)
-        self.system_prompt = config.get("system_prompt", None)
+        # Resolve system prompt: active_system_prompt selects system_prompt_N;
+        # falls back to legacy system_prompt for backward compat.
+        active = config.get("active_system_prompt", None)
+        if active is not None:
+            self.system_prompt = config.get(f"system_prompt_{active}", None)
+        else:
+            self.system_prompt = config.get("system_prompt", None)
         self.serialize_dataset = False
         self._download()
         self._read_files_and_tokenize()

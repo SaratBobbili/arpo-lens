@@ -216,16 +216,16 @@ def extract_answer(text):
 
 
 def remove_boxed(s):
-    """Remove the LaTeX \\boxed{} wrapper."""
-    if "\\boxed " in s:
-        left = "\\boxed "
-        assert s[:len(left)] == left
-        return s[len(left):]
+    """Remove the LaTeX \\boxed{} wrapper; return None when malformed."""
+    text = s.strip()
+    if text.startswith("\\boxed "):
+        value = text[len("\\boxed ") :].strip()
+        return value if value else None
 
-    left = "\\boxed{"
-    assert s[:len(left)] == left
-    assert s[-1] == "}"
-    return s[len(left):-1]
+    if not text.startswith("\\boxed{") or not text.endswith("}"):
+        return None
+
+    return text[len("\\boxed{") : -1].strip() or None
 
 
 def last_boxed_only_string(string):
@@ -353,6 +353,10 @@ def compute_score(data_source, solution_str, ground_truth, extra_info=None):
         return result
 
     answer = remove_boxed(boxed)
+    if answer is None:
+        result["score"] = -1
+        result["reason"] = "malformed \\boxed{} in answer"
+        return result
     result["answer"] = answer
 
     f1_score = get_f1_score(answer, ground_truth)

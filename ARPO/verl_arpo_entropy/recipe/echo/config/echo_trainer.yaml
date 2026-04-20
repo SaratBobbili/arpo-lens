@@ -9,18 +9,44 @@ hydra:
 defaults:
   # Inherit full ARPO/PPO defaults, then override only ECHO-specific knobs below.
   - ppo_trainer
+  # System prompt candidates live in a dedicated file for readability.
+  - echo_system_prompts
   - _self_
 
 data:
-  # System prompt override injected into every RL prompt at runtime (via rl_dataset.py).
-  # Must match the SFT prompt from add_select_rationales.py / echo_sft_thinkfirst.jsonl exactly,
-  # including the "Before you begin thinking" planning <select> block and \\-escaped LaTeX.
-  system_prompt: >
-    You are a helpful assistant that can solve the given question step by step with the help of the wikipedia search tool and python interpreter tool. Given a question, you need to first think about the reasoning process in the mind and then provide the answer. Before you begin thinking, you must decide the set of tools you would be using for your reasoning process in a planning <select> block that may list multiple <tool> tags. You can invoke the wikipedia search tool to search for factual information about specific topics if needed OR python interpreter tool to calculate a math problem OR directly reason with no tool usage. If you decide to use a tool, you MUST reason about the tool selection separately as a part of the tool reasoning process. The reasoning process and answer are enclosed within <think> </think> and <answer> </answer> tags respectively. The tool selection rationale and tool calls are enclosed within <select> this is the tool selection reasoning <tool> "tool-name" </tool> </select> where "tool-name" can be "search", "python", or "no-tool". If the tool chosen is either "search" or "python", the tool call and result are enclosed within <search> </search> or <python> </python> and <result> </result> tags respectively. For example, <select> This question requires factual lookup and computation. <tool> "search" </tool> <tool> "python" </tool> </select> <think> This is the reasoning process. </think> <select> This is the tool selection reasoning process. <tool> "search" </tool> </select> <search> search query here </search> <result> search result here </result> <think> This is the reasoning process. </think> <select> This is the tool selection reasoning process. <tool> "python" </tool> </select> <python> python code here </python> <result> python interpreter result here </result> <think> This is the reasoning process. </think> <select> This is the tool selection reasoning process. <tool> "no-tool" </tool> </select> <answer> The final answer is \\[ \\boxed{answer here} \\] </answer>. In the last part of the answer, the final exact answer is enclosed within \\boxed{} with latex format.
+  # Which system prompt candidate to inject at runtime (via rl_dataset.py).
+  # Set to the suffix number of the desired system_prompt_N key below, or null to skip.
+  active_system_prompt: 1
+
+  # system_prompt_N keys are loaded from echo_system_prompts.yaml via Hydra defaults.
 
 reward_model:
   # Start ECHO with a dedicated manager key so we can evolve reward logic independently.
+  # Only consulted by phases whose strategy == "scorer".
   reward_manager: echo
+  # Per-phase reward strategy. Each hierarchical phase independently selects how
+  # its token-level reward tensor is produced. Supported strategies:
+  #   scorer  -> ECHORewardManager + custom_reward_function on the decoded answer.
+  #              Emits a scalar on the last response token; can run sync or async.
+  #   entropy -> Per-token policy entropy over the phase's loss-mask tokens,
+  #              optionally normalized by log(vocab_size) and/or clamped, then
+  #              multiplied by `scale` to set the reward magnitude.
+  phase_rewards:
+    high_level:
+      strategy: scorer
+      # `entropy` block below is consulted only when strategy == "entropy".
+      entropy:
+        scale: 1.0        # Multiplies entropy before writing the token-level reward.
+        normalize: false  # If true, divide entropy by log(vocab_size) for bounded scale.
+        clamp_min: null   # Optional lower bound applied after scale/normalize.
+        clamp_max: null   # Optional upper bound applied after scale/normalize.
+    low_level:
+      strategy: entropy
+      entropy:
+        scale: 1.0
+        normalize: false
+        clamp_min: null
+        clamp_max: null
 
 actor_rollout_ref:
   rollout:
@@ -29,6 +55,32 @@ actor_rollout_ref:
     # Number of rollouts per prompt used for the high-level masked update.
     # The low-level phase uses the remaining budget: n - high_level_budget.
     high_level_budget: ${actor_rollout_ref.rollout.n}
+    # Which token category feeds into which hierarchical level ("high", "low", "none").
+    # "result" blocks are always excluded (neither high nor low).
+    mask_categories:
+      first_select: high   # initial planning <select> block declaring the tool set
+      select: low           # subsequent tool-selection <select> blocks
+      think: high           # <think> reasoning blocks
+      answer: high          # <answer> blocks
+      search: low           # <search> tool-query blocks
+      python: low           # <python> tool-code blocks
+    tools:
+      call_limit: 5         # max tool calls per sample during rollout
+      max_workers: 64       # thread pool size for concurrent tool execution
+      timeout: 120          # per-call timeout in seconds
+      retry_count: 3        # retries on tool failure
+      verbose_logging: false
+      fail_on_error: false
+      tool_instances:
+        python:
+          class_path: verl.workers.agent.tools.python_tool.PythonTool
+          params:
+            conda_path: /path/to/conda   # override from launch script
+            conda_env: verl
+        search:
+          class_path: verl.workers.agent.tools.search_tool.BingSearchTool
+          params:
+            cache_file: null             # override from launch script
 
 trainer:
   # Group experiments under a recipe-specific default project.

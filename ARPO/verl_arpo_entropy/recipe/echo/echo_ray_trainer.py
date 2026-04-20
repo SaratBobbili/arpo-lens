@@ -15,6 +15,7 @@ trainer code that can diverge later.
 
 import uuid
 from copy import deepcopy
+import math
 from pprint import pprint
 
 import numpy as np
@@ -39,6 +40,21 @@ class RayECHOTrainer(RayPPOTrainer):
     @staticmethod
     def _prefix_metrics(metrics_dict: dict, prefix: str) -> dict:
         return {f"{prefix}{key}": value for key, value in metrics_dict.items()}
+
+    def _phase_reward_cfg(self, phase_name: str):
+        # Per-phase reward config block (strategy + strategy-specific params).
+        return self.config.reward_model.phase_rewards[phase_name]
+
+    def _build_entropy_reward(self, entropys: torch.Tensor, phase_mask: torch.Tensor, entropy_cfg) -> torch.Tensor:
+        scale = float(entropy_cfg.scale)
+        entropy_reward = entropys.to(torch.float32)
+        if bool(entropy_cfg.normalize):
+            vocab_size = self.tokenizer.vocab_size
+            entropy_reward = entropy_reward / math.log(vocab_size)
+        entropy_reward = entropy_reward * scale
+        if entropy_cfg.clamp_min is not None or entropy_cfg.clamp_max is not None:
+            entropy_reward = torch.clamp(entropy_reward, min=entropy_cfg.clamp_min, max=entropy_cfg.clamp_max)
+        return entropy_reward * phase_mask.to(torch.float32)
 
     def fit(self):
         """
@@ -125,6 +141,8 @@ class RayECHOTrainer(RayPPOTrainer):
 
                     for phase_name, phase_rollout_n, phase_mask_key in phase_specs:
                         phase_prefix = f"{phase_name}/"
+                        phase_reward_cfg = self._phase_reward_cfg(phase_name)
+                        phase_strategy = phase_reward_cfg.strategy
                         # batch.batch is an empty TensorDict (all tensor keys were popped
                         # into gen_batch). deepcopy would call consolidate() on that empty
                         # TensorDict, which crashes. Build a fresh DataProto instead.
@@ -152,14 +170,22 @@ class RayECHOTrainer(RayPPOTrainer):
 
                         if self.config.algorithm.adv_estimator == AdvantageEstimator.REMAX:
                             with _timer(f"{phase_name}_gen_max", timing_raw):
-                                gen_baseline_batch = deepcopy(phase_gen_batch)
-                                gen_baseline_batch.meta_info["do_sample"] = False
-                                gen_baseline_output = self.actor_rollout_wg.generate_sequences(gen_baseline_batch)
+                                if phase_strategy == "scorer":
+                                    gen_baseline_batch = deepcopy(phase_gen_batch)
+                                    gen_baseline_batch.meta_info["do_sample"] = False
+                                    gen_baseline_output = self.actor_rollout_wg.generate_sequences(gen_baseline_batch)
 
-                                phase_batch = phase_batch.union(gen_baseline_output)
-                                reward_baseline_tensor = self.reward_fn(phase_batch).sum(dim=-1)
-                                phase_batch.pop(batch_keys=list(gen_baseline_output.batch.keys()))
-                                phase_batch.batch["reward_baselines"] = reward_baseline_tensor
+                                    phase_batch = phase_batch.union(gen_baseline_output)
+                                    reward_baseline_tensor = self.reward_fn(phase_batch).sum(dim=-1)
+                                    phase_batch.pop(batch_keys=list(gen_baseline_output.batch.keys()))
+                                    phase_batch.batch["reward_baselines"] = reward_baseline_tensor
+                                else:
+                                    # Entropy-strategy rewards do not use the scorer-based REMAX baseline.
+                                    phase_batch.batch["reward_baselines"] = torch.zeros(
+                                        phase_gen_batch.batch["input_ids"].size(0),
+                                        dtype=torch.float32,
+                                        device=phase_gen_batch.batch["input_ids"].device,
+                                    )
 
                         phase_batch.non_tensor_batch["uid"] = np.array([str(uuid.uuid4()) for _ in range(len(phase_batch.batch))], dtype=object)
                         phase_batch = phase_batch.repeat(repeat_times=phase_rollout_n, interleave=True)
@@ -177,22 +203,26 @@ class RayECHOTrainer(RayPPOTrainer):
                         phase_batch.meta_info["global_token_num"] = torch.sum(phase_batch.batch["attention_mask"], dim=-1).tolist()
 
                         with _timer(f"{phase_name}_reward", timing_raw):
-                            if self.use_rm:
-                                reward_tensor = self.rm_wg.compute_rm_score(phase_batch)
-                                phase_batch = phase_batch.union(reward_tensor)
+                            reward_tensor = None
+                            future_reward = None
+                            if phase_strategy == "scorer":
+                                if self.use_rm:
+                                    reward_tensor = self.rm_wg.compute_rm_score(phase_batch)
+                                    phase_batch = phase_batch.union(reward_tensor)
 
-                            if self.config.reward_model.launch_reward_fn_async:
-                                future_reward = compute_reward_async.remote(phase_batch, self.config, self.tokenizer)
-                            else:
-                                reward_tensor, phase_reward_extra_infos_dict = compute_reward(phase_batch, self.reward_fn)
+                                if self.config.reward_model.launch_reward_fn_async:
+                                    future_reward = compute_reward_async.remote(phase_batch, self.config, self.tokenizer)
+                                else:
+                                    reward_tensor, phase_reward_extra_infos_dict = compute_reward(phase_batch, self.reward_fn)
 
                         with _timer(f"{phase_name}_old_log_prob", timing_raw):
+                            phase_batch.meta_info["calculate_entropy"] = phase_strategy == "entropy"
                             old_log_prob = self.actor_rollout_wg.compute_log_prob(phase_batch)
-                            entropys = old_log_prob.batch["entropys"]
                             loss_agg_mode = self.config.actor_rollout_ref.actor.loss_agg_mode
-                            entropy_loss = agg_loss(loss_mat=entropys, loss_mask=phase_batch.batch["loss_mask"], loss_agg_mode=loss_agg_mode)
-                            metrics[f"{phase_prefix}actor/entropy_loss"] = entropy_loss.detach().item()
-                            old_log_prob.batch.pop("entropys")
+                            entropys = old_log_prob.batch.pop("entropys", None)
+                            if entropys is not None:
+                                entropy_loss = agg_loss(loss_mat=entropys, loss_mask=phase_batch.batch["loss_mask"], loss_agg_mode=loss_agg_mode)
+                                metrics[f"{phase_prefix}actor/entropy_loss"] = entropy_loss.detach().item()
                             phase_batch = phase_batch.union(old_log_prob)
 
                             if "rollout_log_probs" in phase_batch.batch.keys():
@@ -211,6 +241,22 @@ class RayECHOTrainer(RayPPOTrainer):
                                 metrics[f"{phase_prefix}training/rollout_probs_diff_mean"] = torch.mean(rollout_probs_diff).detach().item()
                                 metrics[f"{phase_prefix}training/rollout_probs_diff_std"] = torch.std(rollout_probs_diff).detach().item()
 
+                        if phase_strategy == "entropy":
+                            if entropys is None:
+                                raise RuntimeError(f"{phase_name} phase uses entropy reward but compute_log_prob did not return entropys.")
+                            phase_mask = phase_batch.batch[phase_mask_key]
+                            phase_batch.batch[f"{phase_name}_token_entropy"] = entropys.to(torch.float32) * phase_mask.to(torch.float32)
+                            reward_tensor = self._build_entropy_reward(
+                                entropys=entropys,
+                                phase_mask=phase_mask,
+                                entropy_cfg=phase_reward_cfg.entropy,
+                            )
+                            metrics[f"{phase_prefix}reward/entropy_reward_mean"] = agg_loss(
+                                loss_mat=reward_tensor,
+                                loss_mask=phase_batch.batch["loss_mask"],
+                                loss_agg_mode=loss_agg_mode,
+                            ).detach().item()
+
                         if self.use_reference_policy:
                             with _timer(f"{phase_name}_ref", timing_raw):
                                 if not self.ref_in_actor:
@@ -225,8 +271,10 @@ class RayECHOTrainer(RayPPOTrainer):
                                 phase_batch = phase_batch.union(values)
 
                         with _timer(f"{phase_name}_adv", timing_raw):
-                            if self.config.reward_model.launch_reward_fn_async:
+                            if phase_strategy == "scorer" and self.config.reward_model.launch_reward_fn_async:
                                 reward_tensor, phase_reward_extra_infos_dict = ray.get(future_reward)
+                            if reward_tensor is None:
+                                raise RuntimeError(f"{phase_name} reward_tensor was not initialized.")
                             phase_batch.batch["token_level_scores"] = reward_tensor
                             if phase_reward_extra_infos_dict:
                                 phase_batch.non_tensor_batch.update({k: np.array(v) for k, v in phase_reward_extra_infos_dict.items()})

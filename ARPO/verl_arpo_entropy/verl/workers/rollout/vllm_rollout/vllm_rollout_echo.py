@@ -35,22 +35,33 @@ from verl.workers.rollout.vllm_rollout.vllm_rollout_spmd import vLLMRollout, _pr
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
-_OPEN_SELECT_TAG = "<select>"
-_CLOSE_SELECT_TAG = "</select>"
-_OPEN_SEARCH_TAG = "<search>"
-_CLOSE_SEARCH_TAG = "</search>"
-_OPEN_PYTHON_TAG = "<python>"
-_CLOSE_PYTHON_TAG = "</python>"
-_OPEN_RESULT_TAG = "<result>"
-_CLOSE_RESULT_TAG = "</result>"
-_TAG_MATCH_ORDER = (
-    _CLOSE_SEARCH_TAG,
-    _CLOSE_PYTHON_TAG,
-    _CLOSE_RESULT_TAG,
-    _OPEN_SEARCH_TAG,
-    _OPEN_PYTHON_TAG,
-    _OPEN_RESULT_TAG,
-)
+# Maps each tag string to (block_type, "open"|"close").
+_TAG_INFO = {
+    "<select>": ("select", "open"),
+    "</select>": ("select", "close"),
+    "<think>": ("think", "open"),
+    "</think>": ("think", "close"),
+    "<answer>": ("answer", "open"),
+    "</answer>": ("answer", "close"),
+    "<search>": ("search", "open"),
+    "</search>": ("search", "close"),
+    "<python>": ("python", "open"),
+    "</python>": ("python", "close"),
+    "<result>": ("result", "open"),
+    "</result>": ("result", "close"),
+}
+# Close tags first so `</tag><tag>` boundaries resolve correctly.
+_TAG_MATCH_ORDER = tuple(t for t in _TAG_INFO if t.startswith("</")) + tuple(t for t in _TAG_INFO if not t.startswith("</"))
+
+_VALID_MASK_LEVELS = {"high", "low", "none"}
+_DEFAULT_MASK_CATEGORIES = {
+    "first_select": "high",
+    "select": "high",
+    "think": "high",
+    "answer": "high",
+    "search": "low",
+    "python": "low",
+}
 
 
 def _load_tool_from_config(tool_config: DictConfig) -> BaseTool:
@@ -95,6 +106,12 @@ class vLLMRolloutECHO(vLLMRollout):
         self.tool_retry_count = tools_config.get("retry_count", 3)
         self.tool_verbose_logging = tools_config.get("verbose_logging", False)
 
+        mask_cat_cfg = OmegaConf.to_container(self.config.get("mask_categories", OmegaConf.create({})), resolve=True)
+        self.mask_categories = {k: mask_cat_cfg.get(k, v) for k, v in _DEFAULT_MASK_CATEGORIES.items()}
+        for cat, level in self.mask_categories.items():
+            assert level in _VALID_MASK_LEVELS, f"mask_categories.{cat}={level!r}, must be one of {_VALID_MASK_LEVELS}"
+        logger.info(f"ECHO mask_categories: {self.mask_categories}")
+
         self.tools: Dict[str, BaseTool] = {}
         if "tool_instances" in tools_config:
             for tool_name, tool_config in tools_config.tool_instances.items():
@@ -124,13 +141,13 @@ class vLLMRolloutECHO(vLLMRollout):
             for token_id in output_ids
         ]
         response_text = "".join(token_texts)
-        char_high_level_mask = [0] * len(response_text)
-        char_low_level_mask = [0] * len(response_text)
-
-        low_tool_depth = 0
-        result_depth = 0
-        char_idx = 0
         text_length = len(response_text)
+
+        # Walk character-by-character, classifying each into a category.
+        char_categories: List[str | None] = [None] * text_length
+        current_block: str | None = None
+        select_count = 0
+        char_idx = 0
 
         while char_idx < text_length:
             matched_tag = None
@@ -140,39 +157,51 @@ class vLLMRolloutECHO(vLLMRollout):
                     break
 
             if matched_tag is not None:
-                if matched_tag in (_OPEN_SEARCH_TAG, _OPEN_PYTHON_TAG):
-                    low_tool_depth += 1
-                elif matched_tag == _OPEN_RESULT_TAG:
-                    result_depth += 1
-
+                block_type, direction = _TAG_INFO[matched_tag]
                 tag_end = min(text_length, char_idx + len(matched_tag))
-                active_high = low_tool_depth == 0 and result_depth == 0
-                active_low = low_tool_depth > 0 and result_depth == 0
-                for span_idx in range(char_idx, tag_end):
-                    char_high_level_mask[span_idx] = int(active_high)
-                    char_low_level_mask[span_idx] = int(active_low)
 
-                if matched_tag in (_CLOSE_SEARCH_TAG, _CLOSE_PYTHON_TAG):
-                    low_tool_depth = max(0, low_tool_depth - 1)
-                elif matched_tag == _CLOSE_RESULT_TAG:
-                    result_depth = max(0, result_depth - 1)
+                # Open tags: enter the new block before labelling tag chars.
+                if direction == "open":
+                    if block_type == "select":
+                        select_count += 1
+                        current_block = "first_select" if select_count == 1 else "select"
+                    else:
+                        current_block = block_type
+
+                for span_idx in range(char_idx, tag_end):
+                    char_categories[span_idx] = current_block
+
+                # Close tags: leave the block after labelling tag chars.
+                if direction == "close":
+                    current_block = None
 
                 char_idx = tag_end
                 continue
 
-            active_high = low_tool_depth == 0 and result_depth == 0
-            active_low = low_tool_depth > 0 and result_depth == 0
-            char_high_level_mask[char_idx] = int(active_high)
-            char_low_level_mask[char_idx] = int(active_low)
+            char_categories[char_idx] = current_block
             char_idx += 1
 
+        # Convert per-character categories to high/low masks using config.
+        mask_cfg = self.mask_categories
+        char_high = [0] * text_length
+        char_low = [0] * text_length
+        for i, cat in enumerate(char_categories):
+            if cat is None or cat == "result":
+                continue
+            level = mask_cfg.get(cat, "none")
+            if level == "high":
+                char_high[i] = 1
+            elif level == "low":
+                char_low[i] = 1
+
+        # Collapse character masks to token masks, intersecting with result_mask.
         high_level_mask: List[int] = []
         low_level_mask: List[int] = []
         cursor = 0
         for token_text, keep_token in zip(token_texts, result_mask):
             next_cursor = cursor + len(token_text)
-            token_high = int(any(char_high_level_mask[cursor:next_cursor])) if next_cursor > cursor else 0
-            token_low = int(any(char_low_level_mask[cursor:next_cursor])) if next_cursor > cursor else 0
+            token_high = int(any(char_high[cursor:next_cursor])) if next_cursor > cursor else 0
+            token_low = int(any(char_low[cursor:next_cursor])) if next_cursor > cursor else 0
             high_level_mask.append(int(bool(keep_token) and token_high))
             low_level_mask.append(int(bool(keep_token) and token_low))
             cursor = next_cursor

@@ -62,10 +62,13 @@ def get_ordered_blocks(text):
 # ---------------------------------------------------------------------------
 
 def validate_high_level(text):
-    """Checks:
-    1. Response starts with <select> declaring allowed tools from VALID_ECHO_TOOLS
-    2. Every <think> is immediately followed by <select>
-    3. ALL non-initial <select> blocks only use tools from the allowed set
+    """Checks on HIGH-masked tokens (first_select / think / answer):
+    1. Response starts with the planning <select> declaring allowed tools
+       from VALID_ECHO_TOOLS.
+    2. Every <think> is immediately followed by <select>.
+    3. Exactly one <answer> block containing \\boxed{}.
+    The per-step tool-subset check was moved to validate_low_level since
+    non-initial <select> tokens are masked LOW.
     """
     blocks = get_ordered_blocks(text)
     if not blocks:
@@ -86,16 +89,6 @@ def validate_high_level(text):
     if invalid:
         return False, f"unknown tools in planning <select>: {invalid}"
 
-    # Every non-initial <select> must only reference tools from the allowed set
-    for i, (tag, start, end, content) in enumerate(blocks):
-        if tag != "select" or i == 0:
-            continue
-        selected = set(extract_tools_from_select(content))
-        if not selected:
-            return False, "step <select> declares no tool"
-        if not selected.issubset(allowed_tools):
-            return False, f"tool(s) {selected - allowed_tools} not in allowed set {allowed_tools}"
-
     # Every <think> must be immediately followed by <select>
     for i, (tag, start, end, content) in enumerate(blocks):
         if tag != "think":
@@ -105,6 +98,14 @@ def validate_high_level(text):
         if blocks[i + 1][0] != "select":
             return False, f"<think> must be followed by <select>, found <{blocks[i + 1][0]}>"
 
+    # Answer block: structural presence/shape is an HL concern because
+    # <answer> tokens are masked HIGH.
+    answer_blocks = [b for b in blocks if b[0] == "answer"]
+    if len(answer_blocks) != 1:
+        return False, f"expected 1 <answer>, found {len(answer_blocks)}"
+    if '\\boxed{' not in answer_blocks[0][3] or '}' not in answer_blocks[0][3]:
+        return False, "answer missing \\boxed{}"
+
     return True, "high-level format is correct"
 
 
@@ -113,19 +114,28 @@ def validate_high_level(text):
 # ---------------------------------------------------------------------------
 
 def validate_low_level(text):
-    """Checks:
+    """Checks on LOW-masked tokens (non-initial select / search / python):
     1. After step-<select> choosing "search": <search>...</search> <result>...</result>
     2. After step-<select> choosing "python": <python>...</python> <result>...</result>
     3. After step-<select> choosing "no-tool": <think> or <answer>
     4. Every <search>/<python> is preceded by a matching <select>
     5. Every <result> is preceded by <search> or <python>
-    6. Exactly one <answer> containing \\boxed{}
+    6. Every non-initial <select>'s tool is in the planning <select>'s allowed set.
+    The <answer>/\\boxed{} presence check moved to validate_high_level.
     """
     blocks = get_ordered_blocks(text)
 
     for tag, start, end, content in blocks:
         if end == -1:
             return False, f"<{tag}> is not closed"
+
+    # Step-level subset check needs the planning <select>'s tool list; if the
+    # plan is missing/empty we cannot judge LL tool consistency and fail here.
+    if not blocks or blocks[0][0] != "select":
+        return False, "missing planning <select> needed to derive allowed tools"
+    allowed_tools = set(extract_tools_from_select(blocks[0][3]))
+    if not allowed_tools:
+        return False, "planning <select> declares no tools"
 
     # Forward: each step-select is followed by the correct block
     for i, (tag, start, end, content) in enumerate(blocks):
@@ -134,7 +144,10 @@ def validate_low_level(text):
 
         selected = extract_tools_from_select(content)
         if not selected:
-            continue
+            return False, "step <select> declares no tool"
+        selected_set = set(selected)
+        if not selected_set.issubset(allowed_tools):
+            return False, f"tool(s) {selected_set - allowed_tools} not in allowed set {allowed_tools}"
         tool = selected[0]
 
         if i + 1 >= len(blocks):
@@ -169,13 +182,6 @@ def validate_low_level(text):
         elif tag == "result":
             if i == 0 or blocks[i - 1][0] not in ("search", "python"):
                 return False, "<result> not preceded by <search> or <python>"
-
-    # Answer block
-    answer_blocks = [b for b in blocks if b[0] == "answer"]
-    if len(answer_blocks) != 1:
-        return False, f"expected 1 <answer>, found {len(answer_blocks)}"
-    if '\\boxed{' not in answer_blocks[0][3] or '}' not in answer_blocks[0][3]:
-        return False, "answer missing \\boxed{}"
 
     return True, "low-level format is correct"
 
@@ -349,6 +355,14 @@ def compute_score(data_source, solution_str, ground_truth, extra_info=None):
         print(f"--------bad format ({phase or 'combined'}): {phase_reason}--------\nsolution_str: {solution_str[:200]}, ground_truth: {ground_truth}")
         result["score"] = -1
         result["reason"] = f"bad format: {phase_reason}"
+        return result
+
+    # Strict phase isolation: the LL phase uses this scorer purely as a format
+    # gate (see echo_ray_trainer._apply_format_gate). Answer extraction and
+    # \boxed parsing below are HL concerns (answer tokens are masked HIGH), so
+    # short-circuit here to prevent those from emitting a -1 into LL.
+    if phase == "low_level":
+        result["reason"] = "low-level format is correct"
         return result
 
     # Strip EOS token if present

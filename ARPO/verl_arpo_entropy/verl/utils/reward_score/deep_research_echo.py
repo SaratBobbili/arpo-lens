@@ -121,7 +121,9 @@ def validate_low_level(text):
     4. Every <search>/<python> is preceded by a matching <select>
     5. Every <result> is preceded by <search> or <python>
     6. Every non-initial <select>'s tool is in the planning <select>'s allowed set.
-    The <answer>/\\boxed{} presence check moved to validate_high_level.
+    The <answer>/\\boxed{} presence check moved to validate_high_level. Absence
+    of tool calls is not a hard format failure; it is handled as an LL soft-fail
+    in compute_score (reward zeroed, no terminal penalty).
     """
     blocks = get_ordered_blocks(text)
 
@@ -329,6 +331,10 @@ def compute_score(data_source, solution_str, ground_truth, extra_info=None):
         "f1_score": 0,
         "high_level_valid": False,
         "low_level_valid": False,
+        # True when the LL phase sees a format-valid rollout that invoked no
+        # tool. Consumed by _apply_format_gate to zero LL entropy reward
+        # without the terminal bad-format penalty (neutral soft-fail).
+        "no_tool_calls": False,
     }
 
     response = solution_str
@@ -362,7 +368,21 @@ def compute_score(data_source, solution_str, ground_truth, extra_info=None):
     # \boxed parsing below are HL concerns (answer tokens are masked HIGH), so
     # short-circuit here to prevent those from emitting a -1 into LL.
     if phase == "low_level":
-        result["reason"] = "low-level format is correct"
+        # A format-valid rollout that never invoked <search>/<python> is a soft
+        # fail: non-initial <select> tokens would otherwise soak up LL entropy
+        # reward and reinforce the no-tool degenerate strategy. Flag the sample
+        # so the format gate zeros its dense reward; score stays >= 0 so the
+        # hard penalty path is not triggered.
+        has_tool_call = any(
+            end != -1
+            for tag in ("search", "python")
+            for _, end, _ in find_tag_blocks(response, tag)
+        )
+        if not has_tool_call:
+            result["no_tool_calls"] = True
+            result["reason"] = "low-level: no tool call invoked"
+        else:
+            result["reason"] = "low-level format is correct"
         return result
 
     # Strip EOS token if present

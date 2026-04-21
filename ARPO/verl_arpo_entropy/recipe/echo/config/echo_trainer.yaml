@@ -37,6 +37,13 @@ reward_model:
   phase_rewards:
     high_level:
       strategy: scorer
+      # How the per-token reward tensor is reduced to a per-sample scalar inside
+      # GRPO's group-normalization step. "sum" keeps the sparse scorer scalar
+      # intact (mean would divide it by the HL mask token count and suppress
+      # signal for longer responses). "mean" takes a mask-aware mean over the
+      # phase's tokens so longer spans don't inflate advantage magnitude just
+      # by token count.
+      score_aggregation: sum  # one of {sum, mean}
       # `entropy` block below is consulted only when strategy == "entropy".
       entropy:
         scale: 1.0        # Multiplies entropy before writing the token-level reward.
@@ -53,6 +60,9 @@ reward_model:
         bad_format_penalty: -1.0
     low_level:
       strategy: entropy
+      # LL uses mean so per-sample advantage reflects average entropy per LL
+      # token rather than the sum, which would be length-biased.
+      score_aggregation: mean  # one of {sum, mean}
       entropy:
         scale: 1.0
         normalize: false

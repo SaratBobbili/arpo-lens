@@ -61,27 +61,37 @@ class RayECHOTrainer(RayPPOTrainer):
         # the scorer scalar at the last valid response token (zeros elsewhere),
         # and deep_research_echo.compute_score emits exactly -1 iff the response
         # fails format / parse checks. Summing over tokens recovers the per-sample
-        # scalar without decoding again here.
-        scorer_tensor, _ = compute_reward(phase_batch, self.reward_fn)
+        # scalar without decoding again here. The scorer also emits a per-sample
+        # `no_tool_calls` flag via reward_extra_info for the LL soft-fail case
+        # (valid format but no <search>/<python> invocation) which gets reward
+        # zeroed without a terminal penalty.
+        scorer_tensor, reward_extra = compute_reward(phase_batch, self.reward_fn)
         per_sample_score = scorer_tensor.to(reward_tensor.device).sum(dim=-1)
         bad = per_sample_score < 0.0
         bad_rate = bad.float().mean().item()
-        if not bool(bad.any()):
-            return reward_tensor, bad_rate
+
+        no_tool_flags = reward_extra.get("no_tool_calls", [False] * reward_tensor.size(0))
+        no_tool = torch.tensor(no_tool_flags, dtype=torch.bool, device=reward_tensor.device)
+        no_tool_rate = no_tool.float().mean().item()
+
         gated = reward_tensor.clone()
+        # Soft-fail: zero the dense entropy reward so no-tool rollouts contribute
+        # no LL gradient from their step-<select> tokens; no penalty is written.
+        gated[no_tool] = 0.0
+        # Hard-fail: zero the dense reward and place `penalty` at the last
+        # phase-mask position so it contributes to the phase-local PPO loss
+        # (loss_mask == phase mask). Reverse-argmax finds the last index where
+        # the sparse phase mask is 1 since sum-based indexing would miss it.
         gated[bad] = 0.0
-        # Place the penalty at the last position where the phase mask is 1 so it
-        # contributes to the phase-local PPO loss (loss_mask == phase mask). The
-        # phase mask is sparse/scattered, so sum-based indexing would miss
-        # phase=1 positions; reverse-argmax returns the last index where mask==1.
-        rm = phase_batch.batch["response_mask"].to(torch.long)
-        last_idx = rm.size(1) - 1 - torch.flip(rm, dims=[-1]).argmax(dim=-1)
-        bad_rows = bad.nonzero(as_tuple=True)[0]
-        gated.index_put_(
-            (bad_rows, last_idx[bad_rows].to(gated.device)),
-            torch.full((bad_rows.numel(),), penalty, dtype=gated.dtype, device=gated.device),
-        )
-        return gated, bad_rate
+        if bool(bad.any()):
+            rm = phase_batch.batch["response_mask"].to(torch.long)
+            last_idx = rm.size(1) - 1 - torch.flip(rm, dims=[-1]).argmax(dim=-1)
+            bad_rows = bad.nonzero(as_tuple=True)[0]
+            gated.index_put_(
+                (bad_rows, last_idx[bad_rows].to(gated.device)),
+                torch.full((bad_rows.numel(),), penalty, dtype=gated.dtype, device=gated.device),
+            )
+        return gated, bad_rate, no_tool_rate
 
     def fit(self):
         """
@@ -288,12 +298,13 @@ class RayECHOTrainer(RayPPOTrainer):
                                 entropy_cfg=phase_reward_cfg.entropy,
                             )
                             if bool(phase_reward_cfg.entropy.get("format_gate", False)):
-                                reward_tensor, bad_format_rate = self._apply_format_gate(
+                                reward_tensor, bad_format_rate, no_tool_rate = self._apply_format_gate(
                                     phase_batch=phase_batch,
                                     reward_tensor=reward_tensor,
                                     penalty=float(phase_reward_cfg.entropy.bad_format_penalty),
                                 )
                                 metrics[f"{phase_prefix}reward/bad_format_rate"] = bad_format_rate
+                                metrics[f"{phase_prefix}reward/no_tool_rate"] = no_tool_rate
                             metrics[f"{phase_prefix}reward/entropy_reward_mean"] = agg_loss(
                                 loss_mat=reward_tensor,
                                 loss_mask=phase_batch.batch["loss_mask"],
@@ -331,6 +342,23 @@ class RayECHOTrainer(RayPPOTrainer):
                                 metrics.update(self._prefix_metrics(kl_metrics, phase_prefix))
                             else:
                                 phase_batch.batch["token_level_rewards"] = phase_batch.batch["token_level_scores"]
+
+                            # GRPO reduces token_level_rewards to a per-sample scalar via
+                            # sum(dim=-1). For "mean" aggregation we pre-divide rewards by
+                            # the per-sample phase-mask token count so the same sum recovers
+                            # a mask-aware mean, avoiding any edits to the shared GRPO
+                            # implementation. Rewards are already zero outside the phase
+                            # mask (scorer: sparse last-token scalar; entropy: masked in
+                            # _build_entropy_reward), so scaling by the mask denom is safe.
+                            score_aggregation = phase_reward_cfg.score_aggregation
+                            assert score_aggregation in ("sum", "mean"), (
+                                f"reward_model.phase_rewards.{phase_name}.score_aggregation must be "
+                                f"'sum' or 'mean', got {score_aggregation!r}."
+                            )
+                            if score_aggregation == "mean":
+                                tlr = phase_batch.batch["token_level_rewards"]
+                                denom = phase_batch.batch["response_mask"].to(tlr.dtype).sum(dim=-1, keepdim=True).clamp_min(1.0)
+                                phase_batch.batch["token_level_rewards"] = tlr / denom
 
                             phase_batch = compute_advantage(
                                 phase_batch,

@@ -27,7 +27,7 @@ from tensordict import TensorDict
 
 from verl import DataProto
 from verl.trainer.ppo.metric_utils import compute_data_metrics, compute_throughout_metrics, compute_timing_metrics
-from verl.trainer.ppo.ray_trainer import AdvantageEstimator, ResourcePoolManager, Role, RayPPOTrainer, _timer, apply_kl_penalty, compute_advantage, compute_response_mask
+from verl.trainer.ppo.ray_trainer import AdvantageEstimator, ResourcePoolManager, Role, RayPPOTrainer, _timer, apply_kl_penalty, compute_advantage
 from verl.trainer.ppo.reward import compute_reward, compute_reward_async
 from verl.utils.metric import reduce_metrics
 
@@ -70,9 +70,12 @@ class RayECHOTrainer(RayPPOTrainer):
             return reward_tensor, bad_rate
         gated = reward_tensor.clone()
         gated[bad] = 0.0
-        # last valid response token index per sample; response_mask was set on
-        # phase_batch earlier in the step (line ~193 of fit()).
-        last_idx = phase_batch.batch["response_mask"].to(torch.long).sum(dim=-1) - 1
+        # Place the penalty at the last position where the phase mask is 1 so it
+        # contributes to the phase-local PPO loss (loss_mask == phase mask). The
+        # phase mask is sparse/scattered, so sum-based indexing would miss
+        # phase=1 positions; reverse-argmax returns the last index where mask==1.
+        rm = phase_batch.batch["response_mask"].to(torch.long)
+        last_idx = rm.size(1) - 1 - torch.flip(rm, dims=[-1]).argmax(dim=-1)
         bad_rows = bad.nonzero(as_tuple=True)[0]
         gated.index_put_(
             (bad_rows, last_idx[bad_rows].to(gated.device)),
@@ -217,10 +220,16 @@ class RayECHOTrainer(RayPPOTrainer):
                         phase_batch.non_tensor_batch["uid"] = np.array([str(uuid.uuid4()) for _ in range(len(phase_batch.batch))], dtype=object)
                         phase_batch = phase_batch.repeat(repeat_times=phase_rollout_n, interleave=True)
                         phase_batch = phase_batch.union(gen_batch_output)
-                        phase_batch.batch["response_mask"] = compute_response_mask(phase_batch)
                         if phase_mask_key not in phase_batch.batch:
                             raise KeyError(f"Missing '{phase_mask_key}' in rollout batch; ensure rollout.mode=sync_echo.")
                         phase_batch.batch["loss_mask"] = phase_batch.batch[phase_mask_key]
+                        # Restrict response_mask to phase-local tokens. GRPO's
+                        # compute_advantage broadcasts scores.unsqueeze(-1) * response_mask,
+                        # so this isolates the non-zero advantage support to this phase's
+                        # tokens. Actor PPO aggregation is independently driven by
+                        # loss_mask (set above) which the dp_actor picks up whenever
+                        # loss_mask is present on the batch.
+                        phase_batch.batch["response_mask"] = phase_batch.batch[phase_mask_key]
 
                         if self.config.trainer.balance_batch:
                             phase_balance_metrics = {}

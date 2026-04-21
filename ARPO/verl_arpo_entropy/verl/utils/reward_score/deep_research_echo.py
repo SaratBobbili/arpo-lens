@@ -392,10 +392,7 @@ def compute_score(data_source, solution_str, ground_truth, extra_info=None):
     result["f1_score"] = f1_score
     print(f"f1_score: {f1_score}, answer: {answer}, ground_truth: {ground_truth}")
 
-    if f1_score > 0 and "</search>" in response and "</python>" in response:
-        result["score"] = f1_score + 0.1
-        result["reason"] = f"correct with multi-tool, score: {f1_score + 0.1}"
-    elif f1_score > 0:
+    if f1_score > 0:
         result["score"] = f1_score
         result["reason"] = f"correct, f1: {f1_score}"
     else:

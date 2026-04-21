@@ -40,7 +40,7 @@ reward_model:
       # `entropy` block below is consulted only when strategy == "entropy".
       entropy:
         scale: 1.0        # Multiplies entropy before writing the token-level reward.
-        normalize: false  # If true, divide entropy by log(vocab_size) for bounded scale.
+        normalize: true  # If true, divide entropy by log(vocab_size) for bounded scale.
         clamp_min: null   # Optional lower bound applied after scale/normalize.
         clamp_max: null   # Optional upper bound applied after scale/normalize.
         # When true, samples whose decoded response fails the scorer's

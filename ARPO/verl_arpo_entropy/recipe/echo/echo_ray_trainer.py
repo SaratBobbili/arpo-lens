@@ -31,6 +31,8 @@ from verl.trainer.ppo.ray_trainer import AdvantageEstimator, ResourcePoolManager
 from verl.trainer.ppo.reward import compute_reward, compute_reward_async
 from verl.utils.metric import reduce_metrics
 
+from verl.utils.reward_score.deep_research_echo import resolve_validator_profile
+
 from .echo_core_algos import agg_loss
 
 
@@ -124,6 +126,13 @@ class RayECHOTrainer(RayPPOTrainer):
 
         self.global_steps = 0
 
+        # Resolve validator profile once from the rollout mask_categories so the
+        # format validator's HL/LL routing matches the phase mask layout.
+        # Fails fast if mask_categories does not match any supported profile.
+        self._validator_profile = resolve_validator_profile(
+            self.config.actor_rollout_ref.rollout.mask_categories
+        )
+
         # load checkpoint before doing anything
         self._load_checkpoint()
 
@@ -214,6 +223,9 @@ class RayECHOTrainer(RayPPOTrainer):
                         # Phase tag consumed by ECHORewardManager -> deep_research_echo.compute_score
                         # to gate the -1 format verdict on the phase-local validator only.
                         phase_batch.meta_info["phase"] = phase_name
+                        # Validator profile (derived from mask_categories at trainer init)
+                        # routes per-check HL/LL attribution inside compute_score.
+                        phase_batch.meta_info["validator_profile"] = self._validator_profile
                         phase_reward_extra_infos_dict = {}
 
                         with _timer(f"{phase_name}_gen", timing_raw):

@@ -52,6 +52,9 @@ class ECHORewardManager:
         # Phase tag set by RayECHOTrainer.fit(); forwarded to compute_score via extra_info
         # so the scorer can gate -1 on the phase-local validator (high_level vs low_level).
         phase = data.meta_info.get("phase") if data.meta_info else None
+        # Validator profile (c1/c2/c3) derived from mask_categories; forwarded so
+        # compute_score routes per-check HL/LL attribution consistently.
+        validator_profile = data.meta_info.get("validator_profile") if data.meta_info else None
 
         for i in range(len(data)):
             data_item = data[i]  # DataProtoItem
@@ -82,6 +85,8 @@ class ECHORewardManager:
             extra_info.setdefault("tokenizer", self.tokenizer)
             if phase is not None:
                 extra_info["phase"] = phase
+            if validator_profile is not None:
+                extra_info["validator_profile"] = validator_profile
 
             score = self.compute_score(
                 data_source=data_source,

@@ -5,6 +5,33 @@ from collections import Counter
 
 VALID_ECHO_TOOLS = {"search", "python", "no-tool"}
 
+# Supported mask_categories -> validator_profile signatures. The profile is the
+# single source of truth derived from `actor_rollout_ref.rollout.mask_categories`
+# at startup; each profile routes a fixed subset of format checks to HL vs LL.
+# "result" is always excluded (never masked).
+VALIDATOR_PROFILE_SIGNATURES = {
+    # c1: planning/reasoning/answer HL; tool choice + tool payload LL.
+    "c1": {"first_select": "high", "select": "low",  "think": "high", "answer": "high", "search": "low",  "python": "low"},
+    # c2: same as c1 but non-initial <select> is pulled up to HL.
+    "c2": {"first_select": "high", "select": "high", "think": "high", "answer": "high", "search": "low",  "python": "low"},
+    # c3: same as c1 but <search>/<python> payloads are HL (prevents LL from
+    # entropy-hacking via junk tool-code tokens).
+    "c3": {"first_select": "high", "select": "low",  "think": "high", "answer": "high", "search": "high", "python": "high"},
+}
+
+
+def resolve_validator_profile(mask_categories):
+    """Match `mask_categories` (dict-like) against the known profile signatures.
+    Returns the profile id ("c1"/"c2"/"c3"); raises if no profile matches."""
+    observed = {k: str(mask_categories[k]) for k in VALIDATOR_PROFILE_SIGNATURES["c1"]}
+    for profile, signature in VALIDATOR_PROFILE_SIGNATURES.items():
+        if observed == signature:
+            return profile
+    raise ValueError(
+        f"mask_categories {observed} does not match any supported validator profile. "
+        f"Supported profiles: {VALIDATOR_PROFILE_SIGNATURES}"
+    )
+
 
 # ---------------------------------------------------------------------------
 # Tag parsing helpers
@@ -58,38 +85,33 @@ def get_ordered_blocks(text):
 
 
 # ---------------------------------------------------------------------------
-# High-level policy validation: <select> structure and tool consistency
+# Per-check helpers. Each returns (ok, reason) and is attributed to one
+# "primary tag" category; the profile routes it to HL or LL.
 # ---------------------------------------------------------------------------
 
-def validate_high_level(text):
-    """Checks on HIGH-masked tokens (first_select / think / answer):
-    1. Response starts with the planning <select> declaring allowed tools
-       from VALID_ECHO_TOOLS.
-    2. Every <think> is immediately followed by <select>.
-    3. Exactly one <answer> block containing \\boxed{}.
-    The per-step tool-subset check was moved to validate_low_level since
-    non-initial <select> tokens are masked LOW.
-    """
-    blocks = get_ordered_blocks(text)
-    if not blocks:
-        return False, "no tags found"
-
+def _check_all_closed(blocks):
     for tag, start, end, content in blocks:
         if end == -1:
             return False, f"<{tag}> is not closed"
+    return True, None
 
-    # First block must be the planning <select>
+
+def _check_first_select(blocks):
+    """Primary tag: first_select. First block is planning <select> with a
+    non-empty, VALID_ECHO_TOOLS-subset tool list."""
     if blocks[0][0] != "select":
         return False, f"must start with <select>, found <{blocks[0][0]}>"
-
-    allowed_tools = set(extract_tools_from_select(blocks[0][3]))
-    if not allowed_tools:
+    allowed = set(extract_tools_from_select(blocks[0][3]))
+    if not allowed:
         return False, "first <select> declares no tools"
-    invalid = allowed_tools - VALID_ECHO_TOOLS
+    invalid = allowed - VALID_ECHO_TOOLS
     if invalid:
         return False, f"unknown tools in planning <select>: {invalid}"
+    return True, None
 
-    # Every <think> must be immediately followed by <select>
+
+def _check_think_followup(blocks):
+    """Primary tag: think. Every <think> must be immediately followed by <select>."""
     for i, (tag, start, end, content) in enumerate(blocks):
         if tag != "think":
             continue
@@ -97,53 +119,27 @@ def validate_high_level(text):
             return False, "<think> at end with no following <select>"
         if blocks[i + 1][0] != "select":
             return False, f"<think> must be followed by <select>, found <{blocks[i + 1][0]}>"
+    return True, None
 
-    # Answer block: structural presence/shape is an HL concern because
-    # <answer> tokens are masked HIGH.
-    answer_blocks = [b for b in blocks if b[0] == "answer"]
-    if len(answer_blocks) != 1:
-        return False, f"expected 1 <answer>, found {len(answer_blocks)}"
-    if '\\boxed{' not in answer_blocks[0][3] or '}' not in answer_blocks[0][3]:
+
+def _check_answer_boxed(blocks):
+    """Primary tag: answer. Exactly one <answer> block containing \\boxed{}."""
+    answers = [b for b in blocks if b[0] == "answer"]
+    if len(answers) != 1:
+        return False, f"expected 1 <answer>, found {len(answers)}"
+    if '\\boxed{' not in answers[0][3] or '}' not in answers[0][3]:
         return False, "answer missing \\boxed{}"
+    return True, None
 
-    return True, "high-level format is correct"
 
-
-# ---------------------------------------------------------------------------
-# Low-level policy validation: tool call formatting
-# ---------------------------------------------------------------------------
-
-def validate_low_level(text):
-    """Checks on LOW-masked tokens (non-initial select / search / python):
-    1. After step-<select> choosing "search": <search>...</search> <result>...</result>
-    2. After step-<select> choosing "python": <python>...</python> <result>...</result>
-    3. After step-<select> choosing "no-tool": <think> or <answer>
-    4. Every <search>/<python> is preceded by a matching <select>
-    5. Every <result> is preceded by <search> or <python>
-    6. Every non-initial <select>'s tool is in the planning <select>'s allowed set.
-    The <answer>/\\boxed{} presence check moved to validate_high_level. Absence
-    of tool calls is not a hard format failure; it is handled as an LL soft-fail
-    in compute_score (reward zeroed, no terminal penalty).
-    """
-    blocks = get_ordered_blocks(text)
-
-    for tag, start, end, content in blocks:
-        if end == -1:
-            return False, f"<{tag}> is not closed"
-
-    # Step-level subset check needs the planning <select>'s tool list; if the
-    # plan is missing/empty we cannot judge LL tool consistency and fail here.
-    if not blocks or blocks[0][0] != "select":
-        return False, "missing planning <select> needed to derive allowed tools"
+def _check_step_select(blocks):
+    """Primary tag: select (non-initial). Step-select tool is a subset of the
+    planning set and the block that follows matches the selected tool
+    (search/python -> tool+result, no-tool -> think|answer)."""
     allowed_tools = set(extract_tools_from_select(blocks[0][3]))
-    if not allowed_tools:
-        return False, "planning <select> declares no tools"
-
-    # Forward: each step-select is followed by the correct block
     for i, (tag, start, end, content) in enumerate(blocks):
         if tag != "select" or i == 0:
             continue
-
         selected = extract_tools_from_select(content)
         if not selected:
             return False, "step <select> declares no tool"
@@ -151,14 +147,11 @@ def validate_low_level(text):
         if not selected_set.issubset(allowed_tools):
             return False, f"tool(s) {selected_set - allowed_tools} not in allowed set {allowed_tools}"
         tool = selected[0]
-
         if i + 1 >= len(blocks):
             if tool == "no-tool":
                 continue
             return False, f"<select> chose '{tool}' but nothing follows"
-
         next_tag = blocks[i + 1][0]
-
         if tool == "search":
             if next_tag != "search":
                 return False, f"<select> chose 'search' but next is <{next_tag}>"
@@ -172,8 +165,12 @@ def validate_low_level(text):
         elif tool == "no-tool":
             if next_tag not in ("think", "answer"):
                 return False, f"<select> chose 'no-tool' but next is <{next_tag}>"
+    return True, None
 
-    # Reverse: tool blocks must be preceded by matching select
+
+def _check_tool_ordering(blocks):
+    """Primary tag: search / python. <search>/<python> preceded by a <select>
+    that picked them, and every <result> preceded by <search> or <python>."""
     for i, (tag, start, end, content) in enumerate(blocks):
         if tag in ("search", "python"):
             if i == 0 or blocks[i - 1][0] != "select":
@@ -184,7 +181,58 @@ def validate_low_level(text):
         elif tag == "result":
             if i == 0 or blocks[i - 1][0] not in ("search", "python"):
                 return False, "<result> not preceded by <search> or <python>"
+    return True, None
 
+
+# ---------------------------------------------------------------------------
+# Profile-aware validators. Routing table (HL = owned by high_level phase):
+#   first_select, think, answer  -> HL for c1, c2, c3
+#   select (non-initial)         -> LL for c1 and c3, HL for c2
+#   search/python/result         -> LL for c1 and c2, HL for c3
+# ---------------------------------------------------------------------------
+
+def validate_high_level(text, profile="c1"):
+    blocks = get_ordered_blocks(text)
+    if not blocks:
+        return False, "no tags found"
+    ok, reason = _check_all_closed(blocks)
+    if not ok:
+        return False, reason
+    for check in (_check_first_select, _check_think_followup, _check_answer_boxed):
+        ok, reason = check(blocks)
+        if not ok:
+            return False, reason
+    if profile == "c2":
+        ok, reason = _check_step_select(blocks)
+        if not ok:
+            return False, reason
+    if profile == "c3":
+        ok, reason = _check_tool_ordering(blocks)
+        if not ok:
+            return False, reason
+    return True, "high-level format is correct"
+
+
+def validate_low_level(text, profile="c1"):
+    blocks = get_ordered_blocks(text)
+    ok, reason = _check_all_closed(blocks)
+    if not ok:
+        return False, reason
+    # Planning <select> is always needed to derive `allowed_tools` for step-select
+    # checks; keep this guard even when step-select lives in HL, because
+    # _check_tool_ordering also implicitly relies on well-formed selects.
+    if not blocks or blocks[0][0] != "select":
+        return False, "missing planning <select> needed to derive allowed tools"
+    if not set(extract_tools_from_select(blocks[0][3])):
+        return False, "planning <select> declares no tools"
+    if profile in ("c1", "c3"):
+        ok, reason = _check_step_select(blocks)
+        if not ok:
+            return False, reason
+    if profile in ("c1", "c2"):
+        ok, reason = _check_tool_ordering(blocks)
+        if not ok:
+            return False, reason
     return True, "low-level format is correct"
 
 
@@ -192,11 +240,11 @@ def validate_low_level(text):
 # Combined validation
 # ---------------------------------------------------------------------------
 
-def validate_format_echo(text):
+def validate_format_echo(text, profile="c1"):
     """Run both high-level and low-level validation, return
     (is_valid, reason, high_level_valid, low_level_valid)."""
-    high_valid, high_reason = validate_high_level(text)
-    low_valid, low_reason = validate_low_level(text)
+    high_valid, high_reason = validate_high_level(text, profile)
+    low_valid, low_reason = validate_low_level(text, profile)
 
     if high_valid and low_valid:
         return True, "format is correct", True, True
@@ -338,10 +386,13 @@ def compute_score(data_source, solution_str, ground_truth, extra_info=None):
     }
 
     response = solution_str
+    # Validator profile is derived from mask_categories at trainer init and
+    # forwarded via extra_info; defaults to c1 for standalone scoring calls.
+    profile = extra_info.get("validator_profile", "c1") if extra_info else "c1"
     # Both validators always run so high_level_valid / low_level_valid are available
     # for logging regardless of which phase is gating the -1 verdict.
-    hl_valid, hl_reason = validate_high_level(response)
-    ll_valid, ll_reason = validate_low_level(response)
+    hl_valid, hl_reason = validate_high_level(response, profile)
+    ll_valid, ll_reason = validate_low_level(response, profile)
     result["high_level_valid"] = hl_valid
     result["low_level_valid"] = ll_valid
 

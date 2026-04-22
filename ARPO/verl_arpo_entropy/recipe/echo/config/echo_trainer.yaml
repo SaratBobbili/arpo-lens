@@ -87,6 +87,13 @@ actor_rollout_ref:
     high_level_budget: ${actor_rollout_ref.rollout.n}
     # Which token category feeds into which hierarchical level ("high", "low", "none").
     # "result" blocks are always excluded (neither high nor low).
+    # This block is the single source of truth: the format validator profile
+    # (c1/c2/c3) is resolved from this dict at trainer init and fails fast if
+    # the combination does not match a supported profile. Supported signatures:
+    #   c1 (below): plan/reasoning/answer HL; tool choice + tool payload LL.
+    #   c2: like c1 but `select: high` (non-initial <select> is HL).
+    #   c3: like c1 but `search: high` and `python: high` (tool payloads are
+    #       HL; prevents LL from entropy-hacking via junk tool-code tokens).
     mask_categories:
       first_select: high   # initial planning <select> block declaring the tool set
       select: low           # subsequent tool-selection <select> blocks

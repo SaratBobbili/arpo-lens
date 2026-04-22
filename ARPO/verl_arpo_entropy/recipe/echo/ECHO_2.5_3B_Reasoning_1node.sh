@@ -113,6 +113,7 @@ python3 -m recipe.echo.main_echo \
     --config-name=$CONFIG_NAME \
     algorithm.adv_estimator=grpo \
     algorithm.kl_ctrl.kl_coef=0.0 \
+    algorithm.norm_adv_by_std_in_grpo=False \
     data.train_files=${TRAIN_FILES} \
     data.val_files=${VALID_FILES} \
     data.prompt_key=${PROMPT_KEY} \

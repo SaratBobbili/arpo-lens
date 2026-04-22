@@ -57,14 +57,19 @@ class RayECHOTrainer(RayPPOTrainer):
         return entropy_reward * phase_mask.to(torch.float32)
 
     def _apply_format_gate(self, phase_batch: DataProto, reward_tensor: torch.Tensor, penalty: float):
-        # Reuse the scorer to classify format validity: ECHORewardManager places
-        # the scorer scalar at the last valid response token (zeros elsewhere),
-        # and deep_research_echo.compute_score emits exactly -1 iff the response
-        # fails format / parse checks. Summing over tokens recovers the per-sample
-        # scalar without decoding again here. The scorer also emits a per-sample
-        # `no_tool_calls` flag via reward_extra_info for the LL soft-fail case
-        # (valid format but no <search>/<python> invocation) which gets reward
-        # zeroed without a terminal penalty.
+        # Bad-format rollouts: dense penalty over the phase mask so the
+        # post-aggregation per-sample scalar is `penalty` under
+        # score_aggregation=mean and `penalty * denom` under
+        # score_aggregation=sum.
+        # Soft-fail (valid format, no tool call): dense reward zeroed with no
+        # terminal penalty.
+        # Format validity comes from the scorer: ECHORewardManager emits the
+        # scorer scalar at the last valid response token (zeros elsewhere) and
+        # deep_research_echo.compute_score emits exactly -1 iff the response
+        # fails format / parse checks, so summing over tokens recovers the
+        # per-sample verdict without decoding again. The scorer also emits a
+        # per-sample `no_tool_calls` flag via reward_extra_info for the LL
+        # soft-fail case (valid format but no <search>/<python> invocation).
         scorer_tensor, reward_extra = compute_reward(phase_batch, self.reward_fn)
         per_sample_score = scorer_tensor.to(reward_tensor.device).sum(dim=-1)
         bad = per_sample_score < 0.0
@@ -76,21 +81,15 @@ class RayECHOTrainer(RayPPOTrainer):
 
         gated = reward_tensor.clone()
         # Soft-fail: zero the dense entropy reward so no-tool rollouts contribute
-        # no LL gradient from their step-<select> tokens; no penalty is written.
+        # no LL gradient from their step-<select> tokens.
         gated[no_tool] = 0.0
-        # Hard-fail: zero the dense reward and place `penalty` at the last
-        # phase-mask position so it contributes to the phase-local PPO loss
-        # (loss_mask == phase mask). Reverse-argmax finds the last index where
-        # the sparse phase mask is 1 since sum-based indexing would miss it.
-        gated[bad] = 0.0
-        if bool(bad.any()):
-            rm = phase_batch.batch["response_mask"].to(torch.long)
-            last_idx = rm.size(1) - 1 - torch.flip(rm, dims=[-1]).argmax(dim=-1)
-            bad_rows = bad.nonzero(as_tuple=True)[0]
-            gated.index_put_(
-                (bad_rows, last_idx[bad_rows].to(gated.device)),
-                torch.full((bad_rows.numel(),), penalty, dtype=gated.dtype, device=gated.device),
-            )
+        # Hard-fail: broadcast `penalty` across every phase-mask token of each
+        # bad-format row. response_mask is 0/1 and already restricted to
+        # phase-local positions upstream, so tokens outside the phase are left
+        # at 0 and the write implicitly overrides the dense entropy reward on
+        # those rows.
+        phase_mask = phase_batch.batch["response_mask"].to(gated.dtype)
+        gated[bad] = penalty * phase_mask[bad]
         return gated, bad_rate, no_tool_rate
 
     def fit(self):

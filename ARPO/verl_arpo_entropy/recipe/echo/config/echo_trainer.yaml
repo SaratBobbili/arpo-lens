@@ -65,7 +65,7 @@ reward_model:
       score_aggregation: mean  # one of {sum, mean}
       entropy:
         scale: 1.0
-        normalize: false
+        normalize: true
         clamp_min: null
         clamp_max: null
         format_gate: true

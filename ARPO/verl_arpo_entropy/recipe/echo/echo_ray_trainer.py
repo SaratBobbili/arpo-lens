@@ -45,52 +45,64 @@ class RayECHOTrainer(RayPPOTrainer):
         # Per-phase reward config block (strategy + strategy-specific params).
         return self.config.reward_model.phase_rewards[phase_name]
 
-    def _build_entropy_reward(self, entropys: torch.Tensor, phase_mask: torch.Tensor, entropy_cfg) -> torch.Tensor:
-        scale = float(entropy_cfg.scale)
-        entropy_reward = entropys.to(torch.float32)
+    def _build_entropy_scalar_reward(self, entropys: torch.Tensor, phase_batch: DataProto, phase_mask_key: str, entropy_cfg):
+        """Sparse entropy reward shaped like the scorer's output.
+
+        Reduces per-token entropy over phase-mask tokens to one per-sample
+        scalar (sum or mean per `entropy_cfg.reduction`), optionally
+        normalized by log(vocab_size) and scaled/clamped, then writes that
+        scalar at the last valid response token. When `format_gate` is on,
+        calls the scorer and overrides bad-format samples with
+        `bad_format_penalty` and LL soft-fail samples (flagged via
+        `no_tool_calls`) with zero. GRPO's `sum(dim=-1)` recovers the same
+        per-sample score as the scorer path, so no dense layout or post-hoc
+        aggregation is needed.
+        """
+        # Phase-local entropy reduced per sample to a single scalar.
+        phase_mask = phase_batch.batch[phase_mask_key].to(torch.float32)
+        ent = entropys.to(torch.float32)
         if bool(entropy_cfg.normalize):
-            vocab_size = self.tokenizer.vocab_size
-            entropy_reward = entropy_reward / math.log(vocab_size)
-        entropy_reward = entropy_reward * scale
+            ent = ent / math.log(self.tokenizer.vocab_size)
+        reduction = entropy_cfg.reduction
+        assert reduction in ("sum", "mean"), f"entropy.reduction must be 'sum' or 'mean', got {reduction!r}."
+        masked = ent * phase_mask
+        if reduction == "sum":
+            per_sample = masked.sum(dim=-1)
+        else:
+            # clamp_min(1.0) guards empty phase masks without affecting the ratio when denom >= 1.
+            denom = phase_mask.sum(dim=-1).clamp_min(1.0)
+            per_sample = masked.sum(dim=-1) / denom
+        per_sample = per_sample * float(entropy_cfg.scale)
         if entropy_cfg.clamp_min is not None or entropy_cfg.clamp_max is not None:
-            entropy_reward = torch.clamp(entropy_reward, min=entropy_cfg.clamp_min, max=entropy_cfg.clamp_max)
-        return entropy_reward * phase_mask.to(torch.float32)
+            per_sample = torch.clamp(per_sample, min=entropy_cfg.clamp_min, max=entropy_cfg.clamp_max)
 
-    def _apply_format_gate(self, phase_batch: DataProto, reward_tensor: torch.Tensor, penalty: float):
-        # Bad-format rollouts: dense penalty over the phase mask so the
-        # post-aggregation per-sample scalar is `penalty` under
-        # score_aggregation=mean and `penalty * denom` under
-        # score_aggregation=sum.
-        # Soft-fail (valid format, no tool call): dense reward zeroed with no
-        # terminal penalty.
-        # Format validity comes from the scorer: ECHORewardManager emits the
-        # scorer scalar at the last valid response token (zeros elsewhere) and
-        # deep_research_echo.compute_score emits exactly -1 iff the response
-        # fails format / parse checks, so summing over tokens recovers the
-        # per-sample verdict without decoding again. The scorer also emits a
-        # per-sample `no_tool_calls` flag via reward_extra_info for the LL
-        # soft-fail case (valid format but no <search>/<python> invocation).
-        scorer_tensor, reward_extra = compute_reward(phase_batch, self.reward_fn)
-        per_sample_score = scorer_tensor.to(reward_tensor.device).sum(dim=-1)
-        bad = per_sample_score < 0.0
-        bad_rate = bad.float().mean().item()
+        metrics: dict = {}
+        if bool(entropy_cfg.get("format_gate", False)):
+            # Scorer emits -1 at the last valid response token iff the phase-local
+            # validator fails, and flags `no_tool_calls` via reward_extra_info for
+            # the LL soft-fail (valid format, no <search>/<python> invoked).
+            scorer_tensor, reward_extra = compute_reward(phase_batch, self.reward_fn)
+            scorer_per_sample = scorer_tensor.to(per_sample.device).sum(dim=-1)
+            bad = scorer_per_sample < 0.0
+            no_tool_flags = reward_extra.get("no_tool_calls", [False] * per_sample.size(0))
+            no_tool = torch.tensor(no_tool_flags, dtype=torch.bool, device=per_sample.device)
+            metrics["reward/bad_format_rate"] = bad.float().mean().item()
+            metrics["reward/no_tool_rate"] = no_tool.float().mean().item()
+            penalty = float(entropy_cfg.bad_format_penalty)
+            per_sample = torch.where(bad, torch.full_like(per_sample, penalty), per_sample)
+            # `no_tool_calls` is only set by the scorer when phase_valid is True,
+            # so it's already mutually exclusive with `bad`; the where is safe.
+            per_sample = torch.where(no_tool, torch.zeros_like(per_sample), per_sample)
 
-        no_tool_flags = reward_extra.get("no_tool_calls", [False] * reward_tensor.size(0))
-        no_tool = torch.tensor(no_tool_flags, dtype=torch.bool, device=reward_tensor.device)
-        no_tool_rate = no_tool.float().mean().item()
+        metrics["reward/entropy_scalar_mean"] = per_sample.mean().detach().item()
 
-        gated = reward_tensor.clone()
-        # Soft-fail: zero the dense entropy reward so no-tool rollouts contribute
-        # no LL gradient from their step-<select> tokens.
-        gated[no_tool] = 0.0
-        # Hard-fail: broadcast `penalty` across every phase-mask token of each
-        # bad-format row. response_mask is 0/1 and already restricted to
-        # phase-local positions upstream, so tokens outside the phase are left
-        # at 0 and the write implicitly overrides the dense entropy reward on
-        # those rows.
-        phase_mask = phase_batch.batch["response_mask"].to(gated.dtype)
-        gated[bad] = penalty * phase_mask[bad]
-        return gated, bad_rate, no_tool_rate
+        # Sparse write at the last valid response token, matching ECHORewardManager's placement.
+        response_length = phase_mask.size(-1)
+        resp_attn = phase_batch.batch["attention_mask"][:, -response_length:]
+        last_idx = (resp_attn.sum(dim=-1).long() - 1).clamp_min(0)
+        reward_tensor = torch.zeros_like(phase_mask)
+        reward_tensor[torch.arange(reward_tensor.size(0), device=reward_tensor.device), last_idx] = per_sample
+        return reward_tensor, metrics
 
     def fit(self):
         """
@@ -302,25 +314,15 @@ class RayECHOTrainer(RayPPOTrainer):
                             if entropys is None:
                                 raise RuntimeError(f"{phase_name} phase uses entropy reward but compute_log_prob did not return entropys.")
                             phase_mask = phase_batch.batch[phase_mask_key]
+                            # Log the phase-masked per-token entropy (pre-reduction) for diagnostics.
                             phase_batch.batch[f"{phase_name}_token_entropy"] = entropys.to(torch.float32) * phase_mask.to(torch.float32)
-                            reward_tensor = self._build_entropy_reward(
+                            reward_tensor, entropy_metrics = self._build_entropy_scalar_reward(
                                 entropys=entropys,
-                                phase_mask=phase_mask,
+                                phase_batch=phase_batch,
+                                phase_mask_key=phase_mask_key,
                                 entropy_cfg=phase_reward_cfg.entropy,
                             )
-                            if bool(phase_reward_cfg.entropy.get("format_gate", False)):
-                                reward_tensor, bad_format_rate, no_tool_rate = self._apply_format_gate(
-                                    phase_batch=phase_batch,
-                                    reward_tensor=reward_tensor,
-                                    penalty=float(phase_reward_cfg.entropy.bad_format_penalty),
-                                )
-                                metrics[f"{phase_prefix}reward/bad_format_rate"] = bad_format_rate
-                                metrics[f"{phase_prefix}reward/no_tool_rate"] = no_tool_rate
-                            metrics[f"{phase_prefix}reward/entropy_reward_mean"] = agg_loss(
-                                loss_mat=reward_tensor,
-                                loss_mask=phase_batch.batch["loss_mask"],
-                                loss_agg_mode=loss_agg_mode,
-                            ).detach().item()
+                            metrics.update(self._prefix_metrics(entropy_metrics, phase_prefix))
 
                         if self.use_reference_policy:
                             with _timer(f"{phase_name}_ref", timing_raw):
@@ -354,23 +356,9 @@ class RayECHOTrainer(RayPPOTrainer):
                             else:
                                 phase_batch.batch["token_level_rewards"] = phase_batch.batch["token_level_scores"]
 
-                            # GRPO reduces token_level_rewards to a per-sample scalar via
-                            # sum(dim=-1). For "mean" aggregation we pre-divide rewards by
-                            # the per-sample phase-mask token count so the same sum recovers
-                            # a mask-aware mean, avoiding any edits to the shared GRPO
-                            # implementation. Rewards are already zero outside the phase
-                            # mask (scorer: sparse last-token scalar; entropy: masked in
-                            # _build_entropy_reward), so scaling by the mask denom is safe.
-                            score_aggregation = phase_reward_cfg.score_aggregation
-                            assert score_aggregation in ("sum", "mean"), (
-                                f"reward_model.phase_rewards.{phase_name}.score_aggregation must be "
-                                f"'sum' or 'mean', got {score_aggregation!r}."
-                            )
-                            if score_aggregation == "mean":
-                                tlr = phase_batch.batch["token_level_rewards"]
-                                denom = phase_batch.batch["response_mask"].to(tlr.dtype).sum(dim=-1, keepdim=True).clamp_min(1.0)
-                                phase_batch.batch["token_level_rewards"] = tlr / denom
-
+                            # Both strategies emit a sparse scalar at the last valid response
+                            # token, so GRPO's sum(dim=-1) directly recovers the per-sample
+                            # score with no further aggregation needed here.
                             phase_batch = compute_advantage(
                                 phase_batch,
                                 adv_estimator=self.config.algorithm.adv_estimator,

@@ -31,45 +31,46 @@ reward_model:
   # order. Must be a permutation of {"high_level", "low_level"}.
   phase_order: ["high_level", "low_level"]
   # Per-phase reward strategy. Each hierarchical phase independently selects how
-  # its token-level reward tensor is produced. Supported strategies:
-  #   scorer  -> ECHORewardManager + custom_reward_function on the decoded answer.
-  #              Emits a scalar on the last response token; can run sync or async.
-  #   entropy -> Per-token policy entropy over the phase's loss-mask tokens,
-  #              optionally normalized by log(vocab_size) and/or clamped, then
-  #              multiplied by `scale` to set the reward magnitude. A format gate
-  #              (see below) can replace the dense reward with a terminal
-  #              `bad_format_penalty` scalar when the scorer deems the response
-  #              unparseable, mirroring the scorer strategy's -1 convention.
+  # its token-level reward tensor is produced. Both strategies emit a sparse
+  # scalar at the last valid response token so GRPO's sum(dim=-1) recovers the
+  # per-sample score directly (no extra aggregation needed in the trainer).
+  # Supported strategies:
+  #   scorer  -> ECHORewardManager + custom_reward_function on the decoded
+  #              answer. Emits -1 on format failure, else the task score (e.g.
+  #              F1 in deep_research_echo), at the last valid response token.
+  #   entropy -> Per-token policy entropy over the phase's loss-mask tokens
+  #              reduced to one per-sample scalar (sum or mean per
+  #              `entropy.reduction`), optionally normalized by log(vocab_size)
+  #              and scaled/clamped, written at the last valid response token.
+  #              When `format_gate` is true, bad-format samples are overridden
+  #              with `bad_format_penalty` and LL soft-fail samples (valid
+  #              format but no <search>/<python>) are zeroed.
   phase_rewards:
     high_level:
       strategy: scorer
-      # How the per-token reward tensor is reduced to a per-sample scalar inside
-      # GRPO's group-normalization step. "sum" keeps the sparse scorer scalar
-      # intact (mean would divide it by the HL mask token count and suppress
-      # signal for longer responses). "mean" takes a mask-aware mean over the
-      # phase's tokens so longer spans don't inflate advantage magnitude just
-      # by token count.
-      score_aggregation: sum  # one of {sum, mean}
       # `entropy` block below is consulted only when strategy == "entropy".
       entropy:
-        scale: 1.0        # Multiplies entropy before writing the token-level reward.
-        normalize: false  # If true, divide entropy by log(vocab_size) for bounded scale.
+        reduction: sum    # How per-token entropy is reduced to a per-sample scalar: {sum, mean}.
+        scale: 1.0        # Multiplies the reduced entropy before writing the scalar.
+        normalize: false  # If true, divide per-token entropy by log(vocab_size) for bounded scale.
         clamp_min: null   # Optional lower bound applied after scale/normalize.
         clamp_max: null   # Optional upper bound applied after scale/normalize.
         # When true, samples whose decoded response fails the scorer's
-        # format/parse checks have their dense entropy reward zeroed and receive
-        # `bad_format_penalty` at the last valid response token instead. Good-
-        # format samples keep the per-token entropy reward untouched.
+        # phase-local format/parse checks have their entropy scalar replaced
+        # with `bad_format_penalty`, and LL soft-fail samples (valid format,
+        # no tool invoked) are zeroed. Good-format samples keep their entropy
+        # scalar untouched.
         format_gate: true
         # Terminal scalar written on format-gate failure. Only consulted when
         # format_gate is true. Matches the scorer strategy's hard-penalty value.
         bad_format_penalty: -1.0
     low_level:
       strategy: entropy
-      # LL uses mean so per-sample advantage reflects average entropy per LL
-      # token rather than the sum, which would be length-biased.
-      score_aggregation: mean  # one of {sum, mean}
       entropy:
+        # LL uses mean so per-sample advantage reflects average entropy per LL
+        # token rather than the sum, which would be length-biased across
+        # variable-length tool-call traces.
+        reduction: mean
         scale: 1.0
         normalize: true
         clamp_min: null

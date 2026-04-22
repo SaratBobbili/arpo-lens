@@ -24,6 +24,12 @@ reward_model:
   # Start ECHO with a dedicated manager key so we can evolve reward logic independently.
   # Only consulted by phases whose strategy == "scorer".
   reward_manager: echo
+  # Order in which the hierarchical phases are executed within each training
+  # step. The first phase in this list runs its full GRPO pipeline
+  # (rollout -> reward -> advantage -> actor/critic update) before the second
+  # phase starts. Phases whose rollout budget is 0 are skipped regardless of
+  # order. Must be a permutation of {"high_level", "low_level"}.
+  phase_order: ["high_level", "low_level"]
   # Per-phase reward strategy. Each hierarchical phase independently selects how
   # its token-level reward tensor is produced. Supported strategies:
   #   scorer  -> ECHORewardManager + custom_reward_function on the decoded answer.

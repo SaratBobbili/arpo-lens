@@ -165,11 +165,23 @@ class RayECHOTrainer(RayPPOTrainer):
                     metrics["training/high_level_rollout_budget"] = high_level_budget
                     metrics["training/low_level_rollout_budget"] = low_level_budget
 
-                    phase_specs = []
-                    if high_level_budget > 0:
-                        phase_specs.append(("high_level", high_level_budget, "high_level_loss_mask"))
-                    if low_level_budget > 0:
-                        phase_specs.append(("low_level", low_level_budget, "low_level_loss_mask"))
+                    # Phase metadata keyed by phase name so `phase_order` from config
+                    # selects which phase's GRPO pipeline runs first. Each entry is
+                    # (rollout_budget, loss_mask_key); phases with zero budget are
+                    # skipped while preserving the requested order.
+                    phase_registry = {
+                        "high_level": (high_level_budget, "high_level_loss_mask"),
+                        "low_level": (low_level_budget, "low_level_loss_mask"),
+                    }
+                    phase_order = list(self.config.reward_model.phase_order)
+                    assert set(phase_order) == set(phase_registry.keys()), (
+                        f"reward_model.phase_order must be a permutation of {sorted(phase_registry)}, got {phase_order}."
+                    )
+                    phase_specs = [
+                        (name, phase_registry[name][0], phase_registry[name][1])
+                        for name in phase_order
+                        if phase_registry[name][0] > 0
+                    ]
                     assert phase_specs, "At least one hierarchical phase must have positive rollout budget."
 
                     norm_adv_by_std_in_grpo = self.config.algorithm.get("norm_adv_by_std_in_grpo", True)

@@ -8,39 +8,57 @@ cd "$SCRIPT_DIR"
 # Cache/log folder for this orchestrator.
 mkdir -p logs
 
-# Required for tool-enabled inference; export this before running.
-: "${BING_API_KEY:?BING_API_KEY must be set}"
+# -------------------- Editable Run Config --------------------
+# Bing search key used by tool-enabled inference.
+BING_API_KEY=""
+# Bright Data proxy zone for Bing search requests.
+BING_ZONE="${BING_ZONE:-serp_api1}"
+# Bright Data proxy country code for Bing search (cc URL parameter).
+BING_LOCATION="${BING_LOCATION:-us}"
 
-# Main model checkpoint or HuggingFace model id used for reasoning generation.
+# Main reasoning model checkpoint/HF id served on ports 8002/8003.
 REASON_MODEL_PATH="${REASON_MODEL_PATH:-Qwen/Qwen2.5-7B-Instruct}"
 
-# API alias served by reasoning endpoints; must match infer DEFAULT_MODEL.
+# Served model alias for reasoning endpoints; must match infer DEFAULT_MODEL.
 REASON_MODEL_NAME="${REASON_MODEL_NAME:-Qwen2.5-7B-Instruct}"
 
-# Summarization helper checkpoint/model id used by SDS tool flow.
+# Summarization helper checkpoint/HF id served on ports 8004/8005.
 SUMM_MODEL_PATH="${SUMM_MODEL_PATH:-Qwen/Qwen2.5-7B-Instruct}"
 
-# API alias served by summarization endpoints; must match infer SUMM_MODEL_NAME.
+# Served model alias for summarization endpoints; must match infer SUMM_MODEL_NAME.
 SUMM_MODEL_NAME="${SUMM_MODEL_NAME:-Qwen2.5-7B-Instruct}"
 
-# Inference mode: completion_sds uses summarization model; completion/default does not.
+# completion_sds enables SDS with summarization; completion/default skips summarization.
 INFER_MODE="${INFER_MODE:-completion_sds}"
 
-# Number of examples per dataset for this run.
-COUNTS="${COUNTS:-50}"
+# Conda root and env used by the Python tool executor.
+CONDA_PATH="${CONDA_PATH:-/scratch/user/saratb_tamu.edu/miniconda3}"
+CONDA_ENV="${CONDA_ENV:-evaluation}"
 
-# Output directory root for inference artifacts and metrics.
-OUTPUT_PATH="${OUTPUT_PATH:-outputs/hf_math_4qa}"
+# Number of samples per dataset (use a small number for smoke tests).
+COUNTS="${COUNTS:-20}"
 
-# Toggle LLM-as-judge at evaluation time.
+# Output folder for generated predictions and metrics.
+OUTPUT_PATH="${OUTPUT_PATH:-outputs/hf_math_4qa_smoke}"
+
+# Enable LLM-as-judge at evaluation time.
 USE_LLM="${USE_LLM:-false}"
 
-# Optional judge endpoint and model; only used when USE_LLM=true.
+# Judge endpoint/model used only when USE_LLM=true.
 API_BASE_URL="${API_BASE_URL:-http://localhost:8001/v1}"
 JUDGE_MODEL_NAME="${JUDGE_MODEL_NAME:-Qwen2.5-72B-Instruct}"
 
-# Delay to let vLLM endpoints come up before inference starts.
+# Warmup wait time before starting inference.
 SERVER_BOOT_WAIT_SECONDS="${SERVER_BOOT_WAIT_SECONDS:-60}"
+
+# Max seconds to wait for each endpoint health check.
+ENDPOINT_READY_TIMEOUT_SECONDS="${ENDPOINT_READY_TIMEOUT_SECONDS:-300}"
+# -------------------------------------------------------------
+
+if [[ -z "$BING_API_KEY" ]]; then
+  echo "BING_API_KEY is empty. Set it in this script or via environment."
+  exit 1
+fi
 
 REASON_PID=""
 SUMM_PID=""
@@ -54,6 +72,23 @@ cleanup() {
   fi
 }
 trap cleanup EXIT SIGINT SIGTERM
+
+wait_for_endpoint() {
+  local endpoint="$1"
+  local timeout="$2"
+  local waited=0
+  echo "Waiting for endpoint: $endpoint"
+  while (( waited < timeout )); do
+    if curl -sS --max-time 3 "${endpoint}/models" >/dev/null 2>&1; then
+      echo "Endpoint ready: $endpoint"
+      return 0
+    fi
+    sleep 2
+    waited=$((waited + 2))
+  done
+  echo "Endpoint did not become ready within ${timeout}s: $endpoint"
+  return 1
+}
 
 echo "[1/4] Starting reasoning servers..."
 MODEL_PATH="$REASON_MODEL_PATH" MODEL_NAME="$REASON_MODEL_NAME" \
@@ -74,15 +109,26 @@ fi
 echo "Waiting $SERVER_BOOT_WAIT_SECONDS seconds for server warmup..."
 sleep "$SERVER_BOOT_WAIT_SECONDS"
 
+wait_for_endpoint "http://localhost:8002/v1" "$ENDPOINT_READY_TIMEOUT_SECONDS"
+wait_for_endpoint "http://localhost:8003/v1" "$ENDPOINT_READY_TIMEOUT_SECONDS"
+if [[ "$INFER_MODE" == "completion_sds" ]]; then
+  wait_for_endpoint "http://localhost:8004/v1" "$ENDPOINT_READY_TIMEOUT_SECONDS"
+  wait_for_endpoint "http://localhost:8005/v1" "$ENDPOINT_READY_TIMEOUT_SECONDS"
+fi
+
 echo "[3/4] Running inference on math + 4QA..."
 MODEL_PATH="$REASON_MODEL_PATH" \
 DEFAULT_MODEL="$REASON_MODEL_NAME" \
 SUMM_MODEL_PATH="$SUMM_MODEL_PATH" \
 SUMM_MODEL_NAME="$SUMM_MODEL_NAME" \
 INFER_MODE="$INFER_MODE" \
+CONDA_PATH="$CONDA_PATH" \
+CONDA_ENV="$CONDA_ENV" \
 COUNTS="$COUNTS" \
 OUTPUT_PATH="$OUTPUT_PATH" \
 BING_API_KEY="$BING_API_KEY" \
+BING_ZONE="$BING_ZONE" \
+BING_LOCATION="$BING_LOCATION" \
 bash echo_infer_math_4qa_hf.sh | tee logs/run_infer_math_4qa_hf.log
 
 echo "[4/4] Evaluating outputs..."

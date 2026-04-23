@@ -68,6 +68,7 @@ HIGH_LEVEL_BUDGET=8                 # Number of rollouts used for high-level mas
 ENABLE_MULTI_TURN=False            # Toggle multi-turn tool interaction in rollout
 # ============================ Rollout Tools Configuration ==========================
 SEARCH_CACHE_PATH="${ARPO_ROOT}/search_cache/search_cache.json" # Modify
+OPENAI_API_KEY="<your_openai_api_key>"  # OpenAI key for web search
 
 # ============================ Reward Model Configuration ==========================
 # Reward model settings
@@ -89,7 +90,7 @@ ROLLOUT_SAVE_PATH="${SAVE_PATH}/rollout"
 # ============================ WandB Configuration ============================
 # WandB settings
 WANDB_API_KEY="0986ce441bdc0e809cd73f235d468fa624518fe8" # Modify your wandb key
-SEARCH_CLASS_PATH="verl.workers.agent.tools.search_tool.BingSearchTool"
+SEARCH_CLASS_PATH="verl.workers.agent.tools.search_tool_echo.OpenAISearchTool"
 # ============================ Preparation ============================
 # Login to WandB (if API key is provided)
 if [ "$WANDB_API_KEY" != "" ]; then
@@ -138,6 +139,7 @@ python3 -m recipe.echo.main_echo \
     actor_rollout_ref.rollout.gpu_memory_utilization=0.7 \
     actor_rollout_ref.rollout.n=${ROLLOUT_N} \
     actor_rollout_ref.rollout.high_level_budget=${HIGH_LEVEL_BUDGET} \
+    actor_rollout_ref.rollout.tools.tool_instances.search.params.api_key=${OPENAI_API_KEY} \
     actor_rollout_ref.rollout.tools.tool_instances.search.params.cache_file=${SEARCH_CACHE_PATH} \
     actor_rollout_ref.rollout.tools.tool_instances.search.class_path=${SEARCH_CLASS_PATH} \
     actor_rollout_ref.rollout.multi_turn.enable=${ENABLE_MULTI_TURN} \

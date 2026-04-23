@@ -148,15 +148,15 @@ python train_classifier.py --ref_model_id meta-llama/Meta-Llama-3-8B-Instruct --
    
    srun --partition long --cpus-per-task=8 --gres=gpu:1 -t 16:00:00 -J pita_s4 --pty bash
     srun --partition long --cpus-per-task=8 --gres=gpu:1 -t 16:00:00 -J pita_s8 --pty bash
-srun --partition long --cpus-per-task=8 --gres=gpu:1 -t 16:00:00 -J alpa_5K --pty bash
+srun --partition long --cpus-per-task=8 --gres=gpu:1 -t 16:00:00 -J pita_hhrlhf --pty bash
 srun --partition long --cpus-per-task=8 --gres=gpu:1 -t 16:00:00 -J alpa_15K --pty bash
 srun --partition long --cpus-per-task=8 --gres=gpu:1 -t 16:00:00 -J sft_long --pty bash
 
-srun --partition 2xlong --cpus-per-task=8 --gres=gpu:H200:8 -t 2-00:00:00 -J sft-2x --pty bash
+srun --partition 2xlong --cpus-per-task=8 --gres=gpu:H200:8 -t 2-00:00:00 -J echo_a --pty bash
 
-srun --partition short --cpus-per-task=8 --gres=gpu:H200:4 -t 4:00:00 -J echo --pty bash
+srun --partition short --cpus-per-task=8 --gres=gpu:8 -t 4:00:00 -J echo_kl --pty bash
 
-srun --partition long --cpus-per-task=8 --gres=gpu:H200:8 -t 16:00:00 -J echo_16r --pty bash
+srun --partition long --cpus-per-task=8 --gres=gpu:H200:8 -t 16:00:00 -J echo-2 --pty bash
 
 
 python train_classifier_sample.py \

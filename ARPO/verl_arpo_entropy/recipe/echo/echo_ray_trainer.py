@@ -47,6 +47,36 @@ class RayECHOTrainer(RayPPOTrainer):
         # Per-phase reward config block (strategy + strategy-specific params).
         return self.config.reward_model.phase_rewards[phase_name]
 
+    @staticmethod
+    def _build_scorer_metrics(reward_extra_info: dict) -> dict:
+        metrics: dict = {}
+        if not reward_extra_info:
+            return metrics
+
+        if "score" in reward_extra_info:
+            scores = torch.tensor(reward_extra_info["score"], dtype=torch.float32)
+            metrics["reward/score_mean"] = scores.mean().item()
+            metrics["reward/bad_format_rate"] = (scores < 0.0).to(torch.float32).mean().item()
+            metrics["reward/format_pass_rate"] = (scores >= 0.0).to(torch.float32).mean().item()
+
+        if "f1_score" in reward_extra_info:
+            f1_scores = torch.tensor(reward_extra_info["f1_score"], dtype=torch.float32)
+            metrics["reward/f1_mean"] = f1_scores.mean().item()
+
+        if "no_tool_calls" in reward_extra_info:
+            no_tool = torch.tensor(reward_extra_info["no_tool_calls"], dtype=torch.float32)
+            metrics["reward/no_tool_rate"] = no_tool.mean().item()
+
+        if "high_level_valid" in reward_extra_info:
+            hl_valid = torch.tensor(reward_extra_info["high_level_valid"], dtype=torch.float32)
+            metrics["reward/high_level_valid_rate"] = hl_valid.mean().item()
+
+        if "low_level_valid" in reward_extra_info:
+            ll_valid = torch.tensor(reward_extra_info["low_level_valid"], dtype=torch.float32)
+            metrics["reward/low_level_valid_rate"] = ll_valid.mean().item()
+
+        return metrics
+
     def _build_entropy_scalar_reward(self, entropys: torch.Tensor, phase_batch: DataProto, phase_mask_key: str, entropy_cfg):
         """Sparse entropy reward shaped like the scorer's output.
 
@@ -357,6 +387,13 @@ class RayECHOTrainer(RayPPOTrainer):
                             phase_batch.batch["token_level_scores"] = reward_tensor
                             if phase_reward_extra_infos_dict:
                                 phase_batch.non_tensor_batch.update({k: np.array(v) for k, v in phase_reward_extra_infos_dict.items()})
+                                if phase_strategy == "scorer":
+                                    metrics.update(
+                                        self._prefix_metrics(
+                                            self._build_scorer_metrics(phase_reward_extra_infos_dict),
+                                            phase_prefix,
+                                        )
+                                    )
 
                             if self.config.algorithm.use_kl_in_reward:
                                 phase_batch, kl_metrics = apply_kl_penalty(
@@ -382,6 +419,12 @@ class RayECHOTrainer(RayPPOTrainer):
                                 use_pf_ppo=self.config.algorithm.use_pf_ppo,
                                 pf_ppo_reweight_method=self.config.algorithm.pf_ppo.reweight_method,
                                 pf_ppo_weight_pow=self.config.algorithm.pf_ppo.weight_pow,
+                            )
+                            metrics.update(
+                                self._prefix_metrics(
+                                    compute_data_metrics(batch=phase_batch, use_critic=self.use_critic),
+                                    phase_prefix,
+                                )
                             )
 
                         if self.use_critic:
@@ -435,7 +478,6 @@ class RayECHOTrainer(RayPPOTrainer):
                     }
                 )
                 # collect metrics
-                metrics.update(compute_data_metrics(batch=batch, use_critic=self.use_critic))
                 metrics.update(compute_timing_metrics(batch=batch, timing_raw=timing_raw))
                 n_gpus = self.resource_pool_manager.get_n_gpus()
                 metrics.update(compute_throughout_metrics(batch=batch, timing_raw=timing_raw, n_gpus=n_gpus))

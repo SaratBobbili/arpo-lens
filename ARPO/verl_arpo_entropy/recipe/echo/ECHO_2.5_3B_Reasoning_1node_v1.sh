@@ -66,8 +66,7 @@ ROLLOUT_N=16                         # Number of responses generated per sample
 HIGH_LEVEL_BUDGET=8                 # Number of rollouts used for high-level masked update
 ENABLE_MULTI_TURN=False            # Toggle multi-turn tool interaction in rollout
 # ============================ Rollout Tools Configuration ==========================
-MASTER_SEARCH_CACHE_PATH="${ARPO_ROOT}/search_cache/search_cache.json" # Shared read-only seed cache containing accumulated historical search results
-SEARCH_CACHE_PATH="${ARPO_ROOT}/search_cache/${EXPERIMENT_NAME}.json" # Per-run writable cache file initialized from master to avoid lock contention
+SEARCH_CACHE_PATH="${ARPO_ROOT}/search_cache/search_cache.json" # Shared cache file used directly by all runs
 
 # ============================ Reward Model Configuration ==========================
 # Reward model settings
@@ -110,12 +109,6 @@ fi
 # Create rollout save directory
 if [ ! -d "$ROLLOUT_SAVE_PATH" ]; then
     mkdir -p $ROLLOUT_SAVE_PATH
-fi
-
-# Initialize per-run cache from the shared master cache (once per run cache file).
-if [ ! -f "$SEARCH_CACHE_PATH" ] && [ -f "$MASTER_SEARCH_CACHE_PATH" ]; then
-    mkdir -p "$(dirname "$SEARCH_CACHE_PATH")"
-    cp "$MASTER_SEARCH_CACHE_PATH" "$SEARCH_CACHE_PATH"
 fi
 
 # ============================ Start Training ============================

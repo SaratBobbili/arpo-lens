@@ -139,7 +139,8 @@ python3 -m recipe.echo.main_echo \
     actor_rollout_ref.rollout.n=${ROLLOUT_N} \
     actor_rollout_ref.rollout.high_level_budget=${HIGH_LEVEL_BUDGET} \
     actor_rollout_ref.rollout.mask_categories.select=high \
-    actor_rollout_ref.rollout.tools.tool_instances.python.params.conda_path=/mnt/shared-scratch/Shakkottai_S/saratb/miniconda3 \
+    actor_rollout_ref.rollout.tools.tool_instances.python.params.conda_path=/scratch/user/saratb_tamu.edu/miniconda3 \
+    actor_rollout_ref.rollout.tools.tool_instances.python.params.conda_env=arpo \
     actor_rollout_ref.rollout.tools.tool_instances.search.params.cache_file=${SEARCH_CACHE_PATH} \
     actor_rollout_ref.rollout.tools.tool_instances.search.class_path=${SEARCH_CLASS_PATH} \
     actor_rollout_ref.rollout.multi_turn.enable=${ENABLE_MULTI_TURN} \

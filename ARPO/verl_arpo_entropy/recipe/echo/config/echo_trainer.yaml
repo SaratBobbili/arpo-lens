@@ -112,8 +112,8 @@ actor_rollout_ref:
         python:
           class_path: verl.workers.agent.tools.python_tool.PythonTool
           params:
-            conda_path: /path/to/conda   # override from launch script
-            conda_env: verl
+            conda_path: /scratch/user/saratb_tamu.edu/miniconda3   # conda root used to locate the python interpreter for the tool subprocess
+            conda_env: arpo                                        # env name under ${conda_path}/envs/ providing the interpreter + sympy/numpy etc.
         search:
           class_path: verl.workers.agent.tools.search_tool.BingSearchTool
           params:

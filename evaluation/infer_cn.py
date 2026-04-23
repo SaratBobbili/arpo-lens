@@ -64,8 +64,8 @@ def parse_arguments():
                                  help="Prompt type (code_search, search, math, base)")
     inference_group.add_argument("--counts", type=int, default=100,
                                  help="Number of samples to process")
-    inference_group.add_argument("--data_path", type=str, default=None,
-                                 help="Custom data path. Datasets are expected at /root_path/dataset_name/test.jsonl")
+    inference_group.add_argument("--data_path", "--dataset_path", dest="dataset_path", type=str, default="data",
+                                 help="Dataset root path. Datasets are expected at /root_path/dataset_name/test.jsonl")
     inference_group.add_argument("--max_python_times", type=int, default=5,
                                  help="Maximum number of Python tool invocations")
     inference_group.add_argument("--max_search_times", type=int, default=3,
@@ -74,7 +74,7 @@ def parse_arguments():
                                  help="Timeout in seconds for processing a single sample")
 
     tools_group = parser.add_argument_group("Tool Configuration")
-    tools_group.add_argument("--conda_path", type=str",
+    tools_group.add_argument("--conda_path", type=str,
                              help="Path to Conda installation")
     tools_group.add_argument("--conda_env", type=str,
                              help="Conda environment name")
@@ -98,7 +98,7 @@ def parse_arguments():
                              help="Local summarization LLM API endpoints")
     tools_group.add_argument("--summ_model_name", type=str, default="Qwen2.5-72B-Instruct",
                              help="Name of local summarization LLM")
-    tools_group.add_argument("--summ_model_path", type=str",
+    tools_group.add_argument("--summ_model_path", type=str,
                              help="Path to local summarization LLM for tokenizer")
     tools_group.add_argument("--search_cache_file", type=str, default="search_cache.db",
                              help="Cache file for search results")

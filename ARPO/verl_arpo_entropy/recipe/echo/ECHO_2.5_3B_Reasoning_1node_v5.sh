@@ -32,7 +32,7 @@ export PYTHONPATH="${VERL_ROOT}:$PYTHONPATH"
 # ============================ Basic Configuration ============================
 # Experiment name and project
 PROJECT_NAME="qwen3B" # Modify experiment group
-EXPERIMENT_NAME="echo3B_reward_echo" # Modify experiment name
+EXPERIMENT_NAME="echo3B_entropy_sum_hl_ll_sel_low" # Modify experiment name
 
 
 # Configuration file path
@@ -57,7 +57,7 @@ VALID_FILES="${ARPO_ROOT}/rl_datasets/valid.parquet" # Modify validation data pa
 
 # ============================ Model Configuration ============================
 # Actor: HF checkpoint dir (LLaMA-Factory SFT writes under arpo_train_sft/checkpoints/...)
-ACTOR_MODEL_PATH="${REPO_ROOT}/LLaMA-Factory/arpo_train_sft/checkpoints/echo-sft_Qwen2.5-3B_2000"
+ACTOR_MODEL_PATH="${REPO_ROOT}/LLaMA-Factory/arpo_train_sft/checkpoints/Qwen2.5-3B"
 
 # ============================ Rollout Configuration ==========================
 # Rollout settings
@@ -114,6 +114,7 @@ python3 -m recipe.echo.main_echo \
     algorithm.adv_estimator=grpo \
     algorithm.kl_ctrl.kl_coef=0.0 \
     algorithm.norm_adv_by_std_in_grpo=False \
+    reward_model.phase_rewards.low_level.entropy.reduction=sum \
     data.train_files=${TRAIN_FILES} \
     data.val_files=${VALID_FILES} \
     data.prompt_key=${PROMPT_KEY} \

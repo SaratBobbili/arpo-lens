@@ -69,6 +69,7 @@ class AsyncInference:
         search_tool = BingSearchTool(
             api_key=self.args.bing_api_key,
             zone=self.args.bing_zone,
+            location=self.args.bing_location,
             max_results=self.args.search_max_results,
             result_length=self.args.search_result_length,
             requests_per_second=self.args.bing_requests_per_second,
@@ -266,6 +267,7 @@ class AsyncInferenceCompletionSDS(AsyncInferenceCompletion):
         search_tool = BingSearchToolSDS(
             api_key=self.args.bing_api_key,
             zone=self.args.bing_zone,
+            location=self.args.bing_location,
             max_results=self.args.search_max_results,
             result_length=self.args.search_result_length,
             requests_per_second=self.args.bing_requests_per_second,

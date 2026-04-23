@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 cd "$SCRIPT_DIR"
-export PYTHONPATH="$(pwd):$PYTHONPATH"
+export PYTHONPATH="$(pwd):${PYTHONPATH:-}"
 mkdir -p logs
 
 # Root output directory created by inference script.

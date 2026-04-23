@@ -85,6 +85,8 @@ def parse_arguments():
                              help="Bing Search API key")
     tools_group.add_argument("--bing_zone", type=str, default="serp_api1",
                              help="Bing search region")
+    tools_group.add_argument("--bing_location", type=str, default="us",
+                             help="Country code used for Bing cc parameter")
     tools_group.add_argument("--search_max_results", type=int, default=10,
                              help="Maximum number of search results")
     tools_group.add_argument("--search_result_length", type=int, default=1000,

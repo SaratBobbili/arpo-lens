@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 cd "$SCRIPT_DIR"
-export PYTHONPATH="$(pwd):$PYTHONPATH"
+export PYTHONPATH="$(pwd):${PYTHONPATH:-}"
 mkdir -p logs
 
 # Evaluated datasets: 5 math + 4 knowledge-intensive QA.
@@ -60,9 +60,15 @@ SAMPLE_TIMEOUT="${SAMPLE_TIMEOUT:-900}"
 MAX_CONCURRENT="${MAX_CONCURRENT:-32}"
 PYTHON_MAX_CONCURRENT="${PYTHON_MAX_CONCURRENT:-16}"
 
+# Python tool execution environment.
+CONDA_PATH="${CONDA_PATH:-/scratch/user/saratb_tamu.edu/miniconda3}"
+CONDA_ENV="${CONDA_ENV:-evaluation}"
+
 # Bing credentials for search tool.
 BING_API_KEY="${BING_API_KEY:-}"
 BING_ZONE="${BING_ZONE:-serp_api1}"
+# Bing proxy country code used in Bright Data target URL (maps to cc=... in Bing URL).
+BING_LOCATION="${BING_LOCATION:-us}"
 
 # Search retrieval controls.
 SEARCH_MAX_RESULTS="${SEARCH_MAX_RESULTS:-10}"
@@ -108,8 +114,11 @@ CMD+=(--min_p 0.0)
 CMD+=(--repetition_penalty 1.1)
 CMD+=(--include_stop_str_in_output true)
 CMD+=(--python_max_concurrent "$PYTHON_MAX_CONCURRENT")
+CMD+=(--conda_path "$CONDA_PATH")
+CMD+=(--conda_env "$CONDA_ENV")
 CMD+=(--bing_api_key "$BING_API_KEY")
 CMD+=(--bing_zone "$BING_ZONE")
+CMD+=(--bing_location "$BING_LOCATION")
 CMD+=(--search_max_results "$SEARCH_MAX_RESULTS")
 CMD+=(--search_result_length "$SEARCH_RESULT_LENGTH")
 CMD+=(--bing_requests_per_second "$BING_REQUESTS_PER_SECOND")

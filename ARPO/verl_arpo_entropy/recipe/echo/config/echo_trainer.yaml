@@ -117,7 +117,11 @@ actor_rollout_ref:
         search:
           class_path: verl.workers.agent.tools.search_tool.BingSearchTool
           params:
-            cache_file: null             # override from launch script
+            api_key: null                # Bright Data API token for api.brightdata.com/request; override from launch script
+            zone: null                   # Bright Data SERP zone name (e.g. serp_api1); override from launch script
+            cache_file: null             # on-disk search cache path; override from launch script
+            location: us                 # Country code appended as &cc=<code> to the Bing URL; also selects the Bright Data proxy geo. "us" is faster/more reliable from this cluster than "cn".
+            request_timeout: 120         # Per-HTTP-call read timeout (s) for api.brightdata.com; must exceed Brightdata SERP tail (~30-60s+ under load) to avoid spurious ReadTimeout retries.
 
 trainer:
   # Group experiments under a recipe-specific default project.

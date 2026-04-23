@@ -86,10 +86,15 @@ TEST_FREQ=5                        # Test frequency
 SAVE_PATH="${ARPO_ROOT}/checkpoints/${EXPERIMENT_NAME}" # Modify save path
 ROLLOUT_SAVE_PATH="${SAVE_PATH}/rollout"
 
-# ============================ WandB Configuration ============================
+# ============================ WandB / API Keys ==============================
 # WandB settings
 WANDB_API_KEY="0986ce441bdc0e809cd73f235d468fa624518fe8" # Modify your wandb key
 SEARCH_CLASS_PATH="verl.workers.agent.tools.search_tool.BingSearchTool"
+# Bright Data (third-party Bing SERP used by BingSearchTool -> api.brightdata.com/request).
+#BRIGHTDATA_API_KEY="" # Bright Data API token; set manually in terminal before launch
+BRIGHTDATA_ZONE="serp_api1"                    # Bright Data SERP zone configured in your Bright Data account
+BRIGHTDATA_LOCATION="us"                       # Country code passed to Bing via &cc=<code>; also selects the Bright Data proxy geo. "us" routes through US proxies (faster+more reliable from this cluster than "cn", which periodically returns HTTP 200 with empty body under load).
+BRIGHTDATA_TIMEOUT=120                         # Per-HTTP-call read timeout (s) to api.brightdata.com. Brightdata SERP tail latency is ~30-60s+ under concurrent rollout load, so 120 absorbs the tail and avoids spurious retries.
 # ============================ Preparation ============================
 # Login to WandB (if API key is provided)
 if [ "$WANDB_API_KEY" != "" ]; then
@@ -137,12 +142,16 @@ python3 -m recipe.echo.main_echo \
     actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
     actor_rollout_ref.rollout.name=${ROLLOUT_NAME} \
     actor_rollout_ref.rollout.mode=${ROLLOUT_MODE} \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.4 \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.7 \
     actor_rollout_ref.rollout.n=${ROLLOUT_N} \
     actor_rollout_ref.rollout.high_level_budget=${HIGH_LEVEL_BUDGET} \
     actor_rollout_ref.rollout.tools.tool_instances.python.params.conda_path=/scratch/user/saratb_tamu.edu/miniconda3 \
     actor_rollout_ref.rollout.tools.tool_instances.python.params.conda_env=arpo \
     actor_rollout_ref.rollout.tools.tool_instances.search.params.cache_file=${SEARCH_CACHE_PATH} \
+    actor_rollout_ref.rollout.tools.tool_instances.search.params.api_key=${BRIGHTDATA_API_KEY} \
+    actor_rollout_ref.rollout.tools.tool_instances.search.params.zone=${BRIGHTDATA_ZONE} \
+    actor_rollout_ref.rollout.tools.tool_instances.search.params.location=${BRIGHTDATA_LOCATION} \
+    actor_rollout_ref.rollout.tools.tool_instances.search.params.request_timeout=${BRIGHTDATA_TIMEOUT} \
     actor_rollout_ref.rollout.tools.tool_instances.search.class_path=${SEARCH_CLASS_PATH} \
     actor_rollout_ref.rollout.multi_turn.enable=${ENABLE_MULTI_TURN} \
     actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=$((4*(MAX_PROMPT_LENGTH+MAX_RESPONSE_LENGTH))) \

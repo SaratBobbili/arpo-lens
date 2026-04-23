@@ -34,6 +34,7 @@ class BingSearchTool(BaseTool):
         max_results: int = 10,
         result_length: int = 1000,
         location: str = "cn",
+        request_timeout: int = 120,
         cache_file: Optional[str] = None,
         async_cache_write: bool = True,
         cache_refresh_interval: float = 15.0
@@ -47,6 +48,9 @@ class BingSearchTool(BaseTool):
             max_results: Maximum number of search results to return
             result_length: Maximum length of each result snippet
             location: Country code for search localization
+            request_timeout: Per-HTTP-call read timeout (seconds) for api.brightdata.com.
+                Brightdata SERP tail latency is ~30-60s+ under load, so defaults to 120
+                to absorb the tail rather than forcing the outer tool harness to retry.
             cache_file: Path to cache file (if None, uses ~/.verl_cache/bing_search_cache.json)
             async_cache_write: Whether to write cache updates asynchronously
             cache_refresh_interval: Minimum seconds between cache file checks
@@ -57,6 +61,7 @@ class BingSearchTool(BaseTool):
         self._max_results = max_results
         self._result_length = result_length
         self._location = location
+        self._request_timeout = request_timeout
         
         # Cache and synchronization
         self._cache = {}
@@ -377,13 +382,13 @@ class BingSearchTool(BaseTool):
             timeout=timeout
         )
 
-    def execute(self, query: str, timeout: int = 60) -> str:
+    def execute(self, query: str, timeout: Optional[int] = None) -> str:
         """
         Execute Bing search query.
 
         Args:
             query: Search query string
-            timeout: API request timeout in seconds
+            timeout: API request timeout in seconds; defaults to self._request_timeout
 
         Returns:
             Formatted search results as string
@@ -402,7 +407,7 @@ class BingSearchTool(BaseTool):
 
         try:
             # Make API request
-            response = self._make_request(query, timeout)
+            response = self._make_request(query, timeout if timeout is not None else self._request_timeout)
 
             if response.status_code != 200:
                 error_msg = f"HTTP {response.status_code}: {response.text}"

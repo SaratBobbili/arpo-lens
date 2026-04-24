@@ -32,7 +32,7 @@ export PYTHONPATH="${VERL_ROOT}:$PYTHONPATH"
 # ============================ Basic Configuration ============================
 # Experiment name and project
 PROJECT_NAME="qwen3B" # Modify experiment group
-EXPERIMENT_NAME="echo3B_ll_hl_sel_high" # phase_order=[low,high], select=high
+EXPERIMENT_NAME="echo3B_c4_hl_ll" # validator profile c4 (only <think>/<answer> HL; first_select + select + search + python LL), phase_order=[high_level, low_level]
 
 # Configuration file path
 CONFIG_PATH="${SCRIPT_DIR}/config" # ECHO recipe config colocated with this launch script
@@ -143,7 +143,12 @@ python3 -m recipe.echo.main_echo \
     actor_rollout_ref.rollout.gpu_memory_utilization=0.7 \
     actor_rollout_ref.rollout.n=${ROLLOUT_N} \
     actor_rollout_ref.rollout.high_level_budget=${HIGH_LEVEL_BUDGET} \
-    actor_rollout_ref.rollout.mask_categories.select=high \
+    actor_rollout_ref.rollout.mask_categories.first_select=low \
+    actor_rollout_ref.rollout.mask_categories.select=low \
+    actor_rollout_ref.rollout.mask_categories.think=high \
+    actor_rollout_ref.rollout.mask_categories.answer=high \
+    actor_rollout_ref.rollout.mask_categories.search=low \
+    actor_rollout_ref.rollout.mask_categories.python=low \
     actor_rollout_ref.rollout.tools.tool_instances.python.params.conda_path=/scratch/user/saratb_tamu.edu/miniconda3 \
     actor_rollout_ref.rollout.tools.tool_instances.python.params.conda_env=arpo \
     actor_rollout_ref.rollout.tools.tool_instances.search.params.cache_file=${SEARCH_CACHE_PATH} \
@@ -156,7 +161,7 @@ python3 -m recipe.echo.main_echo \
     actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=$((4*(MAX_PROMPT_LENGTH+MAX_RESPONSE_LENGTH))) \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     reward_model.reward_manager=${REWARD_MANAGER} \
-    'reward_model.phase_order=["low_level", "high_level"]' \
+    'reward_model.phase_order=["high_level", "low_level"]' \
     custom_reward_function.path=${CUSTOM_REWARD_FUNCTION_PATH} \
     custom_reward_function.name=${CUSTOM_REWARD_FUNCTION_NAME} \
     trainer.critic_warmup=0 \

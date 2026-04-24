@@ -32,7 +32,7 @@ export PYTHONPATH="${VERL_ROOT}:$PYTHONPATH"
 # ============================ Basic Configuration ============================
 # Experiment name and project
 PROJECT_NAME="qwen3B" # Modify experiment group
-EXPERIMENT_NAME="echo3B_hl_ll_sel_high" # phase_order=[high,low], select=high
+EXPERIMENT_NAME="echo3B_c3_hl_ll" # validator profile c3 (c1 + <search>/<python> payloads pulled up to HL), phase_order=[high_level, low_level]
 
 # Configuration file path
 CONFIG_PATH="${SCRIPT_DIR}/config" # ECHO recipe config colocated with this launch script
@@ -66,7 +66,11 @@ ROLLOUT_N=16                         # Number of responses generated per sample
 HIGH_LEVEL_BUDGET=8                 # Number of rollouts used for high-level masked update
 ENABLE_MULTI_TURN=False            # Toggle multi-turn tool interaction in rollout
 # ============================ Rollout Tools Configuration ==========================
-SEARCH_CACHE_PATH="${ARPO_ROOT}/search_cache/search_cache.json" # Shared cache file used directly by all runs
+SEARCH_CACHE_PATH="${ARPO_ROOT}/search_cache/search_cache_v3.json" # Shared cache file used directly by all runs
+TOOL_CALL_LIMIT=3                            # Max number of tool invocations per sampled response before forcing EOS.
+TOOL_MAX_WORKERS=96                          # Thread-pool width for concurrent tool execution inside rollout workers.
+TOOL_TIMEOUT=45                              # Per tool future timeout (s) in rollout; bounds long-tail tool waits.
+TOOL_RETRY_COUNT=1                           # Retries for empty/error tool outputs; keep low to reduce tail latency.
 
 # ============================ Reward Model Configuration ==========================
 # Reward model settings
@@ -93,7 +97,7 @@ SEARCH_CLASS_PATH="verl.workers.agent.tools.search_tool.BingSearchTool"
 #BRIGHTDATA_API_KEY="" # Bright Data API token; set manually in terminal before launch
 BRIGHTDATA_ZONE="serp_api1"                    # Bright Data SERP zone configured in your Bright Data account
 BRIGHTDATA_LOCATION="us"                       # Country code passed to Bing via &cc=<code>; also selects the Bright Data proxy geo. "us" routes through US proxies (faster+more reliable from this cluster than "cn", which periodically returns HTTP 200 with empty body under load).
-BRIGHTDATA_TIMEOUT=120                         # Per-HTTP-call read timeout (s) to api.brightdata.com. Brightdata SERP tail latency is ~30-60s+ under concurrent rollout load, so 120 absorbs the tail and avoids spurious retries.
+BRIGHTDATA_TIMEOUT=45                          # Per-HTTP-call read timeout (s) to api.brightdata.com; lower timeout trims long-tail blocking.
 # ============================ Preparation ============================
 # Login to WandB (if API key is provided)
 if [ "$WANDB_API_KEY" != "" ]; then
@@ -143,7 +147,16 @@ python3 -m recipe.echo.main_echo \
     actor_rollout_ref.rollout.gpu_memory_utilization=0.7 \
     actor_rollout_ref.rollout.n=${ROLLOUT_N} \
     actor_rollout_ref.rollout.high_level_budget=${HIGH_LEVEL_BUDGET} \
-    actor_rollout_ref.rollout.mask_categories.select=high \
+    actor_rollout_ref.rollout.mask_categories.first_select=high \
+    actor_rollout_ref.rollout.mask_categories.select=low \
+    actor_rollout_ref.rollout.mask_categories.think=high \
+    actor_rollout_ref.rollout.mask_categories.answer=high \
+    actor_rollout_ref.rollout.mask_categories.search=high \
+    actor_rollout_ref.rollout.mask_categories.python=high \
+    actor_rollout_ref.rollout.tools.call_limit=${TOOL_CALL_LIMIT} \
+    actor_rollout_ref.rollout.tools.max_workers=${TOOL_MAX_WORKERS} \
+    actor_rollout_ref.rollout.tools.timeout=${TOOL_TIMEOUT} \
+    actor_rollout_ref.rollout.tools.retry_count=${TOOL_RETRY_COUNT} \
     actor_rollout_ref.rollout.tools.tool_instances.python.params.conda_path=/scratch/user/saratb_tamu.edu/miniconda3 \
     actor_rollout_ref.rollout.tools.tool_instances.python.params.conda_env=arpo \
     actor_rollout_ref.rollout.tools.tool_instances.search.params.cache_file=${SEARCH_CACHE_PATH} \

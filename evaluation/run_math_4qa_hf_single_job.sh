@@ -44,10 +44,14 @@ COUNTS="${COUNTS:-1000000}"
 # Restrict this launcher to math benchmarks only (aime24/aime25/math500/gsm8k/math).
 DATASET_GROUP="${DATASET_GROUP:-math}"
 
+# Short tag appended to OUTPUT_PATH and log filenames; lets variant scripts
+# (e.g. longctx / greedy) write to separate folders without clobbering the baseline.
+RUN_TAG="${RUN_TAG:-}"
+
 # Model-tagged output directory so predictions and metrics are grouped by evaluated model and dataset group.
 # MODEL_OUTPUT_TAG replaces "/" to keep the model name in a single path segment.
 MODEL_OUTPUT_TAG="${MODEL_OUTPUT_TAG:-${REASON_MODEL_NAME//\//__}}"
-OUTPUT_PATH="${OUTPUT_PATH:-outputs/hf_math_4qa/${MODEL_OUTPUT_TAG}/${DATASET_GROUP}}"
+OUTPUT_PATH="${OUTPUT_PATH:-outputs/hf_math_4qa/${MODEL_OUTPUT_TAG}/${DATASET_GROUP}${RUN_TAG:+_$RUN_TAG}}"
 
 # Enable LLM-as-judge at evaluation time.
 USE_LLM="${USE_LLM:-false}"
@@ -55,6 +59,18 @@ USE_LLM="${USE_LLM:-false}"
 # Judge endpoint/model used only when USE_LLM=true.
 API_BASE_URL="${API_BASE_URL:-http://localhost:8001/v1}"
 JUDGE_MODEL_NAME="${JUDGE_MODEL_NAME:-Qwen2.5-72B-Instruct}"
+
+# Pass@k turns (one output file per turn); comma or space separated list.
+TURNS="${TURNS:-1 2 3}"
+
+# Sampling temperature (0.0 => greedy decoding).
+TEMPERATURE="${TEMPERATURE:-0.6}"
+
+# Max new tokens per model call; raise for long reasoning traces.
+MAX_TOKENS="${MAX_TOKENS:-4096}"
+
+# End-to-end timeout for a single sample, in seconds.
+SAMPLE_TIMEOUT="${SAMPLE_TIMEOUT:-900}"
 
 # Warmup wait time before starting inference.
 SERVER_BOOT_WAIT_SECONDS="${SERVER_BOOT_WAIT_SECONDS:-60}"
@@ -140,13 +156,17 @@ BING_API_KEY="$BING_API_KEY" \
 BING_ZONE="$BING_ZONE" \
 BING_LOCATION="$BING_LOCATION" \
 DATASET_GROUP="$DATASET_GROUP" \
-bash echo_infer_math_4qa_hf.sh | tee logs/run_infer_math_4qa_hf.log
+TURNS="$TURNS" \
+TEMPERATURE="$TEMPERATURE" \
+MAX_TOKENS="$MAX_TOKENS" \
+SAMPLE_TIMEOUT="$SAMPLE_TIMEOUT" \
+bash echo_infer_math_4qa_hf.sh | tee "logs/run_infer_math_4qa_hf${RUN_TAG:+_$RUN_TAG}.log"
 
 echo "[4/4] Evaluating outputs..."
 OUTPUT_DIR="$OUTPUT_PATH" \
 USE_LLM="$USE_LLM" \
 API_BASE_URL="$API_BASE_URL" \
 MODEL_NAME="$JUDGE_MODEL_NAME" \
-bash echo_evaluate_passk_math_4qa.sh | tee logs/run_eval_math_4qa_hf.log
+bash echo_evaluate_passk_math_4qa.sh | tee "logs/run_eval_math_4qa_hf${RUN_TAG:+_$RUN_TAG}.log"
 
 echo "Run completed successfully. Outputs: $OUTPUT_PATH"

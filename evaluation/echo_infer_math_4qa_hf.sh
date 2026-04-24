@@ -72,6 +72,12 @@ COUNTS="${COUNTS:-50}"
 # End-to-end timeout for a single sample, in seconds.
 SAMPLE_TIMEOUT="${SAMPLE_TIMEOUT:-900}"
 
+# Sampling temperature passed to vLLM (0.0 => greedy decoding).
+TEMPERATURE="${TEMPERATURE:-0.6}"
+
+# Max new tokens per model call; raise for long reasoning traces (AIME, MATH).
+MAX_TOKENS="${MAX_TOKENS:-4096}"
+
 # Async throughput knobs.
 MAX_CONCURRENT="${MAX_CONCURRENT:-32}"
 PYTHON_MAX_CONCURRENT="${PYTHON_MAX_CONCURRENT:-16}"
@@ -122,8 +128,8 @@ CMD+=(--max_concurrent_requests "$MAX_CONCURRENT")
 CMD+=(--max_python_times "$MAX_PYTHON_TIMES")
 CMD+=(--max_search_times "$MAX_SEARCH_TIMES")
 CMD+=(--sample_timeout "$SAMPLE_TIMEOUT")
-CMD+=(--temperature 0.6)
-CMD+=(--max_tokens 4096)
+CMD+=(--temperature "$TEMPERATURE")
+CMD+=(--max_tokens "$MAX_TOKENS")
 CMD+=(--top_p 0.95)
 CMD+=(--top_k 20)
 CMD+=(--min_p 0.0)

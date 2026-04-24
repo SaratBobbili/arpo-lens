@@ -57,6 +57,18 @@ def _remove_right_units(string):
     else:
         return string
 
+
+def _unwrap_text_braces(string):
+    # Strip bare \text{X} wrappers produced by MATH500 ground truths like
+    # "\\text{Evelyn}", "\\text{(C)}", so they match plain predictions "Evelyn" / "(C)".
+    # Only removes the wrapper; anything left inside the braces is preserved verbatim.
+    pattern = re.compile(r"\\text\{([^{}]*)\}")
+    prev = None
+    while prev != string:
+        prev = string
+        string = pattern.sub(r"\1", string)
+    return string
+
 def _fix_sqrt(string):
     if "\\sqrt" not in string:
         return string
@@ -104,6 +116,9 @@ def _strip_string(string):
     
     # remove units (on the right)
     string = _remove_right_units(string)
+
+    # Unwrap plain \text{...} wrappers (non-unit) so e.g. \text{east} == east.
+    string = _unwrap_text_braces(string)
 
     # remove percentage
     string = string.replace("\\%", "")

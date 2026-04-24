@@ -17,6 +17,10 @@ VALIDATOR_PROFILE_SIGNATURES = {
     # c3: same as c1 but <search>/<python> payloads are HL (prevents LL from
     # entropy-hacking via junk tool-code tokens).
     "c3": {"first_select": "high", "select": "low",  "think": "high", "answer": "high", "search": "high", "python": "high"},
+    # c4: only <think>/<answer> are HL; first_select + select + search + python
+    # are all LL. Isolates HL to reasoning + final answer and hands the entire
+    # tool-planning + tool-payload stack to LL.
+    "c4": {"first_select": "low",  "select": "low",  "think": "high", "answer": "high", "search": "low",  "python": "low"},
 }
 
 
@@ -186,9 +190,10 @@ def _check_tool_ordering(blocks):
 
 # ---------------------------------------------------------------------------
 # Profile-aware validators. Routing table (HL = owned by high_level phase):
-#   first_select, think, answer  -> HL for c1, c2, c3
-#   select (non-initial)         -> LL for c1 and c3, HL for c2
-#   search/python/result         -> LL for c1 and c2, HL for c3
+#   first_select                  -> HL for c1, c2, c3;   LL for c4
+#   think, answer                 -> HL for c1, c2, c3, c4
+#   select (non-initial)          -> HL for c2;           LL for c1, c3, c4
+#   search/python (tool payloads) -> HL for c3;           LL for c1, c2, c4
 # ---------------------------------------------------------------------------
 
 def validate_high_level(text, profile="c1"):
@@ -198,16 +203,18 @@ def validate_high_level(text, profile="c1"):
     ok, reason = _check_all_closed(blocks)
     if not ok:
         return False, reason
-    for check in (_check_first_select, _check_think_followup, _check_answer_boxed):
-        ok, reason = check(blocks)
-        if not ok:
-            return False, reason
+    # HL always owns think/answer; first_select is HL for c1/c2/c3 but LL for
+    # c4 (c4 moves the entire tool-planning stack, including the initial plan,
+    # to LL).
+    hl_checks = [_check_think_followup, _check_answer_boxed]
+    if profile in ("c1", "c2", "c3"):
+        hl_checks.insert(0, _check_first_select)
     if profile == "c2":
-        ok, reason = _check_step_select(blocks)
-        if not ok:
-            return False, reason
+        hl_checks.append(_check_step_select)
     if profile == "c3":
-        ok, reason = _check_tool_ordering(blocks)
+        hl_checks.append(_check_tool_ordering)
+    for check in hl_checks:
+        ok, reason = check(blocks)
         if not ok:
             return False, reason
     return True, "high-level format is correct"
@@ -218,18 +225,23 @@ def validate_low_level(text, profile="c1"):
     ok, reason = _check_all_closed(blocks)
     if not ok:
         return False, reason
-    # Planning <select> is always needed to derive `allowed_tools` for step-select
-    # checks; keep this guard even when step-select lives in HL, because
-    # _check_tool_ordering also implicitly relies on well-formed selects.
-    if not blocks or blocks[0][0] != "select":
-        return False, "missing planning <select> needed to derive allowed tools"
-    if not set(extract_tools_from_select(blocks[0][3])):
-        return False, "planning <select> declares no tools"
-    if profile in ("c1", "c3"):
+    # c4 owns first_select fully at LL; for c1/c2/c3 HL already validates it,
+    # but LL still needs a minimal guard because _check_step_select and
+    # _check_tool_ordering both derive `allowed_tools` from blocks[0].
+    if profile == "c4":
+        ok, reason = _check_first_select(blocks)
+        if not ok:
+            return False, reason
+    else:
+        if not blocks or blocks[0][0] != "select":
+            return False, "missing planning <select> needed to derive allowed tools"
+        if not set(extract_tools_from_select(blocks[0][3])):
+            return False, "planning <select> declares no tools"
+    if profile in ("c1", "c3", "c4"):
         ok, reason = _check_step_select(blocks)
         if not ok:
             return False, reason
-    if profile in ("c1", "c2"):
+    if profile in ("c1", "c2", "c4"):
         ok, reason = _check_tool_ordering(blocks)
         if not ok:
             return False, reason

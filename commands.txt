@@ -152,7 +152,7 @@ srun --partition long --cpus-per-task=8 --gres=gpu:1 -t 16:00:00 -J pita_hhrlhf 
 srun --partition long --cpus-per-task=8 --gres=gpu:1 -t 16:00:00 -J alpa_15K --pty bash
 srun --partition long --cpus-per-task=8 --gres=gpu:1 -t 16:00:00 -J sft_long --pty bash
 
-srun --partition 2xlong --cpus-per-task=8 --gres=gpu:H200:8 -t 2-00:00:00 -J echo5 --pty bash
+srun --partition 2xlong --cpus-per-task=8 --gres=gpu:H200:8 -t 2-00:00:00 -J echo4 --pty bash
 
 srun --partition short --cpus-per-task=8 --gres=gpu:8 -t 4:00:00 -J echo_kl --pty bash
 

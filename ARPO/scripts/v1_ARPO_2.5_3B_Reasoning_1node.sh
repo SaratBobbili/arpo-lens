@@ -31,7 +31,7 @@ export PYTHONPATH="${ABSOLUTE_PATH}"/verl_arpo_entropy:$PYTHONPATH
 # ============================ Basic Configuration ============================
 # Experiment name and project
 PROJECT_NAME="qwen3B" # Modify experiment group
-EXPERIMENT_NAME="arpo" # Modify experiment name
+EXPERIMENT_NAME="arpo-new-cache" # Modify experiment name
 
 
 # Configuration file path
@@ -81,6 +81,7 @@ CUSTOM_REWARD_FUNCTION_NAME="compute_score"
 TOTAL_EPOCHS=2                      # Total training epochs
 SAVE_FREQ=5                        # Save frequency
 TEST_FREQ=5                        # Test frequency
+MAX_ACTOR_CKPTS_TO_KEEP=null       # Maximum actor checkpoints to retain; null keeps all checkpoints
 
 # ============================ Path Configuration ============================
 # Save path
@@ -158,6 +159,7 @@ python3 -m verl.trainer.main_ppo \
     trainer.nnodes=${NNODES} \
     trainer.save_freq=${SAVE_FREQ} \
     trainer.test_freq=${TEST_FREQ} \
+    trainer.max_actor_ckpt_to_keep=${MAX_ACTOR_CKPTS_TO_KEEP} \
     trainer.total_epochs=${TOTAL_EPOCHS} \
     trainer.default_local_dir=${SAVE_PATH} \
     trainer.val_before_train=False \

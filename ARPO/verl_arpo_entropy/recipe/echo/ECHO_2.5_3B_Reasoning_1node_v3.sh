@@ -66,7 +66,7 @@ ROLLOUT_N=16                         # Number of responses generated per sample
 HIGH_LEVEL_BUDGET=8                 # Number of rollouts used for high-level masked update
 ENABLE_MULTI_TURN=False            # Toggle multi-turn tool interaction in rollout
 # ============================ Rollout Tools Configuration ==========================
-SEARCH_CACHE_PATH="${ARPO_ROOT}/search_cache/search_cache_v3.json" # Shared cache file used directly by all runs
+SEARCH_CACHE_PATH="${ARPO_ROOT}/search_cache/search_cache_new_v3.json" # Per-variant cache for v3 with phase_order=[high_level, low_level]
 TOOL_CALL_LIMIT=3                            # Max number of tool invocations per sampled response before forcing EOS.
 TOOL_MAX_WORKERS=96                          # Thread-pool width for concurrent tool execution inside rollout workers.
 TOOL_TIMEOUT=45                              # Per tool future timeout (s) in rollout; bounds long-tail tool waits.

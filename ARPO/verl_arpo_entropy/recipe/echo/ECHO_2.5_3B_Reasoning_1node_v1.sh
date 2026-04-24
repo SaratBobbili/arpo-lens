@@ -66,7 +66,7 @@ ROLLOUT_N=16                         # Number of responses generated per sample
 HIGH_LEVEL_BUDGET=8                 # Number of rollouts used for high-level masked update
 ENABLE_MULTI_TURN=False            # Toggle multi-turn tool interaction in rollout
 # ============================ Rollout Tools Configuration ==========================
-SEARCH_CACHE_PATH="${ARPO_ROOT}/search_cache/search_cache.json" # Shared cache file used directly by all runs
+SEARCH_CACHE_PATH="${ARPO_ROOT}/search_cache/search_cache_new_v1.json" # Per-variant cache for v1 with phase_order=[high_level, low_level]
 
 # ============================ Reward Model Configuration ==========================
 # Reward model settings

@@ -77,7 +77,7 @@ class RayECHOTrainer(RayPPOTrainer):
 
         return metrics
 
-    def _build_entropy_scalar_reward(self, entropys: torch.Tensor, phase_batch: DataProto, phase_mask_key: str, entropy_cfg):
+    def _build_entropy_scalar_reward(self, entropys: torch.Tensor, phase_batch: DataProto, phase_mask_key: str, entropy_cfg, extra_mask_key: str | None = None):
         """Sparse entropy reward shaped like the scorer's output.
 
         Reduces per-token entropy over phase-mask tokens to one per-sample
@@ -89,20 +89,33 @@ class RayECHOTrainer(RayPPOTrainer):
         `no_tool_calls`) with zero. GRPO's `sum(dim=-1)` recovers the same
         per-sample score as the scorer path, so no dense layout or post-hoc
         aggregation is needed.
+
+        When `extra_mask_key` is provided (e.g. `entropy-hybrid` passes
+        `"select_loss_mask"`), the reduction is further restricted to the
+        intersection `phase_mask * extra_mask`, and the mean-reduction
+        denominator uses the intersected count so the per-sample scalar is
+        the average entropy over the restricted span. The sparse write
+        position is still the last valid response token (from the phase's
+        attention mask), not the last restricted token, so GRPO's
+        `sum(dim=-1)` over the phase `response_mask` still sees the scalar.
         """
-        # Phase-local entropy reduced per sample to a single scalar.
+        # Phase-local (optionally restricted) entropy reduced per sample to a single scalar.
         phase_mask = phase_batch.batch[phase_mask_key].to(torch.float32)
+        if extra_mask_key is not None:
+            entropy_mask = phase_mask * phase_batch.batch[extra_mask_key].to(torch.float32)
+        else:
+            entropy_mask = phase_mask
         ent = entropys.to(torch.float32)
         if bool(entropy_cfg.normalize):
             ent = ent / math.log(self.tokenizer.vocab_size)
         reduction = entropy_cfg.reduction
         assert reduction in ("sum", "mean"), f"entropy.reduction must be 'sum' or 'mean', got {reduction!r}."
-        masked = ent * phase_mask
+        masked = ent * entropy_mask
         if reduction == "sum":
             per_sample = masked.sum(dim=-1)
         else:
-            # clamp_min(1.0) guards empty phase masks without affecting the ratio when denom >= 1.
-            denom = phase_mask.sum(dim=-1).clamp_min(1.0)
+            # clamp_min(1.0) guards empty (phase ∩ extra) masks without affecting the ratio when denom >= 1.
+            denom = entropy_mask.sum(dim=-1).clamp_min(1.0)
             per_sample = masked.sum(dim=-1) / denom
         per_sample = per_sample * float(entropy_cfg.scale)
         if entropy_cfg.clamp_min is not None or entropy_cfg.clamp_max is not None:
@@ -327,7 +340,7 @@ class RayECHOTrainer(RayPPOTrainer):
                                     reward_tensor, phase_reward_extra_infos_dict = compute_reward(phase_batch, self.reward_fn)
 
                         with _timer(f"{phase_name}_old_log_prob", timing_raw):
-                            phase_batch.meta_info["calculate_entropy"] = phase_strategy == "entropy"
+                            phase_batch.meta_info["calculate_entropy"] = phase_strategy in ("entropy", "entropy-hybrid")
                             old_log_prob = self.actor_rollout_wg.compute_log_prob(phase_batch)
                             loss_agg_mode = self.config.actor_rollout_ref.actor.loss_agg_mode
                             entropys = old_log_prob.batch.pop("entropys", None)
@@ -352,17 +365,29 @@ class RayECHOTrainer(RayPPOTrainer):
                                 metrics[f"{phase_prefix}training/rollout_probs_diff_mean"] = torch.mean(rollout_probs_diff).detach().item()
                                 metrics[f"{phase_prefix}training/rollout_probs_diff_std"] = torch.std(rollout_probs_diff).detach().item()
 
-                        if phase_strategy == "entropy":
+                        if phase_strategy in ("entropy", "entropy-hybrid"):
                             if entropys is None:
                                 raise RuntimeError(f"{phase_name} phase uses entropy reward but compute_log_prob did not return entropys.")
-                            phase_mask = phase_batch.batch[phase_mask_key]
-                            # Log the phase-masked per-token entropy (pre-reduction) for diagnostics.
-                            phase_batch.batch[f"{phase_name}_token_entropy"] = entropys.to(torch.float32) * phase_mask.to(torch.float32)
+                            # `entropy-hybrid` restricts entropy to tokens inside <select>...</select>
+                            # (emitted by rollout as `select_loss_mask`), intersected with the phase
+                            # mask. Users who want to exclude the initial <select> block from this
+                            # computation can move `first_select` to the other phase via
+                            # `mask_categories`; the intersection will drop it automatically.
+                            extra_mask_key = "select_loss_mask" if phase_strategy == "entropy-hybrid" else None
+                            phase_mask_f = phase_batch.batch[phase_mask_key].to(torch.float32)
+                            entropy_mask_f = (
+                                phase_mask_f * phase_batch.batch[extra_mask_key].to(torch.float32)
+                                if extra_mask_key is not None
+                                else phase_mask_f
+                            )
+                            # Diagnostic mirrors the mask actually used for the reduction.
+                            phase_batch.batch[f"{phase_name}_token_entropy"] = entropys.to(torch.float32) * entropy_mask_f
                             reward_tensor, entropy_metrics = self._build_entropy_scalar_reward(
                                 entropys=entropys,
                                 phase_batch=phase_batch,
                                 phase_mask_key=phase_mask_key,
                                 entropy_cfg=phase_reward_cfg.entropy,
+                                extra_mask_key=extra_mask_key,
                             )
                             metrics.update(self._prefix_metrics(entropy_metrics, phase_prefix))
 

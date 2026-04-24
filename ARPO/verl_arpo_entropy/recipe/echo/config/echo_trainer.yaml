@@ -35,16 +35,29 @@ reward_model:
   # scalar at the last valid response token so GRPO's sum(dim=-1) recovers the
   # per-sample score directly (no extra aggregation needed in the trainer).
   # Supported strategies:
-  #   scorer  -> ECHORewardManager + custom_reward_function on the decoded
-  #              answer. Emits -1 on format failure, else the task score (e.g.
-  #              F1 in deep_research_echo), at the last valid response token.
-  #   entropy -> Per-token policy entropy over the phase's loss-mask tokens
-  #              reduced to one per-sample scalar (sum or mean per
-  #              `entropy.reduction`), optionally normalized by log(vocab_size)
-  #              and scaled/clamped, written at the last valid response token.
-  #              When `format_gate` is true, bad-format samples are overridden
-  #              with `bad_format_penalty` and LL soft-fail samples (valid
-  #              format but no <search>/<python>) are zeroed.
+  #   scorer         -> ECHORewardManager + custom_reward_function on the
+  #                     decoded answer. Emits -1 on format failure, else the
+  #                     task score (e.g. F1 in deep_research_echo), at the
+  #                     last valid response token.
+  #   entropy        -> Per-token policy entropy over the phase's loss-mask
+  #                     tokens reduced to one per-sample scalar (sum or mean
+  #                     per `entropy.reduction`), optionally normalized by
+  #                     log(vocab_size) and scaled/clamped, written at the
+  #                     last valid response token. When `format_gate` is
+  #                     true, bad-format samples are overridden with
+  #                     `bad_format_penalty` and LL soft-fail samples (valid
+  #                     format but no <search>/<python>) are zeroed.
+  #   entropy-hybrid -> Identical to `entropy` (same `entropy:` config block,
+  #                     same format_gate semantics, same sparse write at the
+  #                     last valid response token) except the per-token
+  #                     entropy reduction is restricted to tokens inside any
+  #                     <select>...</select> block (`select_loss_mask` from
+  #                     rollout), intersected with the phase mask. Intended
+  #                     for mask_categories where `<select>`, `<search>`,
+  #                     `<python>` share the same phase; to exclude the
+  #                     initial <select> from the computation, move
+  #                     `first_select` to the opposite phase so the
+  #                     intersection drops it.
   phase_rewards:
     high_level:
       strategy: scorer

@@ -31,7 +31,7 @@ export PYTHONPATH="${ABSOLUTE_PATH}"/verl_arpo_entropy:$PYTHONPATH
 # ============================ Basic Configuration ============================
 # Experiment name and project
 PROJECT_NAME="qwen3B" # Modify experiment group
-EXPERIMENT_NAME="arpo-new-cache" # Modify experiment name
+EXPERIMENT_NAME="arpo" # Modify experiment name
 
 
 # Configuration file path
@@ -68,7 +68,7 @@ BEAM_SIZE=2                        # Beam size
 BRANCH_PROBABILITY=0.5             # Branch probability
 Entropy_weight=0.2
 # ============================ Rollout Tools Configuration ==========================
-SEARCH_CACHE_PATH="${ABSOLUTE_PATH}/search_cache/search_cache.json" # Modify
+SEARCH_CACHE_PATH="${ABSOLUTE_PATH}/search_cache/search_cache_arpo.json" # Modify
 
 # ============================ Reward Model Configuration ==========================
 # Reward model settings

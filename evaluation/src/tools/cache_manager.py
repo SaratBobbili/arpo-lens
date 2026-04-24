@@ -97,7 +97,7 @@ class PreprocessCacheManager(BaseCacheManager):
                 cursor.execute(
                     """
                     INSERT OR REPLACE INTO cache (key, obj, timestamp, valid)
-                    VALUES (?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?)
                 """,
                     (processed_query, json_obj, time.time(), 1),
                 )

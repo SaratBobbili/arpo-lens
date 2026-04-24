@@ -36,12 +36,20 @@ shopt -s nullglob
 FILES=( "$OUTPUT_DIR"/*/*_output_*.json )
 shopt -u nullglob
 
-if [[ ${#FILES[@]} -eq 0 ]]; then
+RAW_FILES=()
+for file_path in "${FILES[@]}"; do
+  filename="$(basename "$file_path")"
+  if [[ "$filename" =~ _output_[0-9]+\.json$ ]]; then
+    RAW_FILES+=( "$file_path" )
+  fi
+done
+
+if [[ ${#RAW_FILES[@]} -eq 0 ]]; then
   echo "No output files found under $OUTPUT_DIR"
   exit 1
 fi
 
-for file_path in "${FILES[@]}"; do
+for file_path in "${RAW_FILES[@]}"; do
   filename="$(basename "$file_path")"
   dataset_name="${filename%%_output_*}"
   task="${TASK_MAP[$dataset_name]:-}"

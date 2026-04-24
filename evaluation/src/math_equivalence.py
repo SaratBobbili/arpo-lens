@@ -1,5 +1,6 @@
 import sys
 import os
+import re
 sys.path.append(os.getcwd())
 
 def _fix_fracs(string):
@@ -99,6 +100,7 @@ def _strip_string(string):
 
     # remove dollar signs
     string = string.replace("\\$", "")
+    string = string.replace("$", "")
     
     # remove units (on the right)
     string = _remove_right_units(string)
@@ -136,6 +138,10 @@ def _strip_string(string):
 
     # NOTE: X/Y changed to \frac{X}{Y} in dataset, but in simple cases fix in case the model output is X/Y
     string = _fix_a_slash_b(string)
+
+    # Canonicalize plain decimal forms so numerically equivalent strings match.
+    if re.fullmatch(r"[-+]?\d+(?:\.\d+)?", string):
+        string = string.rstrip("0").rstrip(".") if "." in string else string
 
     return string
 

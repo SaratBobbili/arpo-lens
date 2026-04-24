@@ -6,18 +6,34 @@ cd "$SCRIPT_DIR"
 export PYTHONPATH="$(pwd):${PYTHONPATH:-}"
 mkdir -p logs
 
-# Evaluated datasets: 5 math + 4 knowledge-intensive QA.
-DATASETS=(
+# Dataset group selector:
+# - math: evaluate only math datasets
+# - all : evaluate math + QA datasets
+DATASET_GROUP="${DATASET_GROUP:-math}"
+
+MATH_DATASETS=(
   "aime24"
   "aime25"
   "math500"
   "gsm8k"
   "math"
+)
+
+QA_DATASETS=(
   "hotpotqa"
   "2wiki"
   "musique"
   "bamboogle"
 )
+
+if [[ "$DATASET_GROUP" == "math" ]]; then
+  DATASETS=("${MATH_DATASETS[@]}")
+elif [[ "$DATASET_GROUP" == "all" ]]; then
+  DATASETS=("${MATH_DATASETS[@]}" "${QA_DATASETS[@]}")
+else
+  echo "Unsupported DATASET_GROUP=$DATASET_GROUP (expected: math or all)"
+  exit 1
+fi
 
 # Main reasoning model endpoints (must be served before running this script).
 ENDPOINTS=(

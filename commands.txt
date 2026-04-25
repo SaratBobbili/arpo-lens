@@ -235,3 +235,14 @@ python eval_ckpt_hhrlhf.py --classifier_ckpt_path checkpoints/llama_3_8b_instruc
 
 
 python train_classifier-Jer-alpaca.py --ref_model_id meta-llama/Meta-Llama-3-8B-Instruct --classifier_model_id meta-llama/Llama-3.2-1B-Instruct --init_mode reuse --inference_mode expectation --loss_type bce --dataset_type alpaca_eval --data_path collected_data/alpaca/alpaca_train_pref_data.jsonl --train_eval_save_path collected_data/alpaca/alpaca_noisy_multi_preference_train_eval.json --drop_no_variation 1 --eta 1 --output_dir checkpoints/alpaca/pair_loss --num_epochs 100 --wandb_run_name 'alpaca_pair_loss' --wandb_project 'alpaca_classifier_training' --track 1
+
+
+
+
+### ECHO ll HL job scripts
+
+
+srun --cpus-per-task=8 --gres=gpu:H200:8 -t 2-00:00:00 -J echo-b-c1 --pty bash
+srun --partition 2xlong --cpus-per-task=8 --gres=gpu:H200:8 -t 2-00:00:00 -J echo-b-c2 --pty bash
+srun --partition 2xlong --cpus-per-task=8 --gres=gpu:H200:8 -t 2-00:00:00 -J echo-b-c3 --pty bash
+srun --partition 2xlong --cpus-per-task=8 --gres=gpu:H200:8 -t 2-00:00:00 -J echo-b-c4 --pty bash

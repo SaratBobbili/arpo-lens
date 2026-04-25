@@ -27,18 +27,18 @@ SUMM_MODEL_PATH="Qwen/Qwen2.5-7B-Instruct"
 SUMM_MODEL_NAME="Qwen2.5-7B-Instruct"
 
 # completion_sds enables SDS with summarization; completion/default skips summarization.
-INFER_MODE="completion_sds"
+INFER_MODE="completion"
 
 # System prompt schema:
 #   base        -> no tools (pure CoT, table row "Qwen2.5-3B-Instruct")
 #   math        -> python only (table row "+ TIR Prompting")
 #   search      -> search only
 #   code_search -> python + search (default for ARPO/AEPO trained checkpoints)
-PROMPT_TYPE="code_search"
+PROMPT_TYPE="math"
 
 # Per-sample tool-call budgets enforced by the SampleProcessor; set to 0 to disable a tool entirely.
 MAX_PYTHON_TIMES="5"
-MAX_SEARCH_TIMES="8"
+MAX_SEARCH_TIMES="0"
 
 # Conda root and env used by the Python tool executor.
 CONDA_PATH="/scratch/user/saratb_tamu.edu/miniconda3"
@@ -68,7 +68,7 @@ SAMPLE_TIMEOUT="900"
 # different folders. Auto-composed from the decoding/runtime knobs above; set to ""
 # to reuse a plain baseline folder.
 RUN_TAG="T${TEMPERATURE}_K${TURNS// /-}_mt${MAX_TOKENS}_to${SAMPLE_TIMEOUT}"
-CUSTOM_RUN_TAG="LLM_as_judge"
+CUSTOM_RUN_TAG="LLM_as_judge/TIR"
 
 # Model-tagged output directory; "/" -> "__" keeps the model name in one path segment.
 MODEL_OUTPUT_TAG="${REASON_MODEL_NAME//\//__}"
@@ -87,8 +87,16 @@ API_BASE_URL="http://localhost:8001/v1"
 SERVER_BOOT_WAIT_SECONDS="60"
 # Max seconds to wait for each endpoint health check.
 ENDPOINT_READY_TIMEOUT_SECONDS="300"
+# Separate (longer) health-check budget for the 72B-GPTQ judge: torch.compile + KV cache
+# init alone takes ~5min on first launch, so the smaller reasoning timeout is too tight.
+JUDGE_ENDPOINT_READY_TIMEOUT_SECONDS="900"
 # Grace period after stopping a server group so VRAM is released before the next launch.
 SERVER_TEARDOWN_WAIT_SECONDS="20"
+
+# Set to "true" to skip [1/5]-[3/5] (server bring-up + inference) and jump straight to
+# [4/5]-[5/5] (judge launch + evaluation). Use this when inference outputs already exist
+# under OUTPUT_PATH and only the judge/eval stage needs to be re-run.
+RESUME_FROM_EVAL="false"
 # -------------------------------------------------------------
 
 # Summarization servers are only required when the prompt advertises search AND the
@@ -138,59 +146,64 @@ wait_for_endpoint() {
   return 1
 }
 
-echo "[1/5] Starting reasoning servers..."
-setsid env MODEL_PATH="$REASON_MODEL_PATH" MODEL_NAME="$REASON_MODEL_NAME" \
-  bash vllm_scripts/echo_vllm_launch_reasoning_model_hf_cuda4-7.sh \
-  > logs/run_reasoning_wrapper.log 2>&1 < /dev/null &
-REASON_PID=$!
+if [[ "$RESUME_FROM_EVAL" != "true" ]]; then
+  echo "[1/5] Starting reasoning servers..."
+  setsid env MODEL_PATH="$REASON_MODEL_PATH" MODEL_NAME="$REASON_MODEL_NAME" \
+    bash vllm_scripts/echo_vllm_launch_reasoning_model_hf_cuda4-7.sh \
+    > logs/run_reasoning_wrapper.log 2>&1 < /dev/null &
+  REASON_PID=$!
 
-if [[ "$NEEDS_SUMM" == "true" ]]; then
-  echo "[2/5] Starting summarization servers (SDS mode)..."
-  setsid env MODEL_PATH="$SUMM_MODEL_PATH" MODEL_NAME="$SUMM_MODEL_NAME" \
-    bash vllm_scripts/echo_vllm_launch_summarize_model_hf_cuda0-3.sh \
-    > logs/run_summarization_wrapper.log 2>&1 < /dev/null &
-  SUMM_PID=$!
+  if [[ "$NEEDS_SUMM" == "true" ]]; then
+    echo "[2/5] Starting summarization servers (SDS mode)..."
+    setsid env MODEL_PATH="$SUMM_MODEL_PATH" MODEL_NAME="$SUMM_MODEL_NAME" \
+      bash vllm_scripts/echo_vllm_launch_summarize_model_hf_cuda0-3.sh \
+      > logs/run_summarization_wrapper.log 2>&1 < /dev/null &
+    SUMM_PID=$!
+  else
+    echo "[2/5] Skipping summarization servers (INFER_MODE=$INFER_MODE, PROMPT_TYPE=$PROMPT_TYPE)"
+  fi
+
+  echo "Waiting $SERVER_BOOT_WAIT_SECONDS seconds for server warmup..."
+  sleep "$SERVER_BOOT_WAIT_SECONDS"
+
+  wait_for_endpoint "http://localhost:8002/v1" "$ENDPOINT_READY_TIMEOUT_SECONDS"
+  wait_for_endpoint "http://localhost:8003/v1" "$ENDPOINT_READY_TIMEOUT_SECONDS"
+  if [[ "$NEEDS_SUMM" == "true" ]]; then
+    wait_for_endpoint "http://localhost:8004/v1" "$ENDPOINT_READY_TIMEOUT_SECONDS"
+    wait_for_endpoint "http://localhost:8005/v1" "$ENDPOINT_READY_TIMEOUT_SECONDS"
+  fi
+
+  echo "[3/5] Running inference on math benchmarks..."
+  mkdir -p "$NLTK_DATA_DIR"
+  export NLTK_DATA="$NLTK_DATA_DIR"
+  MODEL_PATH="$REASON_MODEL_PATH" \
+  DEFAULT_MODEL="$REASON_MODEL_NAME" \
+  SUMM_MODEL_PATH="$SUMM_MODEL_PATH" \
+  SUMM_MODEL_NAME="$SUMM_MODEL_NAME" \
+  INFER_MODE="$INFER_MODE" \
+  PROMPT_TYPE="$PROMPT_TYPE" \
+  MAX_PYTHON_TIMES="$MAX_PYTHON_TIMES" \
+  MAX_SEARCH_TIMES="$MAX_SEARCH_TIMES" \
+  CONDA_PATH="$CONDA_PATH" \
+  CONDA_ENV="$CONDA_ENV" \
+  COUNTS="$COUNTS" \
+  OUTPUT_PATH="$OUTPUT_PATH" \
+  BING_API_KEY="$BING_API_KEY" \
+  BING_ZONE="$BING_ZONE" \
+  BING_LOCATION="$BING_LOCATION" \
+  DATASET_GROUP="$DATASET_GROUP" \
+  TURNS="$TURNS" \
+  TEMPERATURE="$TEMPERATURE" \
+  MAX_TOKENS="$MAX_TOKENS" \
+  SAMPLE_TIMEOUT="$SAMPLE_TIMEOUT" \
+  bash echo_infer_math_4qa_hf.sh | tee "logs/run_infer_math_4qa_hf${RUN_TAG:+_$RUN_TAG}.log"
+
+  echo "Inference complete; stopping reasoning servers to free GPUs 4-7..."
+  stop_server REASON_PID
 else
-  echo "[2/5] Skipping summarization servers (INFER_MODE=$INFER_MODE, PROMPT_TYPE=$PROMPT_TYPE)"
+  echo "[1-3/5] RESUME_FROM_EVAL=true -> skipping reasoning/summarization launch and inference."
+  echo "        Using existing inference outputs under: $OUTPUT_PATH"
 fi
-
-echo "Waiting $SERVER_BOOT_WAIT_SECONDS seconds for server warmup..."
-sleep "$SERVER_BOOT_WAIT_SECONDS"
-
-wait_for_endpoint "http://localhost:8002/v1" "$ENDPOINT_READY_TIMEOUT_SECONDS"
-wait_for_endpoint "http://localhost:8003/v1" "$ENDPOINT_READY_TIMEOUT_SECONDS"
-if [[ "$NEEDS_SUMM" == "true" ]]; then
-  wait_for_endpoint "http://localhost:8004/v1" "$ENDPOINT_READY_TIMEOUT_SECONDS"
-  wait_for_endpoint "http://localhost:8005/v1" "$ENDPOINT_READY_TIMEOUT_SECONDS"
-fi
-
-echo "[3/5] Running inference on math benchmarks..."
-mkdir -p "$NLTK_DATA_DIR"
-export NLTK_DATA="$NLTK_DATA_DIR"
-MODEL_PATH="$REASON_MODEL_PATH" \
-DEFAULT_MODEL="$REASON_MODEL_NAME" \
-SUMM_MODEL_PATH="$SUMM_MODEL_PATH" \
-SUMM_MODEL_NAME="$SUMM_MODEL_NAME" \
-INFER_MODE="$INFER_MODE" \
-PROMPT_TYPE="$PROMPT_TYPE" \
-MAX_PYTHON_TIMES="$MAX_PYTHON_TIMES" \
-MAX_SEARCH_TIMES="$MAX_SEARCH_TIMES" \
-CONDA_PATH="$CONDA_PATH" \
-CONDA_ENV="$CONDA_ENV" \
-COUNTS="$COUNTS" \
-OUTPUT_PATH="$OUTPUT_PATH" \
-BING_API_KEY="$BING_API_KEY" \
-BING_ZONE="$BING_ZONE" \
-BING_LOCATION="$BING_LOCATION" \
-DATASET_GROUP="$DATASET_GROUP" \
-TURNS="$TURNS" \
-TEMPERATURE="$TEMPERATURE" \
-MAX_TOKENS="$MAX_TOKENS" \
-SAMPLE_TIMEOUT="$SAMPLE_TIMEOUT" \
-bash echo_infer_math_4qa_hf.sh | tee "logs/run_infer_math_4qa_hf${RUN_TAG:+_$RUN_TAG}.log"
-
-echo "Inference complete; stopping reasoning servers to free GPUs 4-7..."
-stop_server REASON_PID
 
 if [[ "$USE_LLM" == "true" ]]; then
   echo "[4/5] Bringing up LLM judge for evaluation..."
@@ -205,7 +218,7 @@ if [[ "$USE_LLM" == "true" ]]; then
   JUDGE_PID=$!
   echo "Waiting $SERVER_BOOT_WAIT_SECONDS seconds for judge warmup..."
   sleep "$SERVER_BOOT_WAIT_SECONDS"
-  wait_for_endpoint "$API_BASE_URL" "$ENDPOINT_READY_TIMEOUT_SECONDS"
+  wait_for_endpoint "$API_BASE_URL" "$JUDGE_ENDPOINT_READY_TIMEOUT_SECONDS"
 else
   echo "[4/5] Skipping judge launch because USE_LLM=$USE_LLM"
 fi

@@ -12,87 +12,93 @@ mkdir -p logs
 # Bing search key used by tool-enabled inference.
 BING_API_KEY=""
 # Bright Data proxy zone for Bing search requests.
-BING_ZONE="${BING_ZONE:-serp_api1}"
+BING_ZONE="serp_api1"
 # Bright Data proxy country code for Bing search (cc URL parameter).
-BING_LOCATION="${BING_LOCATION:-us}"
+BING_LOCATION="us"
 
 # Main reasoning model checkpoint/HF id served on ports 8002/8003.
-REASON_MODEL_PATH="${REASON_MODEL_PATH:-Qwen/Qwen2.5-3B-Instruct}"
-
+REASON_MODEL_PATH="Qwen/Qwen2.5-3B-Instruct"
 # Served model alias for reasoning endpoints; must match infer DEFAULT_MODEL.
-REASON_MODEL_NAME="${REASON_MODEL_NAME:-Qwen2.5-3B-Instruct}"
+REASON_MODEL_NAME="Qwen2.5-3B-Instruct"
 
 # Summarization helper checkpoint/HF id served on ports 8004/8005.
-SUMM_MODEL_PATH="${SUMM_MODEL_PATH:-Qwen/Qwen2.5-7B-Instruct}"
-
+SUMM_MODEL_PATH="Qwen/Qwen2.5-7B-Instruct"
 # Served model alias for summarization endpoints; must match infer SUMM_MODEL_NAME.
-SUMM_MODEL_NAME="${SUMM_MODEL_NAME:-Qwen2.5-7B-Instruct}"
+SUMM_MODEL_NAME="Qwen2.5-7B-Instruct"
 
 # completion_sds enables SDS with summarization; completion/default skips summarization.
-INFER_MODE="${INFER_MODE:-completion_sds}"
+INFER_MODE="completion_sds"
 
 # Conda root and env used by the Python tool executor.
-CONDA_PATH="${CONDA_PATH:-/scratch/user/saratb_tamu.edu/miniconda3}"
-CONDA_ENV="${CONDA_ENV:-evaluation}"
+CONDA_PATH="/scratch/user/saratb_tamu.edu/miniconda3"
+CONDA_ENV="evaluation"
 # Directory for NLTK tokenizer data inside the selected conda env.
-NLTK_DATA_DIR="${NLTK_DATA_DIR:-$CONDA_PATH/envs/$CONDA_ENV/nltk_data}"
+NLTK_DATA_DIR="$CONDA_PATH/envs/$CONDA_ENV/nltk_data"
 
-# Number of samples per dataset.
-# Use a very large default so infer.py processes the full dataset via min(dataset_size, COUNTS).
-COUNTS="${COUNTS:-1000000}"
+# Samples per dataset; large value => full dataset via min(dataset_size, COUNTS) in infer.py.
+COUNTS="1000000"
 
 # Restrict this launcher to math benchmarks only (aime24/aime25/math500/gsm8k/math).
-DATASET_GROUP="${DATASET_GROUP:-math}"
+DATASET_GROUP="math"
 
-# Pass@k turns (one output file per turn); comma or space separated list.
-TURNS="${TURNS:-1 2 3}"
+# Pass@k turns (one output file per turn); space separated list.
+TURNS="1 2 3"
 
 # Sampling temperature (0.0 => greedy decoding).
-TEMPERATURE="${TEMPERATURE:-0.6}"
+TEMPERATURE="0.6"
 
 # Max new tokens per model call; raise for long reasoning traces.
-MAX_TOKENS="${MAX_TOKENS:-4096}"
+MAX_TOKENS="4096"
 
 # End-to-end timeout for a single sample, in seconds.
-SAMPLE_TIMEOUT="${SAMPLE_TIMEOUT:-900}"
+SAMPLE_TIMEOUT="900"
 
-# Short tag appended to OUTPUT_PATH and log filenames so different configs
-# land in different folders. When RUN_TAG is not passed, auto-compose it from
-# the decoding/runtime knobs above so the folder name always reflects the
-# exact config used (e.g. T0.6_K1-2-3_mt8192_to1800). The single-dash default
-# (${RUN_TAG-...}) only triggers when RUN_TAG is *unset*, so callers can still
-# force an empty tag with RUN_TAG="" to reuse the plain baseline folder.
-RUN_TAG="${RUN_TAG-T${TEMPERATURE}_K${TURNS// /-}_mt${MAX_TOKENS}_to${SAMPLE_TIMEOUT}}"
+# Short tag appended to OUTPUT_PATH and log filenames so different configs land in
+# different folders. Auto-composed from the decoding/runtime knobs above; set to ""
+# to reuse a plain baseline folder.
+RUN_TAG="T${TEMPERATURE}_K${TURNS// /-}_mt${MAX_TOKENS}_to${SAMPLE_TIMEOUT}"
+CUSTOM_RUN_TAG="LLM_as_judge"
 
-# Model-tagged output directory so predictions and metrics are grouped by evaluated model and dataset group.
-# MODEL_OUTPUT_TAG replaces "/" to keep the model name in a single path segment.
-MODEL_OUTPUT_TAG="${MODEL_OUTPUT_TAG:-${REASON_MODEL_NAME//\//__}}"
-OUTPUT_PATH="${OUTPUT_PATH:-outputs/hf_math_4qa/${MODEL_OUTPUT_TAG}/${DATASET_GROUP}${RUN_TAG:+_$RUN_TAG}}"
+# Model-tagged output directory; "/" -> "__" keeps the model name in one path segment.
+MODEL_OUTPUT_TAG="${REASON_MODEL_NAME//\//__}"
+OUTPUT_PATH="outputs/hf_math_4qa/${CUSTOM_RUN_TAG}/${MODEL_OUTPUT_TAG}/${DATASET_GROUP}${RUN_TAG:+_$RUN_TAG}"
 
-# Enable LLM-as-judge at evaluation time.
-USE_LLM="${USE_LLM:-false}"
-
-# Judge endpoint/model used only when USE_LLM=true.
-API_BASE_URL="${API_BASE_URL:-http://localhost:8001/v1}"
-JUDGE_MODEL_NAME="${JUDGE_MODEL_NAME:-Qwen2.5-72B-Instruct}"
+# Enable LLM-as-judge at evaluation time (true => --use_llm passed to evaluate.py).
+USE_LLM="true"
+# HF id / local checkpoint of the LLM judge launched by this orchestrator on port 8001.
+JUDGE_MODEL_PATH="Qwen/Qwen2.5-72B-Instruct-GPTQ-Int4"
+# Served alias for the judge endpoint; must match --model_name passed to evaluate.py.
+JUDGE_MODEL_NAME="Qwen2.5-72B-Instruct"
+# Endpoint URL the evaluator queries; matches the judge launcher PORT.
+API_BASE_URL="http://localhost:8001/v1"
 
 # Warmup wait time before starting inference.
-SERVER_BOOT_WAIT_SECONDS="${SERVER_BOOT_WAIT_SECONDS:-60}"
-
+SERVER_BOOT_WAIT_SECONDS="60"
 # Max seconds to wait for each endpoint health check.
-ENDPOINT_READY_TIMEOUT_SECONDS="${ENDPOINT_READY_TIMEOUT_SECONDS:-300}"
+ENDPOINT_READY_TIMEOUT_SECONDS="300"
+# Grace period after stopping a server group so VRAM is released before the next launch.
+SERVER_TEARDOWN_WAIT_SECONDS="20"
 # -------------------------------------------------------------
 
 REASON_PID=""
 SUMM_PID=""
+JUDGE_PID=""
+
+# Send SIGTERM to the whole process group of a wrapper launched via `setsid`,
+# so the underlying `vllm serve` workers also exit (kill -- -$PID).
+stop_server() {
+  local pid_var="$1"
+  local pid="${!pid_var}"
+  [[ -z "$pid" ]] && return 0
+  kill -TERM -- "-$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  printf -v "$pid_var" '%s' ""
+}
 
 cleanup() {
-  if [[ -n "$REASON_PID" ]]; then
-    kill "$REASON_PID" 2>/dev/null || true
-  fi
-  if [[ -n "$SUMM_PID" ]]; then
-    kill "$SUMM_PID" 2>/dev/null || true
-  fi
+  stop_server REASON_PID
+  stop_server SUMM_PID
+  stop_server JUDGE_PID
 }
 trap cleanup EXIT SIGINT SIGTERM
 
@@ -113,20 +119,20 @@ wait_for_endpoint() {
   return 1
 }
 
-echo "[1/4] Starting reasoning servers..."
-MODEL_PATH="$REASON_MODEL_PATH" MODEL_NAME="$REASON_MODEL_NAME" \
+echo "[1/5] Starting reasoning servers..."
+setsid env MODEL_PATH="$REASON_MODEL_PATH" MODEL_NAME="$REASON_MODEL_NAME" \
   bash vllm_scripts/echo_vllm_launch_reasoning_model_hf_cuda4-7.sh \
-  > logs/run_reasoning_wrapper.log 2>&1 &
+  > logs/run_reasoning_wrapper.log 2>&1 < /dev/null &
 REASON_PID=$!
 
 if [[ "$INFER_MODE" == "completion_sds" ]]; then
-  echo "[2/4] Starting summarization servers (SDS mode)..."
-  MODEL_PATH="$SUMM_MODEL_PATH" MODEL_NAME="$SUMM_MODEL_NAME" \
+  echo "[2/5] Starting summarization servers (SDS mode)..."
+  setsid env MODEL_PATH="$SUMM_MODEL_PATH" MODEL_NAME="$SUMM_MODEL_NAME" \
     bash vllm_scripts/echo_vllm_launch_summarize_model_hf_cuda0-3.sh \
-    > logs/run_summarization_wrapper.log 2>&1 &
+    > logs/run_summarization_wrapper.log 2>&1 < /dev/null &
   SUMM_PID=$!
 else
-  echo "[2/4] Skipping summarization servers because INFER_MODE=$INFER_MODE"
+  echo "[2/5] Skipping summarization servers because INFER_MODE=$INFER_MODE"
 fi
 
 echo "Waiting $SERVER_BOOT_WAIT_SECONDS seconds for server warmup..."
@@ -139,7 +145,7 @@ if [[ "$INFER_MODE" == "completion_sds" ]]; then
   wait_for_endpoint "http://localhost:8005/v1" "$ENDPOINT_READY_TIMEOUT_SECONDS"
 fi
 
-echo "[3/4] Running inference on math benchmarks..."
+echo "[3/5] Running inference on math benchmarks..."
 mkdir -p "$NLTK_DATA_DIR"
 export NLTK_DATA="$NLTK_DATA_DIR"
 MODEL_PATH="$REASON_MODEL_PATH" \
@@ -161,7 +167,28 @@ MAX_TOKENS="$MAX_TOKENS" \
 SAMPLE_TIMEOUT="$SAMPLE_TIMEOUT" \
 bash echo_infer_math_4qa_hf.sh | tee "logs/run_infer_math_4qa_hf${RUN_TAG:+_$RUN_TAG}.log"
 
-echo "[4/4] Evaluating outputs..."
+echo "Inference complete; stopping reasoning servers to free GPUs 4-7..."
+stop_server REASON_PID
+
+if [[ "$USE_LLM" == "true" ]]; then
+  echo "[4/5] Bringing up LLM judge for evaluation..."
+  if [[ -n "$SUMM_PID" ]]; then
+    echo "Stopping summarization servers to free GPUs 0-3 for the judge..."
+    stop_server SUMM_PID
+    sleep "$SERVER_TEARDOWN_WAIT_SECONDS"
+  fi
+  setsid env MODEL_PATH="$JUDGE_MODEL_PATH" MODEL_NAME="$JUDGE_MODEL_NAME" \
+    bash vllm_scripts/echo_vllm_launch_judge_model_hf_cuda0-3.sh \
+    > logs/run_judge_wrapper.log 2>&1 < /dev/null &
+  JUDGE_PID=$!
+  echo "Waiting $SERVER_BOOT_WAIT_SECONDS seconds for judge warmup..."
+  sleep "$SERVER_BOOT_WAIT_SECONDS"
+  wait_for_endpoint "$API_BASE_URL" "$ENDPOINT_READY_TIMEOUT_SECONDS"
+else
+  echo "[4/5] Skipping judge launch because USE_LLM=$USE_LLM"
+fi
+
+echo "[5/5] Evaluating outputs..."
 OUTPUT_DIR="$OUTPUT_PATH" \
 USE_LLM="$USE_LLM" \
 API_BASE_URL="$API_BASE_URL" \

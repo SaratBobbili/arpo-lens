@@ -9,4 +9,13 @@
  For example, <think> This is the reasoning process. </think> <select> This is the tool selection reasoning process. <tool> "search" </tool> </select> <search> search query here </search> <result> search result here </result> <think> This is the reasoning process.
  </think> <select> This is the tool selection reasoning process. <tool> "python" </tool> </select> <python> python code here </python> <result> python interpreter result here </result> <think> This is the reasoning process. </think>
  <select> This is the tool selection reasoning process. <tool> "no-tool" </tool> </select> <answer> The final answer is \\[ \boxed{answer here} \\] </answer>.
- In the last part of the answer, the final exact answer is enclosed within \boxed{} with latex format."
+In the last part of the answer, the final exact answer is enclosed within \boxed{} with latex format."
+
+ARPO math eval observation:
+Multi-turn sampling helped much more than raising max tokens. The 8k-token run barely moved avg pass@1, while three sampled turns raised best-of-3 substantially on MATH/MATH500/GSM8K. Use multiple turns with the default token budget unless a specific run shows truncation.
+
+Command:
+cd /scratch/user/saratb_tamu.edu/research/arpo-lens/evaluation && \
+  TEMPERATURE=0.6 \
+  TURNS="1 2 3" \
+  bash run_math_4qa_hf_single_job.sh

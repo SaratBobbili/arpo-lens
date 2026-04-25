@@ -17,7 +17,7 @@ BING_ZONE="serp_api1"
 BING_LOCATION="us"
 
 # Main reasoning model checkpoint/HF id served on ports 8002/8003.
-REASON_MODEL_PATH="Qwen/Qwen2.5-3B-Instruct"
+REASON_MODEL_PATH="dongguanting/Qwen2.5-3B-ARPO"
 # Served model alias for reasoning endpoints; must match infer DEFAULT_MODEL.
 REASON_MODEL_NAME="Qwen2.5-3B-Instruct"
 
@@ -34,7 +34,7 @@ INFER_MODE="completion"
 #   math        -> python only (table row "+ TIR Prompting")
 #   search      -> search only
 #   code_search -> python + search (default for ARPO/AEPO trained checkpoints)
-PROMPT_TYPE="math"
+PROMPT_TYPE="code_search"
 
 # Per-sample tool-call budgets enforced by the SampleProcessor; set to 0 to disable a tool entirely.
 MAX_PYTHON_TIMES="5"
@@ -68,7 +68,7 @@ SAMPLE_TIMEOUT="900"
 # different folders. Auto-composed from the decoding/runtime knobs above; set to ""
 # to reuse a plain baseline folder.
 RUN_TAG="T${TEMPERATURE}_K${TURNS// /-}_mt${MAX_TOKENS}_to${SAMPLE_TIMEOUT}"
-CUSTOM_RUN_TAG="LLM_as_judge/TIR"
+CUSTOM_RUN_TAG="LLM_as_judge/arpo"
 
 # Model-tagged output directory; "/" -> "__" keeps the model name in one path segment.
 MODEL_OUTPUT_TAG="${REASON_MODEL_NAME//\//__}"

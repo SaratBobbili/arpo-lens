@@ -222,6 +222,8 @@ def validate_high_level(text, profile="c1"):
 
 def validate_low_level(text, profile="c1"):
     blocks = get_ordered_blocks(text)
+    if not blocks:
+        return False, "no tags found"
     ok, reason = _check_all_closed(blocks)
     if not ok:
         return False, reason

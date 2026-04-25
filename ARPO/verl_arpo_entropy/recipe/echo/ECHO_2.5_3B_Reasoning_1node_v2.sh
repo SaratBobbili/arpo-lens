@@ -73,6 +73,8 @@ SEARCH_CACHE_PATH="${ARPO_ROOT}/search_cache/search_cache_new_v2.json" # Per-var
 REWARD_MANAGER="echo"              # Reward manager type
 CUSTOM_REWARD_FUNCTION_PATH="${VERL_ROOT}/verl/utils/reward_score/deep_research_echo.py" # Modify reward function path
 CUSTOM_REWARD_FUNCTION_NAME="compute_score"
+HIGH_LEVEL_REWARD_STRATEGY="scorer" # High-level phase reward strategy: {scorer, entropy, entropy-hybrid}.
+LOW_LEVEL_REWARD_STRATEGY="entropy"  # Low-level phase reward strategy: {scorer, entropy, entropy-hybrid}.
 
 # ============================ Training Configuration ============================
 # Training parameters
@@ -162,6 +164,8 @@ python3 -m recipe.echo.main_echo \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     reward_model.reward_manager=${REWARD_MANAGER} \
     'reward_model.phase_order=["high_level", "low_level"]' \
+    reward_model.phase_rewards.high_level.strategy=${HIGH_LEVEL_REWARD_STRATEGY} \
+    reward_model.phase_rewards.low_level.strategy=${LOW_LEVEL_REWARD_STRATEGY} \
     custom_reward_function.path=${CUSTOM_REWARD_FUNCTION_PATH} \
     custom_reward_function.name=${CUSTOM_REWARD_FUNCTION_NAME} \
     trainer.critic_warmup=0 \

@@ -29,6 +29,17 @@ SUMM_MODEL_NAME="Qwen2.5-7B-Instruct"
 # completion_sds enables SDS with summarization; completion/default skips summarization.
 INFER_MODE="completion_sds"
 
+# System prompt schema:
+#   base        -> no tools (pure CoT, table row "Qwen2.5-3B-Instruct")
+#   math        -> python only (table row "+ TIR Prompting")
+#   search      -> search only
+#   code_search -> python + search (default for ARPO/AEPO trained checkpoints)
+PROMPT_TYPE="code_search"
+
+# Per-sample tool-call budgets enforced by the SampleProcessor; set to 0 to disable a tool entirely.
+MAX_PYTHON_TIMES="5"
+MAX_SEARCH_TIMES="8"
+
 # Conda root and env used by the Python tool executor.
 CONDA_PATH="/scratch/user/saratb_tamu.edu/miniconda3"
 CONDA_ENV="evaluation"
@@ -80,6 +91,14 @@ ENDPOINT_READY_TIMEOUT_SECONDS="300"
 SERVER_TEARDOWN_WAIT_SECONDS="20"
 # -------------------------------------------------------------
 
+# Summarization servers are only required when the prompt advertises search AND the
+# inference engine is the SDS variant; base/math prompts never emit <search>, so the
+# summ pool would just waste GPUs 0-3.
+NEEDS_SUMM="false"
+if [[ "$INFER_MODE" == "completion_sds" && "$PROMPT_TYPE" != "base" && "$PROMPT_TYPE" != "math" ]]; then
+  NEEDS_SUMM="true"
+fi
+
 REASON_PID=""
 SUMM_PID=""
 JUDGE_PID=""
@@ -125,14 +144,14 @@ setsid env MODEL_PATH="$REASON_MODEL_PATH" MODEL_NAME="$REASON_MODEL_NAME" \
   > logs/run_reasoning_wrapper.log 2>&1 < /dev/null &
 REASON_PID=$!
 
-if [[ "$INFER_MODE" == "completion_sds" ]]; then
+if [[ "$NEEDS_SUMM" == "true" ]]; then
   echo "[2/5] Starting summarization servers (SDS mode)..."
   setsid env MODEL_PATH="$SUMM_MODEL_PATH" MODEL_NAME="$SUMM_MODEL_NAME" \
     bash vllm_scripts/echo_vllm_launch_summarize_model_hf_cuda0-3.sh \
     > logs/run_summarization_wrapper.log 2>&1 < /dev/null &
   SUMM_PID=$!
 else
-  echo "[2/5] Skipping summarization servers because INFER_MODE=$INFER_MODE"
+  echo "[2/5] Skipping summarization servers (INFER_MODE=$INFER_MODE, PROMPT_TYPE=$PROMPT_TYPE)"
 fi
 
 echo "Waiting $SERVER_BOOT_WAIT_SECONDS seconds for server warmup..."
@@ -140,7 +159,7 @@ sleep "$SERVER_BOOT_WAIT_SECONDS"
 
 wait_for_endpoint "http://localhost:8002/v1" "$ENDPOINT_READY_TIMEOUT_SECONDS"
 wait_for_endpoint "http://localhost:8003/v1" "$ENDPOINT_READY_TIMEOUT_SECONDS"
-if [[ "$INFER_MODE" == "completion_sds" ]]; then
+if [[ "$NEEDS_SUMM" == "true" ]]; then
   wait_for_endpoint "http://localhost:8004/v1" "$ENDPOINT_READY_TIMEOUT_SECONDS"
   wait_for_endpoint "http://localhost:8005/v1" "$ENDPOINT_READY_TIMEOUT_SECONDS"
 fi
@@ -153,6 +172,9 @@ DEFAULT_MODEL="$REASON_MODEL_NAME" \
 SUMM_MODEL_PATH="$SUMM_MODEL_PATH" \
 SUMM_MODEL_NAME="$SUMM_MODEL_NAME" \
 INFER_MODE="$INFER_MODE" \
+PROMPT_TYPE="$PROMPT_TYPE" \
+MAX_PYTHON_TIMES="$MAX_PYTHON_TIMES" \
+MAX_SEARCH_TIMES="$MAX_SEARCH_TIMES" \
 CONDA_PATH="$CONDA_PATH" \
 CONDA_ENV="$CONDA_ENV" \
 COUNTS="$COUNTS" \

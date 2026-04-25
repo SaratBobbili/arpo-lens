@@ -81,8 +81,8 @@ def parse_arguments():
                              help="Conda environment name")
     tools_group.add_argument("--python_max_concurrent", type=int, default=32,
                              help="Maximum concurrency for Python executor")
-    tools_group.add_argument("--bing_api_key", type=str, required=True,
-                             help="Bing Search API key")
+    tools_group.add_argument("--bing_api_key", type=str, default="",
+                             help="Bing Search API key (only required if the model emits <search> tags)")
     tools_group.add_argument("--bing_zone", type=str, default="serp_api1",
                              help="Bing search region")
     tools_group.add_argument("--bing_location", type=str, default="us",

@@ -10,17 +10,17 @@ mkdir -p logs
 
 # -------------------- Editable Run Config --------------------
 # Bing search key used by tool-enabled inference.
-BING_API_KEY="e39479c5-a6f0-4043-899d-d19fd26de1c4"
+BING_API_KEY=""
 # Bright Data proxy zone for Bing search requests.
 BING_ZONE="${BING_ZONE:-serp_api1}"
 # Bright Data proxy country code for Bing search (cc URL parameter).
 BING_LOCATION="${BING_LOCATION:-us}"
 
 # Main reasoning model checkpoint/HF id served on ports 8002/8003.
-REASON_MODEL_PATH="${REASON_MODEL_PATH:-dongguanting/Qwen2.5-3B-ARPO}"
+REASON_MODEL_PATH="${REASON_MODEL_PATH:-Qwen/Qwen2.5-3B-Instruct}"
 
 # Served model alias for reasoning endpoints; must match infer DEFAULT_MODEL.
-REASON_MODEL_NAME="${REASON_MODEL_NAME:-dongguanting/Qwen2.5-3B-ARPO}"
+REASON_MODEL_NAME="${REASON_MODEL_NAME:-Qwen2.5-3B-Instruct}"
 
 # Summarization helper checkpoint/HF id served on ports 8004/8005.
 SUMM_MODEL_PATH="${SUMM_MODEL_PATH:-Qwen/Qwen2.5-7B-Instruct}"
@@ -44,9 +44,25 @@ COUNTS="${COUNTS:-1000000}"
 # Restrict this launcher to math benchmarks only (aime24/aime25/math500/gsm8k/math).
 DATASET_GROUP="${DATASET_GROUP:-math}"
 
-# Short tag appended to OUTPUT_PATH and log filenames; lets variant scripts
-# (e.g. longctx / greedy) write to separate folders without clobbering the baseline.
-RUN_TAG="${RUN_TAG:-}"
+# Pass@k turns (one output file per turn); comma or space separated list.
+TURNS="${TURNS:-1 2 3}"
+
+# Sampling temperature (0.0 => greedy decoding).
+TEMPERATURE="${TEMPERATURE:-0.6}"
+
+# Max new tokens per model call; raise for long reasoning traces.
+MAX_TOKENS="${MAX_TOKENS:-4096}"
+
+# End-to-end timeout for a single sample, in seconds.
+SAMPLE_TIMEOUT="${SAMPLE_TIMEOUT:-900}"
+
+# Short tag appended to OUTPUT_PATH and log filenames so different configs
+# land in different folders. When RUN_TAG is not passed, auto-compose it from
+# the decoding/runtime knobs above so the folder name always reflects the
+# exact config used (e.g. T0.6_K1-2-3_mt8192_to1800). The single-dash default
+# (${RUN_TAG-...}) only triggers when RUN_TAG is *unset*, so callers can still
+# force an empty tag with RUN_TAG="" to reuse the plain baseline folder.
+RUN_TAG="${RUN_TAG-T${TEMPERATURE}_K${TURNS// /-}_mt${MAX_TOKENS}_to${SAMPLE_TIMEOUT}}"
 
 # Model-tagged output directory so predictions and metrics are grouped by evaluated model and dataset group.
 # MODEL_OUTPUT_TAG replaces "/" to keep the model name in a single path segment.
@@ -60,29 +76,12 @@ USE_LLM="${USE_LLM:-false}"
 API_BASE_URL="${API_BASE_URL:-http://localhost:8001/v1}"
 JUDGE_MODEL_NAME="${JUDGE_MODEL_NAME:-Qwen2.5-72B-Instruct}"
 
-# Pass@k turns (one output file per turn); comma or space separated list.
-TURNS="${TURNS:-1 2 3}"
-
-# Sampling temperature (0.0 => greedy decoding).
-TEMPERATURE="${TEMPERATURE:-0.6}"
-
-# Max new tokens per model call; raise for long reasoning traces.
-MAX_TOKENS="${MAX_TOKENS:-4096}"
-
-# End-to-end timeout for a single sample, in seconds.
-SAMPLE_TIMEOUT="${SAMPLE_TIMEOUT:-900}"
-
 # Warmup wait time before starting inference.
 SERVER_BOOT_WAIT_SECONDS="${SERVER_BOOT_WAIT_SECONDS:-60}"
 
 # Max seconds to wait for each endpoint health check.
 ENDPOINT_READY_TIMEOUT_SECONDS="${ENDPOINT_READY_TIMEOUT_SECONDS:-300}"
 # -------------------------------------------------------------
-
-if [[ -z "$BING_API_KEY" ]]; then
-  echo "BING_API_KEY is empty. Set it in this script or via environment."
-  exit 1
-fi
 
 REASON_PID=""
 SUMM_PID=""

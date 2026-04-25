@@ -108,11 +108,6 @@ SUMM_MODEL_PATH="${SUMM_MODEL_PATH:-Qwen/Qwen2.5-7B-Instruct}"
 SEARCH_CACHE_FILE="${SEARCH_CACHE_FILE:-search_cache_math_4qa.db}"
 URL_CACHE_FILE="${URL_CACHE_FILE:-search_url_cache_math_4qa.db}"
 
-if [[ -z "$BING_API_KEY" ]]; then
-  echo "BING_API_KEY is required for tool-enabled runs."
-  exit 1
-fi
-
 CMD=(python -u infer.py)
 CMD+=(--infer_mode "$INFER_MODE")
 CMD+=(--endpoints "${ENDPOINTS[@]}")

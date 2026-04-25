@@ -81,7 +81,7 @@ CUSTOM_REWARD_FUNCTION_NAME="compute_score"
 TOTAL_EPOCHS=2                      # Total training epochs
 SAVE_FREQ=5                        # Save frequency
 TEST_FREQ=5                        # Test frequency
-MAX_ACTOR_CKPTS_TO_KEEP=null       # Maximum actor checkpoints to retain; null keeps all checkpoints
+MAX_ACTOR_CKPTS_TO_KEEP=1          # Maximum actor checkpoints to retain; 1 keeps only the latest checkpoint
 
 # ============================ Path Configuration ============================
 # Save path

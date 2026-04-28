@@ -88,7 +88,8 @@ TEST_FREQ=5                        # Test frequency
 
 # ============================ Path Configuration ============================
 # Save path
-SAVE_PATH="${ARPO_ROOT}/checkpoints/${EXPERIMENT_NAME}" # Modify save path
+CHECKPOINT_DIR="/scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ARPO"
+SAVE_PATH="${CHECKPOINT_DIR}/checkpoints/${EXPERIMENT_NAME}" # Modify save path
 ROLLOUT_SAVE_PATH="${SAVE_PATH}/rollout"
 
 # ============================ WandB / API Keys ==============================

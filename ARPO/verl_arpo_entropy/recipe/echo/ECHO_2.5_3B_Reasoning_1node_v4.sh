@@ -32,7 +32,7 @@ export PYTHONPATH="${VERL_ROOT}:$PYTHONPATH"
 # ============================ Basic Configuration ============================
 # Experiment name and project
 PROJECT_NAME="qwen3B" # Modify experiment group
-EXPERIMENT_NAME="echo3B_c4_hl_ll" # validator profile c4 (only <think>/<answer> HL; first_select + select + search + python LL), phase_order=[high_level, low_level]
+EXPERIMENT_NAME="echo3B_c4_hl_ll_entropy_hybrid" # validator profile c4 (only <think>/<answer> HL; first_select + select + search + python LL), phase_order=[high_level, low_level]
 
 # Configuration file path
 CONFIG_PATH="${SCRIPT_DIR}/config" # ECHO recipe config colocated with this launch script
@@ -74,7 +74,7 @@ REWARD_MANAGER="echo"              # Reward manager type
 CUSTOM_REWARD_FUNCTION_PATH="${VERL_ROOT}/verl/utils/reward_score/deep_research_echo.py" # Modify reward function path
 CUSTOM_REWARD_FUNCTION_NAME="compute_score"
 HIGH_LEVEL_REWARD_STRATEGY="scorer" # High-level phase reward strategy: {scorer, entropy, entropy-hybrid}.
-LOW_LEVEL_REWARD_STRATEGY="entropy"  # Low-level phase reward strategy: {scorer, entropy, entropy-hybrid}.
+LOW_LEVEL_REWARD_STRATEGY="entropy-hybrid"  # Low-level phase reward strategy: {scorer, entropy, entropy-hybrid}.
 
 # ============================ Training Configuration ============================
 # Training parameters
@@ -84,7 +84,8 @@ TEST_FREQ=5                        # Test frequency
 
 # ============================ Path Configuration ============================
 # Save path
-SAVE_PATH="${ARPO_ROOT}/checkpoints/${EXPERIMENT_NAME}" # Modify save path
+CHECKPOINT_DIR="/scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ARPO"
+SAVE_PATH="${CHECKPOINT_DIR}/checkpoints/${EXPERIMENT_NAME}" # Modify save path
 ROLLOUT_SAVE_PATH="${SAVE_PATH}/rollout"
 
 # ============================ WandB / API Keys ==============================

@@ -243,6 +243,10 @@ python train_classifier-Jer-alpaca.py --ref_model_id meta-llama/Meta-Llama-3-8B-
 
 
 srun --cpus-per-task=8 --gres=gpu:H200:8 -t 2-00:00:00 -J echo-b-c1 --pty bash
-srun --partition 2xlong --cpus-per-task=8 --gres=gpu:H200:8 -t 2-00:00:00 -J echo-b-c2 --pty bash
-srun --partition 2xlong --cpus-per-task=8 --gres=gpu:H200:8 -t 2-00:00:00 -J echo-b-c3 --pty bash
-srun --partition 2xlong --cpus-per-task=8 --gres=gpu:H200:8 -t 2-00:00:00 -J echo-b-c4 --pty bash
+srun --partition 2xlong --cpus-per-task=8 --gres=gpu:H200:8 -t 2-00:00:00 -J 7b-sft --pty bash
+srun --partition 2xlong --cpus-per-task=8 --gres=gpu:H200:8 -t 2-00:00:00 -J llama-sft --pty bash
+srun --partition 2xlong --cpus-per-task=8 --gres=gpu:H200:8 -t 2-00:00:00 -J fix-eval --pty bash
+srun --partition 2xlong --cpus-per-task=8 --gres=gpu:H200:8 -t 2-00:00:00 -J dapo --pty bash
+srun --partition 2xlong --cpus-per-task=8 --gres=gpu:H200:8 -t 2-00:00:00 -J maxentRL --pty bash
+
+srun --partition 2xlong --cpus-per-task=8 --gres=gpu:H200:8 -t 2-00:00:00 -J echo --pty bash

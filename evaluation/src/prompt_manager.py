@@ -1,15 +1,33 @@
 import sys
 import os
 sys.path.append(os.getcwd())
+import yaml
+
+
+# ECHO trains with `data.active_system_prompt=N` reading echo_system_prompts.yaml.
+# Eval reads the same YAML+index so train and eval prompts cannot drift.
+ECHO_SYSTEM_PROMPT_YAML_ENV = "ECHO_SYSTEM_PROMPT_YAML"
+ECHO_ACTIVE_SYSTEM_PROMPT_ENV = "ECHO_ACTIVE_SYSTEM_PROMPT"
+# Combined per-sample tool budget shared across all tools (mirrors
+# vLLMRolloutECHO.tool_call_limit). Used only when prompt_type=='echo'.
+ECHO_TOOL_CALL_LIMIT_ENV = "ECHO_TOOL_CALL_LIMIT"
+
+
 class PromptManager:
     """Manager for creating and formatting prompts."""
-    
+
     def __init__(self, prompt_type: str):
         self.prompt_type = prompt_type
         self.prompt_template = self._get_template()
-        
+
     def _get_template(self) -> str:
         """Get the prompt template based on prompt type."""
+        if self.prompt_type == 'echo':
+            yaml_path = os.environ[ECHO_SYSTEM_PROMPT_YAML_ENV]
+            active = int(os.environ[ECHO_ACTIVE_SYSTEM_PROMPT_ENV])
+            with open(yaml_path) as f:
+                cfg = yaml.safe_load(f)
+            return cfg[f"system_prompt_{active}"]
         if self.prompt_type == 'code_search':
             return """You are a helpful assistant that can solve the given question step by step with the help of the wikipedia search tool and python interpreter tool. \
 Given a question, you need to first think about the reasoning process in the mind and then provide the answer. \
@@ -97,4 +115,25 @@ Remember to delegate computational tasks to Python and knowledge-intensive tasks
     def get_system_prompt(self) -> str:
         """Get the system prompt."""
         return self.prompt_template
-    
+
+    def format_tool_result(self, content: str) -> str:
+        """Wrap a tool execution result in the byte format the model was trained on.
+        Default matches the original eval pipeline; 'echo' matches
+        vLLMRolloutECHO's ` <result>\\n{...}\\n</result>` injection."""
+        if self.prompt_type == 'echo':
+            return f" <result>\n{content}\n</result>"
+        return f"<result>{content}</result>"
+
+    def get_stop_strings(self) -> list:
+        """vLLM-side stop strings the rollout was trained with.
+        Empty list => no stop tokens (legacy post-hoc parsing path)."""
+        if self.prompt_type == 'echo':
+            return ["</search>", "</python>"]
+        return []
+
+    def get_tool_call_limit(self):
+        """Combined per-sample tool budget shared across all tools, or None for
+        per-tool budgets. Mirrors vLLMRolloutECHO.tool_call_limit (default 5)."""
+        if self.prompt_type == 'echo':
+            return int(os.environ.get(ECHO_TOOL_CALL_LIMIT_ENV, "5"))
+        return None

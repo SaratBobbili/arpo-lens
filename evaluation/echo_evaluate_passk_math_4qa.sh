@@ -20,6 +20,12 @@ MODEL_NAME="${MODEL_NAME:-Qwen2.5-72B-Instruct}"
 CONCURRENT_LIMIT="${CONCURRENT_LIMIT:-50}"
 TIMEOUT="${TIMEOUT:-3600}"
 
+# Inference-time prompt schema; forwarded so evaluate.py can run the trainer's
+# format validator on ECHO outputs. Default empty => no format-pass-rate metric.
+PROMPT_TYPE="${PROMPT_TYPE:-}"
+# ECHO validator profile (c1..c5); only consulted when PROMPT_TYPE=echo.
+VALIDATOR_PROFILE="${VALIDATOR_PROFILE:-c1}"
+
 declare -A TASK_MAP=(
   ["aime24"]="math"
   ["aime25"]="math"
@@ -69,6 +75,13 @@ for file_path in "${RAW_FILES[@]}"; do
     CMD+=(--use_llm)
     CMD+=(--api_base_url "$API_BASE_URL")
     CMD+=(--model_name "$MODEL_NAME")
+  fi
+
+  # Pass prompt_type only when explicitly set; evaluate.py treats absence as
+  # "non-ECHO eval" and skips the format validator.
+  if [[ -n "$PROMPT_TYPE" ]]; then
+    CMD+=(--prompt_type "$PROMPT_TYPE")
+    CMD+=(--validator_profile "$VALIDATOR_PROFILE")
   fi
 
   echo "Evaluating $dataset_name with task=$task"

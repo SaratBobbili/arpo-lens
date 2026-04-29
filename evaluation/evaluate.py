@@ -23,6 +23,12 @@ async def main():
     parser.add_argument('--model_name', type=str, default=None, help='Name of the LLM model used for evaluation')
     parser.add_argument('--concurrent_limit', type=int, default=50, help='Maximum number of concurrent evaluations')
     parser.add_argument('--timeout', type=int, default=1800, help='Total evaluation timeout in seconds')
+    parser.add_argument('--prompt_type', type=str, default=None,
+                        help="Prompt schema used during inference. Set to 'echo' to additionally "
+                             "report the trainer's HL/LL format pass rates.")
+    parser.add_argument('--validator_profile', type=str, default='c1',
+                        help="ECHO validator profile id (c1..c5) matching mask_categories. "
+                             "Only consulted when --prompt_type=echo.")
 
     args = parser.parse_args()
     
@@ -64,7 +70,9 @@ async def main():
             use_llm=args.use_llm,
             api_base_url=args.api_base_url,
             model_name=args.model_name,
-            concurrent_limit=args.concurrent_limit
+            concurrent_limit=args.concurrent_limit,
+            prompt_type=args.prompt_type,
+            validator_profile=args.validator_profile,
         )
         
         # Show output path information

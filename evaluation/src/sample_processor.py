@@ -109,7 +109,7 @@ class SampleProcessor:
             "python", python_code, timeout=120
         )
         self.python_time += time.time() - python_start
-        tool_result = f"<result>{python_result}</result>"
+        tool_result = self.prompt_manager.format_tool_result(python_result)
         self.log_output("user", tool_result)
         self.python_rounds += 1
 
@@ -123,9 +123,9 @@ class SampleProcessor:
         )
         self.search_time += time.time() - search_start
         if search_query is None or search_result is None:
-            tool_result = f"<result></result>"
+            tool_result = self.prompt_manager.format_tool_result("")
         else:
-            tool_result = f"<result>{search_result}</result>"
+            tool_result = self.prompt_manager.format_tool_result(search_result)
         self.log_output("user", tool_result)
         self.search_rounds += 1
 
@@ -192,12 +192,19 @@ class SampleProcessorCompletion(SampleProcessor):
     async def run(self):
         self.sample_start_time = time.time()
         self.process_input()
+        combined_limit = self.prompt_manager.get_tool_call_limit()
         while True:
             output = await self.call_llm()
             if not output:
                 print("[Warning] LLM inference failed!!!")
                 break
             tool_tag = self.tool_executor.identify_tool(output)
+            if combined_limit is not None and tool_tag in ("python", "search") \
+                    and self.python_rounds + self.search_rounds >= combined_limit:
+                # Mirror vLLMRolloutECHO: silent termination on combined-budget
+                # exhaustion, no feedback message (which ECHO never saw in training).
+                print(f"[ECHO] Combined tool budget {combined_limit} reached; terminating sample.")
+                break
             if tool_tag == "python":
                 if self.python_rounds < self.args.max_python_times:
                     python_code = self.tool_executor.extract_content(output, "python")

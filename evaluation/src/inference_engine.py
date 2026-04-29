@@ -43,6 +43,7 @@ class AsyncInference:
             repetition_penalty=args.repetition_penalty,
             n=1,
             include_stop_str_in_output=args.include_stop_str_in_output,
+            stop=self.prompt_manager.get_stop_strings() or None,
         )
         self.args.sampling_params_nostop = SamplingParams(
             temperature=args.temperature,

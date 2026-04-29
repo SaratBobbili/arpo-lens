@@ -2,7 +2,7 @@
 export TMPDIR=/scratch/user/saratb_tamu.edu/tmp
 export RAY_TMPDIR=/scratch/user/saratb_tamu.edu/tmp/ray
 # Overrides model_name_or_path in the YAML config
-MODEL_NAME="Qwen/Qwen2.5-7B"
+MODEL_NAME="Qwen/Qwen2.5-7B-Instruct"
 
 #================== Basic Configuration ==================#
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7  # List of visible GPUs
@@ -23,7 +23,8 @@ MASTER_ADDR="127.0.0.1"  # Address of the master node
 MASTER_PORT=29500        # Port of the master node
 
 # Output directory derived from MODEL_NAME
-OUTPUT_DIR="checkpoints/${MODEL_NAME##*/}/"
+CHECKPOINT_DIR="/scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ECHO/sft"
+OUTPUT_DIR="${CHECKPOINT_DIR}/checkpoints/${MODEL_NAME##*/}/"
 # Create output directory if it doesn't exist
 mkdir -p ${OUTPUT_DIR}
 

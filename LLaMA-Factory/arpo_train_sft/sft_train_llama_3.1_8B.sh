@@ -2,7 +2,7 @@
 export TMPDIR=/scratch/user/saratb_tamu.edu/tmp
 export RAY_TMPDIR=/scratch/user/saratb_tamu.edu/tmp/ray
 # Overrides model_name_or_path in the YAML config
-MODEL_NAME="Qwen/Qwen2.5-3B-Instruct"
+MODEL_NAME="meta-llama/Llama-3.1-8B-Instruct"
 
 #================== Basic Configuration ==================#
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7  # List of visible GPUs
@@ -52,6 +52,7 @@ torchrun --nnodes ${NNODES} \
          model_name_or_path=${MODEL_NAME} \
          output_dir=${OUTPUT_DIR} \
          run_name=${MODEL_NAME##*/} \
+         template=llama3 \
          ${RESUME_ARG} 2>&1 | tee ${OUTPUT_DIR}/training.log
 
 # Optionally enable logging redirection

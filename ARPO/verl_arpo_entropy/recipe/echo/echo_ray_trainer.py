@@ -329,7 +329,8 @@ class RayECHOTrainer(RayPPOTrainer):
                         with _timer(f"{phase_name}_reward", timing_raw):
                             reward_tensor = None
                             future_reward = None
-                            if phase_strategy == "scorer":
+                            entropy_reward_tensor = None
+                            if phase_strategy in ("scorer", "maxentropy_rl"):
                                 if self.use_rm:
                                     reward_tensor = self.rm_wg.compute_rm_score(phase_batch)
                                     phase_batch = phase_batch.union(reward_tensor)
@@ -340,7 +341,7 @@ class RayECHOTrainer(RayPPOTrainer):
                                     reward_tensor, phase_reward_extra_infos_dict = compute_reward(phase_batch, self.reward_fn)
 
                         with _timer(f"{phase_name}_old_log_prob", timing_raw):
-                            phase_batch.meta_info["calculate_entropy"] = phase_strategy in ("entropy", "entropy-hybrid")
+                            phase_batch.meta_info["calculate_entropy"] = phase_strategy in ("entropy", "entropy-hybrid", "maxentropy_rl")
                             old_log_prob = self.actor_rollout_wg.compute_log_prob(phase_batch)
                             loss_agg_mode = self.config.actor_rollout_ref.actor.loss_agg_mode
                             entropys = old_log_prob.batch.pop("entropys", None)
@@ -390,6 +391,36 @@ class RayECHOTrainer(RayPPOTrainer):
                                 extra_mask_key=extra_mask_key,
                             )
                             metrics.update(self._prefix_metrics(entropy_metrics, phase_prefix))
+                        elif phase_strategy == "maxentropy_rl":
+                            if entropys is None:
+                                raise RuntimeError(f"{phase_name} phase uses maxentropy_rl reward but compute_log_prob did not return entropys.")
+                            me_cfg = phase_reward_cfg.max_entropy
+                            # Reduction support set: phase mask intersected with the rollout-emitted
+                            # tool-portion mask (default `tool_loss_mask` -> first_select+select+search+python).
+                            extra_mask_key = me_cfg.mask_key
+                            phase_mask_f = phase_batch.batch[phase_mask_key].to(torch.float32)
+                            entropy_mask_f = phase_mask_f * phase_batch.batch[extra_mask_key].to(torch.float32)
+                            phase_batch.batch[f"{phase_name}_token_entropy"] = entropys.to(torch.float32) * entropy_mask_f
+                            # Reuse `_build_entropy_scalar_reward` by mapping `alpha` -> `scale`
+                            # and disabling the format gate; the scorer's -1 on bad format is
+                            # preserved unchanged in `reward_tensor` (combined later in `_adv`),
+                            # so the entropy term is added unconditionally.
+                            me_entropy_cfg = OmegaConf.create({
+                                "reduction": me_cfg.reduction,
+                                "normalize": me_cfg.normalize,
+                                "scale": me_cfg.alpha,
+                                "clamp_min": None,
+                                "clamp_max": None,
+                                "format_gate": False,
+                            })
+                            entropy_reward_tensor, entropy_metrics = self._build_entropy_scalar_reward(
+                                entropys=entropys,
+                                phase_batch=phase_batch,
+                                phase_mask_key=phase_mask_key,
+                                entropy_cfg=me_entropy_cfg,
+                                extra_mask_key=extra_mask_key,
+                            )
+                            metrics.update(self._prefix_metrics(entropy_metrics, phase_prefix))
 
                         if self.use_reference_policy:
                             with _timer(f"{phase_name}_ref", timing_raw):
@@ -405,14 +436,19 @@ class RayECHOTrainer(RayPPOTrainer):
                                 phase_batch = phase_batch.union(values)
 
                         with _timer(f"{phase_name}_adv", timing_raw):
-                            if phase_strategy == "scorer" and self.config.reward_model.launch_reward_fn_async:
+                            if phase_strategy in ("scorer", "maxentropy_rl") and self.config.reward_model.launch_reward_fn_async:
                                 reward_tensor, phase_reward_extra_infos_dict = ray.get(future_reward)
                             if reward_tensor is None:
                                 raise RuntimeError(f"{phase_name} reward_tensor was not initialized.")
+                            if phase_strategy == "maxentropy_rl":
+                                # r_i = scorer_i + alpha * ent_i; both terms are sparse scalars at
+                                # the last valid response token, so addition stays sparse and
+                                # GRPO's sum(dim=-1) recovers r_i directly.
+                                reward_tensor = reward_tensor + entropy_reward_tensor.to(reward_tensor.device)
                             phase_batch.batch["token_level_scores"] = reward_tensor
                             if phase_reward_extra_infos_dict:
                                 phase_batch.non_tensor_batch.update({k: np.array(v) for k, v in phase_reward_extra_infos_dict.items()})
-                                if phase_strategy == "scorer":
+                                if phase_strategy in ("scorer", "maxentropy_rl"):
                                     metrics.update(
                                         self._prefix_metrics(
                                             self._build_scorer_metrics(phase_reward_extra_infos_dict),

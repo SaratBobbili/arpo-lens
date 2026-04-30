@@ -16,7 +16,7 @@ BING_ZONE="serp_api1"
 # Bright Data proxy country code for Bing search (cc URL parameter).
 BING_LOCATION="us"
 
-# Main reasoning model checkpoint/HF id served on ports 8002/8003.
+# Main reasoning model checkpoint/HF id served on configurable reasoning ports.
 CHECKPOINT_DIR="/scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ECHO"
 # Optional raw VERL actor checkpoint directory to convert before serving.
 # Leave empty to disable conversion and serve ACTOR_MODEL_PATH directly.
@@ -29,7 +29,7 @@ REASON_MODEL_PATH="${ACTOR_MODEL_PATH}"
 # Served model alias for reasoning endpoints; must match infer DEFAULT_MODEL.
 REASON_MODEL_NAME="Qwen2.5-7B-Instruct"
 
-# Summarization helper checkpoint/HF id served on ports 8004/8005.
+# Summarization helper checkpoint/HF id served on configurable summarization ports.
 SUMM_MODEL_PATH="Qwen/Qwen2.5-7B-Instruct"
 # Served model alias for summarization endpoints; must match infer SUMM_MODEL_NAME.
 SUMM_MODEL_NAME="Qwen2.5-7B-Instruct"
@@ -77,13 +77,13 @@ NLTK_DATA_DIR="$CONDA_PATH/envs/$CONDA_ENV/nltk_data"
 COUNTS="1000000"
 
 # Restrict this launcher to math benchmarks only (aime24/aime25/math500/gsm8k/math).
-DATASET_GROUP="math500"
+DATASET_GROUP="math_all"
 
 # Pass@k turns (one output file per turn); space separated list.
-TURNS="1 2 3"
+TURNS="1"
 
 # Sampling temperature (0.0 => greedy decoding).
-TEMPERATURE="0.6"
+TEMPERATURE="0.8"
 
 # Max new tokens per model call; raise for long reasoning traces.
 MAX_TOKENS="4096"
@@ -105,12 +105,18 @@ OUTPUT_PATH="outputs/hf_math_4qa/${CUSTOM_RUN_TAG}/${DATASET_GROUP}${RUN_TAG:+_$
 
 # Enable LLM-as-judge at evaluation time (true => --use_llm passed to evaluate.py).
 USE_LLM="true"
-# HF id / local checkpoint of the LLM judge launched by this orchestrator on port 8001.
+# HF id / local checkpoint of the LLM judge launched by this orchestrator.
 JUDGE_MODEL_PATH="Qwen/Qwen2.5-72B-Instruct-GPTQ-Int4"
 # Served alias for the judge endpoint; must match --model_name passed to evaluate.py.
 JUDGE_MODEL_NAME="Qwen2.5-72B-Instruct"
-# Endpoint URL the evaluator queries; matches the judge launcher PORT.
-API_BASE_URL="http://localhost:8001/v1"
+# Port layout for this run (chosen to avoid collisions with other launchers).
+REASON_PORT_1="8102"
+REASON_PORT_2="8103"
+SUMM_PORT_1="8104"
+SUMM_PORT_2="8105"
+JUDGE_PORT="8101"
+# Endpoint URL the evaluator queries; must match JUDGE_PORT.
+API_BASE_URL="http://localhost:${JUDGE_PORT}/v1"
 
 # Warmup wait time before starting inference.
 SERVER_BOOT_WAIT_SECONDS="60"
@@ -222,6 +228,7 @@ wait_for_endpoint() {
 if [[ "$RESUME_FROM_EVAL" != "true" ]]; then
   echo "[1/5] Starting reasoning servers..."
   setsid env MODEL_PATH="$REASON_MODEL_PATH" MODEL_NAME="$REASON_MODEL_NAME" \
+    REASON_PORT_1="$REASON_PORT_1" REASON_PORT_2="$REASON_PORT_2" \
     bash vllm_scripts/echo_vllm_launch_reasoning_model_hf_cuda4-7.sh \
     > logs/run_reasoning_wrapper.log 2>&1 < /dev/null &
   REASON_PID=$!
@@ -229,6 +236,7 @@ if [[ "$RESUME_FROM_EVAL" != "true" ]]; then
   if [[ "$NEEDS_SUMM" == "true" ]]; then
     echo "[2/5] Starting summarization servers (SDS mode)..."
     setsid env MODEL_PATH="$SUMM_MODEL_PATH" MODEL_NAME="$SUMM_MODEL_NAME" \
+      SUMM_PORT_1="$SUMM_PORT_1" SUMM_PORT_2="$SUMM_PORT_2" \
       bash vllm_scripts/echo_vllm_launch_summarize_model_hf_cuda0-3.sh \
       > logs/run_summarization_wrapper.log 2>&1 < /dev/null &
     SUMM_PID=$!
@@ -239,11 +247,11 @@ if [[ "$RESUME_FROM_EVAL" != "true" ]]; then
   echo "Waiting $SERVER_BOOT_WAIT_SECONDS seconds for server warmup..."
   sleep "$SERVER_BOOT_WAIT_SECONDS"
 
-  wait_for_endpoint "http://localhost:8002/v1" "$ENDPOINT_READY_TIMEOUT_SECONDS"
-  wait_for_endpoint "http://localhost:8003/v1" "$ENDPOINT_READY_TIMEOUT_SECONDS"
+  wait_for_endpoint "http://localhost:${REASON_PORT_1}/v1" "$ENDPOINT_READY_TIMEOUT_SECONDS"
+  wait_for_endpoint "http://localhost:${REASON_PORT_2}/v1" "$ENDPOINT_READY_TIMEOUT_SECONDS"
   if [[ "$NEEDS_SUMM" == "true" ]]; then
-    wait_for_endpoint "http://localhost:8004/v1" "$ENDPOINT_READY_TIMEOUT_SECONDS"
-    wait_for_endpoint "http://localhost:8005/v1" "$ENDPOINT_READY_TIMEOUT_SECONDS"
+    wait_for_endpoint "http://localhost:${SUMM_PORT_1}/v1" "$ENDPOINT_READY_TIMEOUT_SECONDS"
+    wait_for_endpoint "http://localhost:${SUMM_PORT_2}/v1" "$ENDPOINT_READY_TIMEOUT_SECONDS"
   fi
 
   echo "[3/5] Running inference on math benchmarks..."
@@ -264,6 +272,8 @@ if [[ "$RESUME_FROM_EVAL" != "true" ]]; then
   BING_API_KEY="$BING_API_KEY" \
   BING_ZONE="$BING_ZONE" \
   BING_LOCATION="$BING_LOCATION" \
+  ENDPOINTS="http://localhost:${REASON_PORT_1}/v1 http://localhost:${REASON_PORT_2}/v1" \
+  SUMM_MODEL_URLS="http://localhost:${SUMM_PORT_1}/v1 http://localhost:${SUMM_PORT_2}/v1" \
   DATASET_GROUP="$DATASET_GROUP" \
   TURNS="$TURNS" \
   TEMPERATURE="$TEMPERATURE" \
@@ -285,7 +295,7 @@ if [[ "$USE_LLM" == "true" ]]; then
     stop_server SUMM_PID
     sleep "$SERVER_TEARDOWN_WAIT_SECONDS"
   fi
-  setsid env MODEL_PATH="$JUDGE_MODEL_PATH" MODEL_NAME="$JUDGE_MODEL_NAME" \
+  setsid env MODEL_PATH="$JUDGE_MODEL_PATH" MODEL_NAME="$JUDGE_MODEL_NAME" PORT="$JUDGE_PORT" \
     bash vllm_scripts/echo_vllm_launch_judge_model_hf_cuda0-3.sh \
     > logs/run_judge_wrapper.log 2>&1 < /dev/null &
   JUDGE_PID=$!

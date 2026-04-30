@@ -52,10 +52,9 @@ else
 fi
 
 # Main reasoning model endpoints (must be served before running this script).
-ENDPOINTS=(
-  "http://localhost:8002/v1"
-  "http://localhost:8003/v1"
-)
+# Space-separated list, for example: "http://localhost:8002/v1 http://localhost:8003/v1".
+ENDPOINTS_STR="${ENDPOINTS:-http://localhost:8002/v1 http://localhost:8003/v1}"
+read -r -a ENDPOINTS <<< "$ENDPOINTS_STR"
 
 # Set completion_sds to enable full tool + SDS path; set completion to disable SDS summarization.
 INFER_MODE="${INFER_MODE:-completion_sds}"

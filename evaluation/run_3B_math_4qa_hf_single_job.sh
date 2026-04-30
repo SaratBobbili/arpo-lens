@@ -19,11 +19,11 @@ BING_LOCATION="us"
 # Main reasoning model checkpoint/HF id served on ports 8002/8003.
 CHECKPOINT_DIR="/scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ECHO"
 # Raw VERL actor checkpoint directory to convert before serving.
-RAW_ACTOR_CHECKPOINT_PATH="${CHECKPOINT_DIR}/checkpoint_snapshots/echo3BInstruct/global_step_40/actor"
+RAW_ACTOR_CHECKPOINT_PATH="${CHECKPOINT_DIR}/checkpoint_snapshots/echo3BInstruct/global_step_70/actor"
 # Base HF model used as the config/template during VERL->HF merge.
 REASON_BASE_MODEL_PATH="Qwen/Qwen2.5-3B-Instruct"
 # Converted HF model directory served by vLLM.
-ACTOR_MODEL_PATH="${CHECKPOINT_DIR}/checkpoint_snapshots/echo3BInstruct/global_step_40/hf"
+ACTOR_MODEL_PATH="${CHECKPOINT_DIR}/checkpoint_snapshots/echo3BInstruct/global_step_70/hf"
 REASON_MODEL_PATH="${ACTOR_MODEL_PATH}"
 # Served model alias for reasoning endpoints; must match infer DEFAULT_MODEL.
 REASON_MODEL_NAME="Qwen2.5-3B-Instruct"
@@ -50,7 +50,7 @@ PROMPT_TYPE="echo"
 # the combined-budget gate in SampleProcessorCompletion fires before the per-tool
 # gate (which would inject an OOD "limit exceeded" feedback message ECHO never saw).
 MAX_PYTHON_TIMES="5"
-MAX_SEARCH_TIMES="5"
+MAX_SEARCH_TIMES="0"
 
 # ---- ECHO-only config (consumed only when PROMPT_TYPE=echo) ----
 # Single source of truth for the ECHO system prompt: shared with the trainer at
@@ -76,10 +76,10 @@ NLTK_DATA_DIR="$CONDA_PATH/envs/$CONDA_ENV/nltk_data"
 COUNTS="1000000"
 
 # Restrict this launcher to math benchmarks only (aime24/aime25/math500/gsm8k/math).
-DATASET_GROUP="math"
+DATASET_GROUP="math500"
 
 # Pass@k turns (one output file per turn); space separated list.
-TURNS="1 2 3"
+TURNS="1"
 
 # Sampling temperature (0.0 => greedy decoding).
 TEMPERATURE="0.6"
@@ -124,7 +124,7 @@ SERVER_TEARDOWN_WAIT_SECONDS="20"
 # Set to "true" to skip [1/5]-[3/5] (server bring-up + inference) and jump straight to
 # [4/5]-[5/5] (judge launch + evaluation). Use this when inference outputs already exist
 # under OUTPUT_PATH and only the judge/eval stage needs to be re-run.
-RESUME_FROM_EVAL="false"
+RESUME_FROM_EVAL="true"
 # -------------------------------------------------------------
 
 # When PROMPT_TYPE=echo: export ECHO env vars for prompt_manager.PromptManager

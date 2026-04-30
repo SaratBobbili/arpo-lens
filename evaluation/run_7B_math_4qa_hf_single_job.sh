@@ -77,7 +77,7 @@ NLTK_DATA_DIR="$CONDA_PATH/envs/$CONDA_ENV/nltk_data"
 COUNTS="1000000"
 
 # Restrict this launcher to math benchmarks only (aime24/aime25/math500/gsm8k/math).
-DATASET_GROUP="math"
+DATASET_GROUP="math500"
 
 # Pass@k turns (one output file per turn); space separated list.
 TURNS="1 2 3"

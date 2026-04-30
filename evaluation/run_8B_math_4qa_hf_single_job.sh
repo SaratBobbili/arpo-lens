@@ -55,6 +55,10 @@ ECHO_SYSTEM_PROMPT_YAML="${SCRIPT_DIR}/../ARPO/verl_arpo_entropy/recipe/echo/con
 ECHO_ACTIVE_SYSTEM_PROMPT="1"
 # Combined per-sample tool budget for ECHO-style prompting.
 ECHO_TOOL_CALL_LIMIT="5"
+# Validator profile id (c1..c5) matching the trainer's mask_categories signature;
+# routes which format checks gate HL vs LL inside deep_research_echo.compute_score.
+# c1 = plan/reason/answer HL; tool choice + payload LL (the v1_ll_hl recipes).
+ECHO_VALIDATOR_PROFILE="c1"
 
 # Conda root and env used by the Python tool executor.
 CONDA_PATH="/scratch/user/saratb_tamu.edu/miniconda3"
@@ -95,7 +99,7 @@ OUTPUT_PATH="outputs/hf_math_4qa/${CUSTOM_RUN_TAG}/${DATASET_GROUP}${RUN_TAG:+_$
 # Enable LLM-as-judge at evaluation time (true => --use_llm passed to evaluate.py).
 USE_LLM="true"
 # HF id / local checkpoint of the LLM judge launched by this orchestrator on port 8001.
-JUDGE_MODEL_PATH="Qwen/Qwen2.5-72B-Instruct-GPTQ-INT4"
+JUDGE_MODEL_PATH="Qwen/Qwen2.5-72B-Instruct-GPTQ-Int4"
 # Served alias for the judge endpoint; must match --model_name passed to evaluate.py.
 JUDGE_MODEL_NAME="Qwen2.5-72B-Instruct"
 # Endpoint URL the evaluator queries; matches the judge launcher PORT.
@@ -289,6 +293,8 @@ OUTPUT_DIR="$OUTPUT_PATH" \
 USE_LLM="$USE_LLM" \
 API_BASE_URL="$API_BASE_URL" \
 MODEL_NAME="$JUDGE_MODEL_NAME" \
+PROMPT_TYPE="$PROMPT_TYPE" \
+VALIDATOR_PROFILE="$ECHO_VALIDATOR_PROFILE" \
 bash echo_evaluate_passk_math_4qa.sh | tee "logs/run_eval_math_4qa_hf${RUN_TAG:+_$RUN_TAG}.log"
 
 echo "Run completed successfully. Outputs: $OUTPUT_PATH"

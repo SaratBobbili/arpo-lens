@@ -46,7 +46,7 @@ INFER_MODE="completion"
 #   code_search -> python + search (default for ARPO/AEPO trained checkpoints)
 #   echo        -> ECHO <select>/<tool> schema; loads system prompt from
 #                  ECHO_SYSTEM_PROMPT_YAML below instead of a hardcoded literal.
-PROMPT_TYPE="echo"
+PROMPT_TYPE="code_search"
 
 # Per-sample tool-call budgets enforced by the SampleProcessor; set to 0 to disable a tool entirely.
 # When PROMPT_TYPE=echo these are overridden below to the combined ECHO budget so

@@ -7,9 +7,16 @@ export PYTHONPATH="$(pwd):${PYTHONPATH:-}"
 mkdir -p logs
 
 # Dataset group selector:
-# - math: evaluate only math datasets
-# - all : evaluate math + QA datasets
+# - math      : run only math
+# - aime      : run aime24 + aime25
+# - gsm8k     : run only gsm8k
+# - math500   : run only math500
+# - math_all  : run all math datasets
 DATASET_GROUP="${DATASET_GROUP:-math}"
+# Optional explicit dataset list override (space-separated).
+# Example: DATASET_NAMES="math500 gsm8k"
+# When set, this takes priority over DATASET_GROUP.
+DATASET_NAMES="${DATASET_NAMES:-}"
 
 MATH_DATASETS=(
   "aime24"
@@ -26,12 +33,21 @@ QA_DATASETS=(
   "bamboogle"
 )
 
-if [[ "$DATASET_GROUP" == "math" ]]; then
+if [[ -n "$DATASET_NAMES" ]]; then
+  # Split on spaces into a bash array.
+  read -r -a DATASETS <<< "$DATASET_NAMES"
+elif [[ "$DATASET_GROUP" == "math" ]]; then
+  DATASETS=("math")
+elif [[ "$DATASET_GROUP" == "aime" ]]; then
+  DATASETS=("aime24" "aime25")
+elif [[ "$DATASET_GROUP" == "gsm8k" ]]; then
+  DATASETS=("gsm8k")
+elif [[ "$DATASET_GROUP" == "math500" ]]; then
+  DATASETS=("math500")
+elif [[ "$DATASET_GROUP" == "math_all" ]]; then
   DATASETS=("${MATH_DATASETS[@]}")
-elif [[ "$DATASET_GROUP" == "all" ]]; then
-  DATASETS=("${MATH_DATASETS[@]}" "${QA_DATASETS[@]}")
 else
-  echo "Unsupported DATASET_GROUP=$DATASET_GROUP (expected: math or all)"
+  echo "Unsupported DATASET_GROUP=$DATASET_GROUP (expected: math, aime, gsm8k, math500, or math_all)"
   exit 1
 fi
 

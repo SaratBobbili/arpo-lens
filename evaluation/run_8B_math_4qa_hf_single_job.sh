@@ -20,11 +20,11 @@ BING_LOCATION="us"
 CHECKPOINT_DIR="/scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ECHO"
 # Optional raw VERL actor checkpoint directory to convert before serving.
 # Leave empty to disable conversion and serve ACTOR_MODEL_PATH directly.
-RAW_ACTOR_CHECKPOINT_PATH="${CHECKPOINT_DIR}/checkpoint_snapshots/echo8BInstruct/global_step_10/actor"
+RAW_ACTOR_CHECKPOINT_PATH="${CHECKPOINT_DIR}/checkpoint_snapshots/echo8BInstruct/global_step_40/actor"
 # Base HF model used as the config/template during VERL->HF merge.
 REASON_BASE_MODEL_PATH="meta-llama/Llama-3.1-8B-Instruct"
 # Converted or directly served HF model directory/repo id used by vLLM.
-ACTOR_MODEL_PATH="${CHECKPOINT_DIR}/checkpoint_snapshots/echo8BInstruct/global_step_10/hf"
+ACTOR_MODEL_PATH="${CHECKPOINT_DIR}/checkpoint_snapshots/echo8BInstruct/global_step_40/hf"
 REASON_MODEL_PATH="${ACTOR_MODEL_PATH}"
 # Served model alias for reasoning endpoints; must match infer DEFAULT_MODEL.
 REASON_MODEL_NAME="Llama-3.1-8B-Instruct"
@@ -42,11 +42,19 @@ INFER_MODE="completion"
 #   math        -> python only (table row "+ TIR Prompting")
 #   search      -> search only
 #   code_search -> python + search (default for ARPO/AEPO trained checkpoints)
-PROMPT_TYPE="code_search"
+PROMPT_TYPE="echo"
 
 # Per-sample tool-call budgets enforced by the SampleProcessor; set to 0 to disable a tool entirely.
 MAX_PYTHON_TIMES="5"
 MAX_SEARCH_TIMES="0"
+
+# ---- ECHO-only config (consumed only when PROMPT_TYPE=echo) ----
+# Shared prompt YAML used by both training and evaluation.
+ECHO_SYSTEM_PROMPT_YAML="${SCRIPT_DIR}/../ARPO/verl_arpo_entropy/recipe/echo/config/echo_system_prompts.yaml"
+# Active prompt index (maps to system_prompt_N in the YAML).
+ECHO_ACTIVE_SYSTEM_PROMPT="1"
+# Combined per-sample tool budget for ECHO-style prompting.
+ECHO_TOOL_CALL_LIMIT="5"
 
 # Conda root and env used by the Python tool executor.
 CONDA_PATH="/scratch/user/saratb_tamu.edu/miniconda3"
@@ -76,16 +84,18 @@ SAMPLE_TIMEOUT="900"
 # different folders. Auto-composed from the decoding/runtime knobs above; set to ""
 # to reuse a plain baseline folder.
 RUN_TAG="T${TEMPERATURE}_K${TURNS// /-}_mt${MAX_TOKENS}_to${SAMPLE_TIMEOUT}"
-CUSTOM_RUN_TAG="LLM_as_judge/arpo"
+# Checkpoint folder (e.g., global_step_40) inferred from ACTOR_MODEL_PATH.
+CHECKPOINT_TAG="$(basename "$(dirname "$ACTOR_MODEL_PATH")")"
+CUSTOM_RUN_TAG="LLM_as_judge/${REASON_MODEL_NAME}/${CHECKPOINT_TAG}"
 
 # Model-tagged output directory; "/" -> "__" keeps the model name in one path segment.
 MODEL_OUTPUT_TAG="${REASON_MODEL_NAME//\//__}"
-OUTPUT_PATH="outputs/hf_math_4qa/${CUSTOM_RUN_TAG}/${MODEL_OUTPUT_TAG}/${DATASET_GROUP}${RUN_TAG:+_$RUN_TAG}"
+OUTPUT_PATH="outputs/hf_math_4qa/${CUSTOM_RUN_TAG}/${DATASET_GROUP}${RUN_TAG:+_$RUN_TAG}"
 
 # Enable LLM-as-judge at evaluation time (true => --use_llm passed to evaluate.py).
 USE_LLM="true"
 # HF id / local checkpoint of the LLM judge launched by this orchestrator on port 8001.
-JUDGE_MODEL_PATH="Qwen/Qwen2.5-72B-Instruct-GPTQ-Int4"
+JUDGE_MODEL_PATH="Qwen/Qwen2.5-72B-Instruct-GPTQ-INT4"
 # Served alias for the judge endpoint; must match --model_name passed to evaluate.py.
 JUDGE_MODEL_NAME="Qwen2.5-72B-Instruct"
 # Endpoint URL the evaluator queries; matches the judge launcher PORT.
@@ -106,6 +116,14 @@ SERVER_TEARDOWN_WAIT_SECONDS="20"
 # under OUTPUT_PATH and only the judge/eval stage needs to be re-run.
 RESUME_FROM_EVAL="false"
 # -------------------------------------------------------------
+
+# When PROMPT_TYPE=echo, PromptManager requires ECHO_* env vars.
+if [[ "$PROMPT_TYPE" == "echo" ]]; then
+  export ECHO_SYSTEM_PROMPT_YAML ECHO_ACTIVE_SYSTEM_PROMPT ECHO_TOOL_CALL_LIMIT
+  # Keep per-tool limits aligned with the combined ECHO budget.
+  MAX_PYTHON_TIMES="$ECHO_TOOL_CALL_LIMIT"
+  MAX_SEARCH_TIMES="$ECHO_TOOL_CALL_LIMIT"
+fi
 
 # Summarization servers are only required when the prompt advertises search AND the
 # inference engine is the SDS variant; base/math prompts never emit <search>, so the

@@ -10,24 +10,26 @@ mkdir -p logs
 
 # -------------------- Editable Run Config --------------------
 # Bing search key used by tool-enabled inference.
-BING_API_KEY=""
+BING_API_KEY="9c221824-9a57-4261-b1b7-979959492235"
 # Bright Data proxy zone for Bing search requests.
 BING_ZONE="serp_api1"
 # Bright Data proxy country code for Bing search (cc URL parameter).
 BING_LOCATION="us"
 
 # Main reasoning model checkpoint/HF id served on ports 8002/8003.
-CHECKPOINT_DIR="/scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ECHO"
-# Optional raw VERL actor checkpoint directory to convert before serving.
-# Leave empty to disable conversion and serve ACTOR_MODEL_PATH directly.
-RAW_ACTOR_CHECKPOINT_PATH="${CHECKPOINT_DIR}/checkpoint_snapshots/echo7BInstruct/global_step_35/actor"
-# Base HF model used as the config/template during VERL->HF merge.
-REASON_BASE_MODEL_PATH="Qwen/Qwen2.5-7B-Instruct"
-# Converted or directly served HF model directory/repo id used by vLLM.
-ACTOR_MODEL_PATH="${CHECKPOINT_DIR}/checkpoint_snapshots/echo7BInstruct/global_step_35/hf"
-REASON_MODEL_PATH="${ACTOR_MODEL_PATH}"
+# CHECKPOINT_DIR="/scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ECHO"
+# # Raw VERL actor checkpoint directory to convert before serving.
+# RAW_ACTOR_CHECKPOINT_PATH="${CHECKPOINT_DIR}/checkpoint_snapshots/echo3BInstruct/global_step_40/actor"
+# # Base HF model used as the config/template during VERL->HF merge.
+# REASON_BASE_MODEL_PATH="Qwen/Qwen2.5-3B-Instruct"
+# # Converted HF model directory served by vLLM.
+# ACTOR_MODEL_PATH="${CHECKPOINT_DIR}/checkpoint_snapshots/echo3BInstruct/global_step_40/hf"
+# REASON_MODEL_PATH="${ACTOR_MODEL_PATH}"
+REASON_MODEL_PATH="dongguanting/Qwen2.5-7B-ARPO"
 # Served model alias for reasoning endpoints; must match infer DEFAULT_MODEL.
-REASON_MODEL_NAME="Qwen2.5-7B-Instruct"
+REASON_MODEL_NAME="Qwen2.5-3B-Instruct"
+# Served model alias for reasoning endpoints; must match infer DEFAULT_MODEL.
+REASON_MODEL_NAME="Qwen2.5-3B-Instruct"
 
 # Summarization helper checkpoint/HF id served on ports 8004/8005.
 SUMM_MODEL_PATH="Qwen/Qwen2.5-7B-Instruct"
@@ -51,7 +53,7 @@ PROMPT_TYPE="echo"
 # the combined-budget gate in SampleProcessorCompletion fires before the per-tool
 # gate (which would inject an OOD "limit exceeded" feedback message ECHO never saw).
 MAX_PYTHON_TIMES="5"
-MAX_SEARCH_TIMES="0"
+MAX_SEARCH_TIMES="5"
 
 # ---- ECHO-only config (consumed only when PROMPT_TYPE=echo) ----
 # Single source of truth for the ECHO system prompt: shared with the trainer at
@@ -96,17 +98,16 @@ SAMPLE_TIMEOUT="900"
 # to reuse a plain baseline folder.
 RUN_TAG="T${TEMPERATURE}_K${TURNS// /-}_mt${MAX_TOKENS}_to${SAMPLE_TIMEOUT}"
 # Checkpoint folder (e.g., global_step_40) inferred from ACTOR_MODEL_PATH.
-CHECKPOINT_TAG="$(basename "$(dirname "$ACTOR_MODEL_PATH")")"
-CUSTOM_RUN_TAG="LLM_as_judge/${REASON_MODEL_NAME}/${CHECKPOINT_TAG}"
+CUSTOM_RUN_TAG="LLM_as_judge/arpo/${REASON_MODEL_NAME}/"
 
 # Model-tagged output directory; "/" -> "__" keeps the model name in one path segment.
 MODEL_OUTPUT_TAG="${REASON_MODEL_NAME//\//__}"
-OUTPUT_PATH="outputs/hf_math_4qa/${CUSTOM_RUN_TAG}/${DATASET_GROUP}${RUN_TAG:+_$RUN_TAG}"
+OUTPUT_PATH="outputs/hf_math_4qa/${CUSTOM_RUN_TAG}/${MODEL_OUTPUT_TAG}/${DATASET_GROUP}${RUN_TAG:+_$RUN_TAG}"
 
 # Enable LLM-as-judge at evaluation time (true => --use_llm passed to evaluate.py).
 USE_LLM="true"
 # HF id / local checkpoint of the LLM judge launched by this orchestrator on port 8001.
-JUDGE_MODEL_PATH="Qwen/Qwen2.5-72B-Instruct-GPTQ-Int4"
+JUDGE_MODEL_PATH="Qwen/Qwen2.5-72B-Instruct"
 # Served alias for the judge endpoint; must match --model_name passed to evaluate.py.
 JUDGE_MODEL_NAME="Qwen2.5-72B-Instruct"
 # Endpoint URL the evaluator queries; matches the judge launcher PORT.
@@ -146,39 +147,11 @@ if [[ "$INFER_MODE" == "completion_sds" && "$PROMPT_TYPE" != "base" && "$PROMPT_
 fi
 
 # Convert VERL/FSDP actor shards into a vLLM-loadable HF directory once.
-# When RAW_ACTOR_CHECKPOINT_PATH is empty, conversion is skipped.
-if [[ -n "$RAW_ACTOR_CHECKPOINT_PATH" && -d "$RAW_ACTOR_CHECKPOINT_PATH" ]]; then
-  if [[ ! -f "${ACTOR_MODEL_PATH}/config.json" ]]; then
-    echo "[0/5] Converting VERL actor checkpoint to HF format..."
-    python ../ARPO/merge_ckpt/convert_checkpoint_from_verl_to_hf.py merge \
-      --backend fsdp \
-      --hf_model_path "$REASON_BASE_MODEL_PATH" \
-      --local_dir "$RAW_ACTOR_CHECKPOINT_PATH" \
-      --target_dir "$ACTOR_MODEL_PATH"
-  else
-    echo "[0/5] Found converted HF checkpoint, skipping merge: $ACTOR_MODEL_PATH"
-  fi
-fi
-
 # Hard fail early when the reasoning model is not loadable by vLLM.
 # Valid inputs are either:
 #   1) local HF directory with config.json, or
 #   2) Hugging Face repo id in the form "namespace/model".
-if [[ -d "$ACTOR_MODEL_PATH" ]]; then
-  if [[ ! -f "${ACTOR_MODEL_PATH}/config.json" ]]; then
-    echo "ERROR: ACTOR_MODEL_PATH points to a local directory without config.json: $ACTOR_MODEL_PATH" >&2
-    echo "       Provide a converted HF directory (run VERL->HF merge) or set a valid HF repo id." >&2
-    exit 1
-  fi
-elif [[ "$ACTOR_MODEL_PATH" == /* || "$ACTOR_MODEL_PATH" == ./* || "$ACTOR_MODEL_PATH" == ../* ]]; then
-  echo "ERROR: ACTOR_MODEL_PATH looks like a local path but does not exist: $ACTOR_MODEL_PATH" >&2
-  echo "       Check the path or run checkpoint conversion before launch." >&2
-  exit 1
-elif [[ "$ACTOR_MODEL_PATH" != */* ]]; then
-  echo "ERROR: ACTOR_MODEL_PATH is neither a local HF directory nor a valid HF repo id: $ACTOR_MODEL_PATH" >&2
-  echo "       Expected HF repo id format: namespace/model" >&2
-  exit 1
-fi
+
 
 REASON_PID=""
 SUMM_PID=""

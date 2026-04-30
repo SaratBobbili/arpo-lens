@@ -9,8 +9,8 @@ mkdir -p logs
 # Root output directory created by inference script.
 OUTPUT_DIR="${OUTPUT_DIR:-outputs/hf_math_4qa}"
 
-# Set true to add LLM-as-judge scoring; keep false for pure math/F1 scoring.
-USE_LLM="${USE_LLM:-false}"
+# LLM-as-judge is the default author-style metric path; set false only for parser-only debugging.
+USE_LLM="${USE_LLM:-true}"
 
 # Judge endpoint/model only used when USE_LLM=true.
 API_BASE_URL="${API_BASE_URL:-http://localhost:8001/v1}"

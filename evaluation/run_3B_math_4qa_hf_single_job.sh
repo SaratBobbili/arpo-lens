@@ -19,11 +19,11 @@ BING_LOCATION="us"
 # Main reasoning model checkpoint/HF id served on ports 8002/8003.
 CHECKPOINT_DIR="/scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ECHO"
 # Raw VERL actor checkpoint directory to convert before serving.
-RAW_ACTOR_CHECKPOINT_PATH="${CHECKPOINT_DIR}/checkpoint_snapshots/echo3BInstruct/global_step_10/actor"
+RAW_ACTOR_CHECKPOINT_PATH="${CHECKPOINT_DIR}/checkpoint_snapshots/echo3BInstruct/global_step_40/actor"
 # Base HF model used as the config/template during VERL->HF merge.
 REASON_BASE_MODEL_PATH="Qwen/Qwen2.5-3B-Instruct"
 # Converted HF model directory served by vLLM.
-ACTOR_MODEL_PATH="${CHECKPOINT_DIR}/checkpoint_snapshots/echo3BInstruct/global_step_10/hf"
+ACTOR_MODEL_PATH="${CHECKPOINT_DIR}/checkpoint_snapshots/echo3BInstruct/global_step_40/hf"
 REASON_MODEL_PATH="${ACTOR_MODEL_PATH}"
 # Served model alias for reasoning endpoints; must match infer DEFAULT_MODEL.
 REASON_MODEL_NAME="Qwen2.5-3B-Instruct"
@@ -94,11 +94,13 @@ SAMPLE_TIMEOUT="900"
 # different folders. Auto-composed from the decoding/runtime knobs above; set to ""
 # to reuse a plain baseline folder.
 RUN_TAG="T${TEMPERATURE}_K${TURNS// /-}_mt${MAX_TOKENS}_to${SAMPLE_TIMEOUT}"
-CUSTOM_RUN_TAG="LLM_as_judge/${REASON_MODEL_NAME}"
+# Checkpoint folder (e.g., global_step_40) inferred from ACTOR_MODEL_PATH.
+CHECKPOINT_TAG="$(basename "$(dirname "$ACTOR_MODEL_PATH")")"
+CUSTOM_RUN_TAG="LLM_as_judge/${REASON_MODEL_NAME}/${CHECKPOINT_TAG}"
 
 # Model-tagged output directory; "/" -> "__" keeps the model name in one path segment.
 MODEL_OUTPUT_TAG="${REASON_MODEL_NAME//\//__}"
-OUTPUT_PATH="outputs/hf_math_4qa/${CUSTOM_RUN_TAG}/${MODEL_OUTPUT_TAG}/${DATASET_GROUP}${RUN_TAG:+_$RUN_TAG}"
+OUTPUT_PATH="outputs/hf_math_4qa/${CUSTOM_RUN_TAG}/${DATASET_GROUP}${RUN_TAG:+_$RUN_TAG}"
 
 # Enable LLM-as-judge at evaluation time (true => --use_llm passed to evaluate.py).
 USE_LLM="true"

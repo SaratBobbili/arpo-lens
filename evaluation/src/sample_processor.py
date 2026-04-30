@@ -201,10 +201,13 @@ class SampleProcessorCompletion(SampleProcessor):
             tool_tag = self.tool_executor.identify_tool(output)
             if combined_limit is not None and tool_tag in ("python", "search") \
                     and self.python_rounds + self.search_rounds >= combined_limit:
-                # Mirror vLLMRolloutECHO: silent termination on combined-budget
-                # exhaustion, no feedback message (which ECHO never saw in training).
-                print(f"[ECHO] Combined tool budget {combined_limit} reached; terminating sample.")
-                break
+                # Keep ECHO behavior aligned with completion-mode feedback handling:
+                # do not execute the extra tool call, inject the same limit message.
+                if tool_tag == "python":
+                    self.call_python_max_limit()
+                else:
+                    self.call_search_max_limit()
+                continue
             if tool_tag == "python":
                 if self.python_rounds < self.args.max_python_times:
                     python_code = self.tool_executor.extract_content(output, "python")

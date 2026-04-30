@@ -17,9 +17,17 @@ BING_ZONE="serp_api1"
 BING_LOCATION="us"
 
 # Main reasoning model checkpoint/HF id served on ports 8002/8003.
-REASON_MODEL_PATH="dongguanting/Qwen2.5-3B-ARPO"
+CHECKPOINT_DIR="/scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ECHO"
+# Optional raw VERL actor checkpoint directory to convert before serving.
+# Leave empty to disable conversion and serve ACTOR_MODEL_PATH directly.
+RAW_ACTOR_CHECKPOINT_PATH="${CHECKPOINT_DIR}/checkpoint_snapshots/echo8BInstruct/global_step_10/actor"
+# Base HF model used as the config/template during VERL->HF merge.
+REASON_BASE_MODEL_PATH="meta-llama/Llama-3.1-8B-Instruct"
+# Converted or directly served HF model directory/repo id used by vLLM.
+ACTOR_MODEL_PATH="${CHECKPOINT_DIR}/checkpoint_snapshots/echo8BInstruct/global_step_10/hf"
+REASON_MODEL_PATH="${ACTOR_MODEL_PATH}"
 # Served model alias for reasoning endpoints; must match infer DEFAULT_MODEL.
-REASON_MODEL_NAME="Qwen2.5-3B-Instruct"
+REASON_MODEL_NAME="Llama-3.1-8B-Instruct"
 
 # Summarization helper checkpoint/HF id served on ports 8004/8005.
 SUMM_MODEL_PATH="Qwen/Qwen2.5-7B-Instruct"
@@ -105,6 +113,41 @@ RESUME_FROM_EVAL="false"
 NEEDS_SUMM="false"
 if [[ "$INFER_MODE" == "completion_sds" && "$PROMPT_TYPE" != "base" && "$PROMPT_TYPE" != "math" ]]; then
   NEEDS_SUMM="true"
+fi
+
+# Convert VERL/FSDP actor shards into a vLLM-loadable HF directory once.
+# When RAW_ACTOR_CHECKPOINT_PATH is empty, conversion is skipped.
+if [[ -n "$RAW_ACTOR_CHECKPOINT_PATH" && -d "$RAW_ACTOR_CHECKPOINT_PATH" ]]; then
+  if [[ ! -f "${ACTOR_MODEL_PATH}/config.json" ]]; then
+    echo "[0/5] Converting VERL actor checkpoint to HF format..."
+    python ../ARPO/merge_ckpt/convert_checkpoint_from_verl_to_hf.py merge \
+      --backend fsdp \
+      --hf_model_path "$REASON_BASE_MODEL_PATH" \
+      --local_dir "$RAW_ACTOR_CHECKPOINT_PATH" \
+      --target_dir "$ACTOR_MODEL_PATH"
+  else
+    echo "[0/5] Found converted HF checkpoint, skipping merge: $ACTOR_MODEL_PATH"
+  fi
+fi
+
+# Hard fail early when the reasoning model is not loadable by vLLM.
+# Valid inputs are either:
+#   1) local HF directory with config.json, or
+#   2) Hugging Face repo id in the form "namespace/model".
+if [[ -d "$ACTOR_MODEL_PATH" ]]; then
+  if [[ ! -f "${ACTOR_MODEL_PATH}/config.json" ]]; then
+    echo "ERROR: ACTOR_MODEL_PATH points to a local directory without config.json: $ACTOR_MODEL_PATH" >&2
+    echo "       Provide a converted HF directory (run VERL->HF merge) or set a valid HF repo id." >&2
+    exit 1
+  fi
+elif [[ "$ACTOR_MODEL_PATH" == /* || "$ACTOR_MODEL_PATH" == ./* || "$ACTOR_MODEL_PATH" == ../* ]]; then
+  echo "ERROR: ACTOR_MODEL_PATH looks like a local path but does not exist: $ACTOR_MODEL_PATH" >&2
+  echo "       Check the path or run checkpoint conversion before launch." >&2
+  exit 1
+elif [[ "$ACTOR_MODEL_PATH" != */* ]]; then
+  echo "ERROR: ACTOR_MODEL_PATH is neither a local HF directory nor a valid HF repo id: $ACTOR_MODEL_PATH" >&2
+  echo "       Expected HF repo id format: namespace/model" >&2
+  exit 1
 fi
 
 REASON_PID=""

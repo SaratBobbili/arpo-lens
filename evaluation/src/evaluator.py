@@ -14,6 +14,7 @@ from .metrics import (
     evaluate_math_prediction,
     evaluate_qa_prediction
 )
+from .utils import extract_answer
 from .llm_evaluator_sds import LLMEvaluator
 # from .llm_evaluator import LLMEvaluator
 
@@ -96,16 +97,18 @@ class Evaluator:
         """
         question = item.get('input', '')
         answer = item.get('answer', '')
-        prediction = item.get('prediction', '')
+        prediction = (item.get('prediction') or '').strip()
         output = item.get('output', '')
 
-        # If prediction is empty, extract from the last few lines of output
-        if not prediction:
-            if output:
-                prediction = '\n'.join(output.replace(
-                    "\n\n", "\n").strip().split('\n')[-5:])
-            else:
-                prediction = ''
+        if not prediction and output:
+            ex = extract_answer(output)
+            if ex and str(ex).strip():
+                prediction = str(ex).strip()
+        if not prediction and output:
+            prediction = '\n'.join(output.replace(
+                "\n\n", "\n").strip().split('\n')[-5:])
+        elif not prediction:
+            prediction = ''
         
         if not prediction:
             # Return zero metrics if prediction is empty

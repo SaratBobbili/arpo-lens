@@ -17,7 +17,14 @@ BING_ZONE="serp_api1"
 BING_LOCATION="us"
 
 # Main reasoning model checkpoint/HF id served on ports 8002/8003.
-REASON_MODEL_PATH="dongguanting/Qwen2.5-3B-ARPO"
+CHECKPOINT_DIR="/scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ECHO"
+# Raw VERL actor checkpoint directory to convert before serving.
+RAW_ACTOR_CHECKPOINT_PATH="${CHECKPOINT_DIR}/checkpoint_snapshots/echo3BInstruct/global_step_10/actor"
+# Base HF model used as the config/template during VERL->HF merge.
+REASON_BASE_MODEL_PATH="Qwen/Qwen2.5-3B-Instruct"
+# Converted HF model directory served by vLLM.
+ACTOR_MODEL_PATH="${CHECKPOINT_DIR}/checkpoint_snapshots/echo3BInstruct/global_step_10/hf"
+REASON_MODEL_PATH="${ACTOR_MODEL_PATH}"
 # Served model alias for reasoning endpoints; must match infer DEFAULT_MODEL.
 REASON_MODEL_NAME="Qwen2.5-3B-Instruct"
 
@@ -27,7 +34,7 @@ SUMM_MODEL_PATH="Qwen/Qwen2.5-7B-Instruct"
 SUMM_MODEL_NAME="Qwen2.5-7B-Instruct"
 
 # completion_sds enables SDS with summarization; completion/default skips summarization.
-INFER_MODE="completion_sds"
+INFER_MODE="completion"
 
 # System prompt schema:
 #   base        -> no tools (pure CoT, table row "Qwen2.5-3B-Instruct")
@@ -36,14 +43,14 @@ INFER_MODE="completion_sds"
 #   code_search -> python + search (default for ARPO/AEPO trained checkpoints)
 #   echo        -> ECHO <select>/<tool> schema; loads system prompt from
 #                  ECHO_SYSTEM_PROMPT_YAML below instead of a hardcoded literal.
-PROMPT_TYPE="code_search"
+PROMPT_TYPE="echo"
 
 # Per-sample tool-call budgets enforced by the SampleProcessor; set to 0 to disable a tool entirely.
 # When PROMPT_TYPE=echo these are overridden below to the combined ECHO budget so
 # the combined-budget gate in SampleProcessorCompletion fires before the per-tool
 # gate (which would inject an OOD "limit exceeded" feedback message ECHO never saw).
 MAX_PYTHON_TIMES="5"
-MAX_SEARCH_TIMES="8"
+MAX_SEARCH_TIMES="5"
 
 # ---- ECHO-only config (consumed only when PROMPT_TYPE=echo) ----
 # Single source of truth for the ECHO system prompt: shared with the trainer at
@@ -69,7 +76,7 @@ NLTK_DATA_DIR="$CONDA_PATH/envs/$CONDA_ENV/nltk_data"
 COUNTS="1000000"
 
 # Restrict this launcher to math benchmarks only (aime24/aime25/math500/gsm8k/math).
-DATASET_GROUP="all"
+DATASET_GROUP="math"
 
 # Pass@k turns (one output file per turn); space separated list.
 TURNS="1 2 3"
@@ -87,7 +94,7 @@ SAMPLE_TIMEOUT="900"
 # different folders. Auto-composed from the decoding/runtime knobs above; set to ""
 # to reuse a plain baseline folder.
 RUN_TAG="T${TEMPERATURE}_K${TURNS// /-}_mt${MAX_TOKENS}_to${SAMPLE_TIMEOUT}"
-CUSTOM_RUN_TAG="LLM_as_judge/arpo"
+CUSTOM_RUN_TAG="LLM_as_judge/${REASON_MODEL_NAME}"
 
 # Model-tagged output directory; "/" -> "__" keeps the model name in one path segment.
 MODEL_OUTPUT_TAG="${REASON_MODEL_NAME//\//__}"
@@ -133,6 +140,40 @@ fi
 NEEDS_SUMM="false"
 if [[ "$INFER_MODE" == "completion_sds" && "$PROMPT_TYPE" != "base" && "$PROMPT_TYPE" != "math" ]]; then
   NEEDS_SUMM="true"
+fi
+
+# Convert VERL/FSDP actor shards into a vLLM-loadable HF directory once.
+if [[ -d "$RAW_ACTOR_CHECKPOINT_PATH" ]]; then
+  if [[ ! -f "${ACTOR_MODEL_PATH}/config.json" ]]; then
+    echo "[0/5] Converting VERL actor checkpoint to HF format..."
+    python ../ARPO/merge_ckpt/convert_checkpoint_from_verl_to_hf.py merge \
+      --backend fsdp \
+      --hf_model_path "$REASON_BASE_MODEL_PATH" \
+      --local_dir "$RAW_ACTOR_CHECKPOINT_PATH" \
+      --target_dir "$ACTOR_MODEL_PATH"
+  else
+    echo "[0/5] Found converted HF checkpoint, skipping merge: $ACTOR_MODEL_PATH"
+  fi
+fi
+
+# Hard fail early when the reasoning model is not loadable by vLLM.
+# Valid inputs are either:
+#   1) local HF directory with config.json, or
+#   2) Hugging Face repo id in the form "namespace/model".
+if [[ -d "$ACTOR_MODEL_PATH" ]]; then
+  if [[ ! -f "${ACTOR_MODEL_PATH}/config.json" ]]; then
+    echo "ERROR: ACTOR_MODEL_PATH points to a local directory without config.json: $ACTOR_MODEL_PATH" >&2
+    echo "       Provide a converted HF directory (run VERL->HF merge) or set a valid HF repo id." >&2
+    exit 1
+  fi
+elif [[ "$ACTOR_MODEL_PATH" == /* || "$ACTOR_MODEL_PATH" == ./* || "$ACTOR_MODEL_PATH" == ../* ]]; then
+  echo "ERROR: ACTOR_MODEL_PATH looks like a local path but does not exist: $ACTOR_MODEL_PATH" >&2
+  echo "       Check the path or run checkpoint conversion before launch." >&2
+  exit 1
+elif [[ "$ACTOR_MODEL_PATH" != */* ]]; then
+  echo "ERROR: ACTOR_MODEL_PATH is neither a local HF directory nor a valid HF repo id: $ACTOR_MODEL_PATH" >&2
+  echo "       Expected HF repo id format: namespace/model" >&2
+  exit 1
 fi
 
 REASON_PID=""

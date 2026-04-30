@@ -17,9 +17,17 @@ BING_ZONE="serp_api1"
 BING_LOCATION="us"
 
 # Main reasoning model checkpoint/HF id served on ports 8002/8003.
-REASON_MODEL_PATH="dongguanting/Qwen2.5-3B-ARPO"
+CHECKPOINT_DIR="/scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ECHO"
+# Optional raw VERL actor checkpoint directory to convert before serving.
+# Leave empty to disable conversion and serve ACTOR_MODEL_PATH directly.
+RAW_ACTOR_CHECKPOINT_PATH="${CHECKPOINT_DIR}/checkpoint_snapshots/echo7BInstruct/global_step_10/actor"
+# Base HF model used as the config/template during VERL->HF merge.
+REASON_BASE_MODEL_PATH="Qwen/Qwen2.5-7B-Instruct"
+# Converted or directly served HF model directory/repo id used by vLLM.
+ACTOR_MODEL_PATH="${CHECKPOINT_DIR}/checkpoint_snapshots/echo7BInstruct/global_step_10/hf"
+REASON_MODEL_PATH="${ACTOR_MODEL_PATH}"
 # Served model alias for reasoning endpoints; must match infer DEFAULT_MODEL.
-REASON_MODEL_NAME="Qwen2.5-3B-Instruct"
+REASON_MODEL_NAME="Qwen2.5-7B-Instruct"
 
 # Summarization helper checkpoint/HF id served on ports 8004/8005.
 SUMM_MODEL_PATH="Qwen/Qwen2.5-7B-Instruct"
@@ -34,11 +42,30 @@ INFER_MODE="completion"
 #   math        -> python only (table row "+ TIR Prompting")
 #   search      -> search only
 #   code_search -> python + search (default for ARPO/AEPO trained checkpoints)
-PROMPT_TYPE="code_search"
+#   echo        -> ECHO <select>/<tool> schema; loads system prompt from
+#                  ECHO_SYSTEM_PROMPT_YAML below instead of a hardcoded literal.
+PROMPT_TYPE="echo"
 
 # Per-sample tool-call budgets enforced by the SampleProcessor; set to 0 to disable a tool entirely.
+# When PROMPT_TYPE=echo these are overridden below to the combined ECHO budget so
+# the combined-budget gate in SampleProcessorCompletion fires before the per-tool
+# gate (which would inject an OOD "limit exceeded" feedback message ECHO never saw).
 MAX_PYTHON_TIMES="5"
 MAX_SEARCH_TIMES="0"
+
+# ---- ECHO-only config (consumed only when PROMPT_TYPE=echo) ----
+# Single source of truth for the ECHO system prompt: shared with the trainer at
+# ARPO/verl_arpo_entropy/recipe/echo/config/echo_system_prompts.yaml.
+ECHO_SYSTEM_PROMPT_YAML="${SCRIPT_DIR}/../ARPO/verl_arpo_entropy/recipe/echo/config/echo_system_prompts.yaml"
+# Selects system_prompt_N inside the YAML; must equal data.active_system_prompt
+# used during ECHO training (echo_trainer.yaml).
+ECHO_ACTIVE_SYSTEM_PROMPT="1"
+# Combined per-sample tool budget (matches vLLMRolloutECHO.tool_call_limit, default 5).
+ECHO_TOOL_CALL_LIMIT="5"
+# Validator profile id (c1..c5) matching the trainer's mask_categories signature;
+# routes which format checks gate HL vs LL inside deep_research_echo.compute_score.
+# c1 = plan/reason/answer HL; tool choice + payload LL (the v1_ll_hl recipes).
+ECHO_VALIDATOR_PROFILE="c1"
 
 # Conda root and env used by the Python tool executor.
 CONDA_PATH="/scratch/user/saratb_tamu.edu/miniconda3"
@@ -99,12 +126,56 @@ SERVER_TEARDOWN_WAIT_SECONDS="20"
 RESUME_FROM_EVAL="false"
 # -------------------------------------------------------------
 
+# When PROMPT_TYPE=echo: export ECHO env vars for prompt_manager.PromptManager
+# to read, and pin both per-tool budgets to the combined ECHO budget so the
+# combined gate in SampleProcessorCompletion is the only one that ever fires.
+if [[ "$PROMPT_TYPE" == "echo" ]]; then
+  export ECHO_SYSTEM_PROMPT_YAML ECHO_ACTIVE_SYSTEM_PROMPT ECHO_TOOL_CALL_LIMIT
+  MAX_PYTHON_TIMES="$ECHO_TOOL_CALL_LIMIT"
+  MAX_SEARCH_TIMES="$ECHO_TOOL_CALL_LIMIT"
+fi
+
 # Summarization servers are only required when the prompt advertises search AND the
 # inference engine is the SDS variant; base/math prompts never emit <search>, so the
 # summ pool would just waste GPUs 0-3.
 NEEDS_SUMM="false"
 if [[ "$INFER_MODE" == "completion_sds" && "$PROMPT_TYPE" != "base" && "$PROMPT_TYPE" != "math" ]]; then
   NEEDS_SUMM="true"
+fi
+
+# Convert VERL/FSDP actor shards into a vLLM-loadable HF directory once.
+# When RAW_ACTOR_CHECKPOINT_PATH is empty, conversion is skipped.
+if [[ -n "$RAW_ACTOR_CHECKPOINT_PATH" && -d "$RAW_ACTOR_CHECKPOINT_PATH" ]]; then
+  if [[ ! -f "${ACTOR_MODEL_PATH}/config.json" ]]; then
+    echo "[0/5] Converting VERL actor checkpoint to HF format..."
+    python ../ARPO/merge_ckpt/convert_checkpoint_from_verl_to_hf.py merge \
+      --backend fsdp \
+      --hf_model_path "$REASON_BASE_MODEL_PATH" \
+      --local_dir "$RAW_ACTOR_CHECKPOINT_PATH" \
+      --target_dir "$ACTOR_MODEL_PATH"
+  else
+    echo "[0/5] Found converted HF checkpoint, skipping merge: $ACTOR_MODEL_PATH"
+  fi
+fi
+
+# Hard fail early when the reasoning model is not loadable by vLLM.
+# Valid inputs are either:
+#   1) local HF directory with config.json, or
+#   2) Hugging Face repo id in the form "namespace/model".
+if [[ -d "$ACTOR_MODEL_PATH" ]]; then
+  if [[ ! -f "${ACTOR_MODEL_PATH}/config.json" ]]; then
+    echo "ERROR: ACTOR_MODEL_PATH points to a local directory without config.json: $ACTOR_MODEL_PATH" >&2
+    echo "       Provide a converted HF directory (run VERL->HF merge) or set a valid HF repo id." >&2
+    exit 1
+  fi
+elif [[ "$ACTOR_MODEL_PATH" == /* || "$ACTOR_MODEL_PATH" == ./* || "$ACTOR_MODEL_PATH" == ../* ]]; then
+  echo "ERROR: ACTOR_MODEL_PATH looks like a local path but does not exist: $ACTOR_MODEL_PATH" >&2
+  echo "       Check the path or run checkpoint conversion before launch." >&2
+  exit 1
+elif [[ "$ACTOR_MODEL_PATH" != */* ]]; then
+  echo "ERROR: ACTOR_MODEL_PATH is neither a local HF directory nor a valid HF repo id: $ACTOR_MODEL_PATH" >&2
+  echo "       Expected HF repo id format: namespace/model" >&2
+  exit 1
 fi
 
 REASON_PID=""
@@ -228,6 +299,8 @@ OUTPUT_DIR="$OUTPUT_PATH" \
 USE_LLM="$USE_LLM" \
 API_BASE_URL="$API_BASE_URL" \
 MODEL_NAME="$JUDGE_MODEL_NAME" \
+PROMPT_TYPE="$PROMPT_TYPE" \
+VALIDATOR_PROFILE="$ECHO_VALIDATOR_PROFILE" \
 bash echo_evaluate_passk_math_4qa.sh | tee "logs/run_eval_math_4qa_hf${RUN_TAG:+_$RUN_TAG}.log"
 
 echo "Run completed successfully. Outputs: $OUTPUT_PATH"

@@ -222,11 +222,8 @@ class SampleProcessorCompletion(SampleProcessor):
                 else:
                     self.call_search_max_limit()
             else:
-                if "</answer>" not in output:
-                    print(
-                        "[Warning] LLM fails to generate final answers, sample is: ",
-                        self.sample_stat["input"],
-                    )
+                if not output.strip().endswith("</answer>"):
+                    await self.call_llm(stop=False)
                 break
         self.sample_stat["prediction"] = extract_answer(self.sample_stat["output"])
         self.total_time = time.time() - self.sample_start_time

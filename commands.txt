@@ -250,3 +250,34 @@ srun --partition 2xlong --cpus-per-task=8 --gres=gpu:H200:8 -t 2-00:00:00 -J dap
 srun --partition 2xlong --cpus-per-task=8 --gres=gpu:H200:8 -t 2-00:00:00 -J maxentRL --pty bash
 
 srun --partition 2xlong --cpus-per-task=8 --gres=gpu:H200:8 -t 2-00:00:00 -J echo --pty bash
+
+
+
+
+
+
+python ARPO/verl_arpo_entropy/recipe/echo/merge_search_cache_postrun.py \
+  --master-cache ARPO/search_cache/search_cache_updated.json \
+  --run-cache-inputs "ARPO/search_cache/search_cache_*.json" \
+  --output-cache ARPO/search_cache/search_cache_echo.json
+
+
+bash ARPO/verl_arpo_entropy/recipe/echo/snapshot_echo_checkpoints.sh \
+  --source /scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ECHO/checkpoints/echo7B \
+  --dest /scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ECHO/checkpoint_snapshots/echo7B \
+  --once
+
+bash ARPO/verl_arpo_entropy/recipe/echo/snapshot_echo_checkpoints.sh \
+  --source /scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ECHO/checkpoints/echo3BInstruct \
+  --dest /scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ECHO/checkpoint_snapshots/echo3BInstruct \
+  --once
+
+bash ARPO/verl_arpo_entropy/recipe/echo/snapshot_echo_checkpoints.sh \
+  --source /scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ECHO/checkpoints/echo8BInstruct \
+  --dest /scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ECHO/checkpoint_snapshots/echo8BInstruct \
+  --once
+
+bash ARPO/verl_arpo_entropy/recipe/echo/snapshot_echo_checkpoints.sh \
+  --source /scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ECHO/checkpoints/echo7BInstruct \
+  --dest /scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ECHO/checkpoint_snapshots/echo7BInstruct \
+  --once

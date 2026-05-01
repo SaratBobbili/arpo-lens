@@ -31,8 +31,8 @@ export PYTHONPATH="${VERL_ROOT}:$PYTHONPATH"
 
 # ============================ Basic Configuration ============================
 # Experiment name and project
-PROJECT_NAME="qwen3B" # Modify experiment group
-EXPERIMENT_NAME="echo3B_maxentRL" # validator profile c5 (all-HL); strategy=maxentropy_rl
+PROJECT_NAME="qwen7B" # Modify experiment group
+EXPERIMENT_NAME="echo8B_maxentRL" # validator profile c5 (all-HL); strategy=maxentropy_rl
 
 # Configuration file path
 CONFIG_PATH="${SCRIPT_DIR}/config" # ECHO recipe config colocated with this launch script
@@ -57,7 +57,7 @@ VALID_FILES="${ARPO_ROOT}/rl_datasets/valid.parquet" # Modify validation data pa
 # ============================ Model Configuration ============================
 # Actor: HF checkpoint dir (LLaMA-Factory SFT writes under arpo_train_sft/checkpoints/...)
 CHECKPOINT_DIR="/scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ECHO/sft"
-ACTOR_MODEL_PATH="${CHECKPOINT_DIR}/checkpoints/Qwen2.5-3B-Instruct"
+ACTOR_MODEL_PATH="${CHECKPOINT_DIR}/checkpoints/Llama-3.1-8B-Instruct"
 
 # ============================ Rollout Configuration ==========================
 # Rollout settings
@@ -67,7 +67,7 @@ ROLLOUT_N=16                        # Number of responses generated per sample
 HIGH_LEVEL_BUDGET=${ROLLOUT_N}      # All rollouts go to HL; LL phase is auto-skipped (budget=0)
 ENABLE_MULTI_TURN=False             # Toggle multi-turn tool interaction in rollout
 # ============================ Rollout Tools Configuration ==========================
-SEARCH_CACHE_PATH="${ARPO_ROOT}/search_cache/search_cache_echo_3B_maxentRL.json" # Per-variant cache; isolates from other ECHO variants
+SEARCH_CACHE_PATH="${ARPO_ROOT}/search_cache/search_cache_echo_8B_maxentRL.json" # Per-variant cache; isolates from other ECHO variants
 
 # ============================ Reward Model Configuration ==========================
 # Reward model settings

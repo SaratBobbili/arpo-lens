@@ -7,7 +7,7 @@ echo "Switched to verl root directory: $VERL_ROOT"
 
 export TMPDIR=/tmp/saratb_ray
 export RAY_TMPDIR=/tmp/saratb_ray
-
+mkdir -p "$TMPDIR"
 # ============================ Environment Setup ============================
 # Set basic environment variables
 #export PYTHONUNBUFFERED=1
@@ -32,7 +32,7 @@ export PYTHONPATH="${VERL_ROOT}:$PYTHONPATH"
 # ============================ Basic Configuration ============================
 # Experiment name and project
 PROJECT_NAME="qwen3B" # Modify experiment group
-EXPERIMENT_NAME="echo3B_c1_ll_hl" # validator profile c1 (plan/reason/answer HL; tool choice + payload LL), phase_order=[low_level, high_level]
+EXPERIMENT_NAME="echo3BInstruct-r2" # validator profile c1 (plan/reason/answer HL; tool choice + payload LL), phase_order=[low_level, high_level]
 
 # Configuration file path
 CONFIG_PATH="${SCRIPT_DIR}/config" # ECHO recipe config colocated with this launch script
@@ -56,7 +56,8 @@ VALID_FILES="${ARPO_ROOT}/rl_datasets/valid.parquet" # Modify validation data pa
 
 # ============================ Model Configuration ============================
 # Actor: HF checkpoint dir (LLaMA-Factory SFT writes under arpo_train_sft/checkpoints/...)
-ACTOR_MODEL_PATH="${REPO_ROOT}/LLaMA-Factory/arpo_train_sft/checkpoints/Qwen2.5-3B"
+CHECKPOINT_DIR="/scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ECHO/sft"
+ACTOR_MODEL_PATH="${CHECKPOINT_DIR}/checkpoints/Qwen2.5-3B-Instruct"
 
 # ============================ Rollout Configuration ==========================
 # Rollout settings
@@ -66,7 +67,7 @@ ROLLOUT_N=16                         # Number of responses generated per sample
 HIGH_LEVEL_BUDGET=8                 # Number of rollouts used for high-level masked update
 ENABLE_MULTI_TURN=False            # Toggle multi-turn tool interaction in rollout
 # ============================ Rollout Tools Configuration ==========================
-SEARCH_CACHE_PATH="${ARPO_ROOT}/search_cache/search_cache_new_v1_ll_hl.json" # Per-variant cache for v1 with phase_order=[low_level, high_level]
+SEARCH_CACHE_PATH="${ARPO_ROOT}/search_cache/search_cache_echo_3B.json" # Per-variant cache for v1 with phase_order=[low_level, high_level]
 
 # ============================ Reward Model Configuration ==========================
 # Reward model settings
@@ -84,7 +85,7 @@ TEST_FREQ=5                        # Test frequency
 
 # ============================ Path Configuration ============================
 # Save path
-CHECKPOINT_DIR="/scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ARPO"
+CHECKPOINT_DIR="/scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ECHO"
 SAVE_PATH="${CHECKPOINT_DIR}/checkpoints/${EXPERIMENT_NAME}" # Modify save path
 ROLLOUT_SAVE_PATH="${SAVE_PATH}/rollout"
 
@@ -94,6 +95,7 @@ WANDB_API_KEY="0986ce441bdc0e809cd73f235d468fa624518fe8" # Modify your wandb key
 SEARCH_CLASS_PATH="verl.workers.agent.tools.search_tool.BingSearchTool"
 # Bright Data (third-party Bing SERP used by BingSearchTool -> api.brightdata.com/request).
 #BRIGHTDATA_API_KEY="" # Bright Data API token; set manually in terminal before launch
+BRIGHTDATA_API_KEY="9c221824-9a57-4261-b1b7-979959492235"
 BRIGHTDATA_ZONE="serp_api1"                    # Bright Data SERP zone configured in your Bright Data account
 BRIGHTDATA_LOCATION="us"                       # Country code passed to Bing via &cc=<code>; also selects the Bright Data proxy geo. "us" routes through US proxies (faster+more reliable from this cluster than "cn", which periodically returns HTTP 200 with empty body under load).
 BRIGHTDATA_TIMEOUT=45                        # Per-HTTP-call read timeout (s) to api.brightdata.com. Brightdata SERP tail latency is ~30-60s+ under concurrent rollout load, so 120 absorbs the tail and avoids spurious retries.
@@ -177,7 +179,7 @@ python3 -m recipe.echo.main_echo \
     trainer.nnodes=${NNODES} \
     trainer.save_freq=${SAVE_FREQ} \
     trainer.test_freq=${TEST_FREQ} \
-    trainer.max_actor_ckpt_to_keep=1 \
+    trainer.max_actor_ckpt_to_keep=null \
     trainer.total_epochs=${TOTAL_EPOCHS} \
     trainer.default_local_dir=${SAVE_PATH} \
     trainer.val_before_train=False \

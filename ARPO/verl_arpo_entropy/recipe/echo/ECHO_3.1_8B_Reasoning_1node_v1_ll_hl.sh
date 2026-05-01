@@ -7,7 +7,7 @@ echo "Switched to verl root directory: $VERL_ROOT"
 
 export TMPDIR=/tmp/saratb_ray
 export RAY_TMPDIR=/tmp/saratb_ray
-mkdir -p "$TMPDIR"
+
 # ============================ Environment Setup ============================
 # Set basic environment variables
 #export PYTHONUNBUFFERED=1
@@ -31,8 +31,8 @@ export PYTHONPATH="${VERL_ROOT}:$PYTHONPATH"
 
 # ============================ Basic Configuration ============================
 # Experiment name and project
-PROJECT_NAME="qwen3B" # Modify experiment group
-EXPERIMENT_NAME="echo3B_maxentRL" # validator profile c5 (all-HL); strategy=maxentropy_rl
+PROJECT_NAME="Llama8B" # Modify experiment group
+EXPERIMENT_NAME="echo8BInstruct_c4" # validator profile c1 (plan/reason/answer HL; tool choice + payload LL), phase_order=[low_level, high_level]
 
 # Configuration file path
 CONFIG_PATH="${SCRIPT_DIR}/config" # ECHO recipe config colocated with this launch script
@@ -56,28 +56,27 @@ VALID_FILES="${ARPO_ROOT}/rl_datasets/valid.parquet" # Modify validation data pa
 
 # ============================ Model Configuration ============================
 # Actor: HF checkpoint dir (LLaMA-Factory SFT writes under arpo_train_sft/checkpoints/...)
+#ACTOR_MODEL_PATH="${REPO_ROOT}/LLaMA-Factory/arpo_train_sft/checkpoints/Qwen2.5-7B"
 CHECKPOINT_DIR="/scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ECHO/sft"
-ACTOR_MODEL_PATH="${CHECKPOINT_DIR}/checkpoints/Qwen2.5-3B-Instruct"
+ACTOR_MODEL_PATH="${CHECKPOINT_DIR}/checkpoints/Llama-3.1-8B-Instruct"
 
 # ============================ Rollout Configuration ==========================
 # Rollout settings
 ROLLOUT_NAME="vllm"                 # Use vllm engine
 ROLLOUT_MODE="sync_echo"            # ECHO rollout mode with hierarchical masks
-ROLLOUT_N=16                        # Number of responses generated per sample
-HIGH_LEVEL_BUDGET=${ROLLOUT_N}      # All rollouts go to HL; LL phase is auto-skipped (budget=0)
-ENABLE_MULTI_TURN=False             # Toggle multi-turn tool interaction in rollout
+ROLLOUT_N=16                         # Number of responses generated per sample
+HIGH_LEVEL_BUDGET=8                 # Number of rollouts used for high-level masked update
+ENABLE_MULTI_TURN=False            # Toggle multi-turn tool interaction in rollout
 # ============================ Rollout Tools Configuration ==========================
-SEARCH_CACHE_PATH="${ARPO_ROOT}/search_cache/search_cache_echo_3B_maxentRL.json" # Per-variant cache; isolates from other ECHO variants
+SEARCH_CACHE_PATH="${ARPO_ROOT}/search_cache/search_cache_echo_8B.json" # Per-variant cache for v1 with phase_order=[low_level, high_level]
 
 # ============================ Reward Model Configuration ==========================
 # Reward model settings
 REWARD_MANAGER="echo"              # Reward manager type
 CUSTOM_REWARD_FUNCTION_PATH="${VERL_ROOT}/verl/utils/reward_score/deep_research_echo.py" # Modify reward function path
 CUSTOM_REWARD_FUNCTION_NAME="compute_score"
-HIGH_LEVEL_REWARD_STRATEGY="maxentropy_rl" # r_i = scorer_i + alpha * ent_i over tool_loss_mask
-# alpha controls how strongly the per-sample tool-portion entropy is added on top of the scorer reward.
-MAX_ENTROPY_ALPHA=0.1
-# LL phase has zero rollout budget (HIGH_LEVEL_BUDGET = ROLLOUT_N), so its strategy is never consulted at runtime.
+HIGH_LEVEL_REWARD_STRATEGY="scorer" # High-level phase reward strategy: {scorer, entropy, entropy-hybrid}.
+LOW_LEVEL_REWARD_STRATEGY="entropy"  # Low-level phase reward strategy: {scorer, entropy, entropy-hybrid}.
 
 # ============================ Training Configuration ============================
 # Training parameters
@@ -87,7 +86,7 @@ TEST_FREQ=5                        # Test frequency
 
 # ============================ Path Configuration ============================
 # Save path
-CHECKPOINT_DIR="/scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ARPO"
+CHECKPOINT_DIR="/scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ECHO"
 SAVE_PATH="${CHECKPOINT_DIR}/checkpoints/${EXPERIMENT_NAME}" # Modify save path
 ROLLOUT_SAVE_PATH="${SAVE_PATH}/rollout"
 
@@ -95,9 +94,8 @@ ROLLOUT_SAVE_PATH="${SAVE_PATH}/rollout"
 # WandB settings
 WANDB_API_KEY="0986ce441bdc0e809cd73f235d468fa624518fe8" # Modify your wandb key
 SEARCH_CLASS_PATH="verl.workers.agent.tools.search_tool.BingSearchTool"
-BRIGHTDATA_API_KEY="9c221824-9a57-4261-b1b7-979959492235"
 # Bright Data (third-party Bing SERP used by BingSearchTool -> api.brightdata.com/request).
-#BRIGHTDATA_API_KEY="" # Bright Data API token; set manually in terminal before launch
+BRIGHTDATA_API_KEY="9c221824-9a57-4261-b1b7-979959492235" # Bright Data API token; set manually in terminal before launch
 BRIGHTDATA_ZONE="serp_api1"                    # Bright Data SERP zone configured in your Bright Data account
 BRIGHTDATA_LOCATION="us"                       # Country code passed to Bing via &cc=<code>; also selects the Bright Data proxy geo. "us" routes through US proxies (faster+more reliable from this cluster than "cn", which periodically returns HTTP 200 with empty body under load).
 BRIGHTDATA_TIMEOUT=45                        # Per-HTTP-call read timeout (s) to api.brightdata.com. Brightdata SERP tail latency is ~30-60s+ under concurrent rollout load, so 120 absorbs the tail and avoids spurious retries.
@@ -147,15 +145,15 @@ python3 -m recipe.echo.main_echo \
     actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
     actor_rollout_ref.rollout.name=${ROLLOUT_NAME} \
     actor_rollout_ref.rollout.mode=${ROLLOUT_MODE} \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.7 \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
     actor_rollout_ref.rollout.n=${ROLLOUT_N} \
     actor_rollout_ref.rollout.high_level_budget=${HIGH_LEVEL_BUDGET} \
-    actor_rollout_ref.rollout.mask_categories.first_select=high \
-    actor_rollout_ref.rollout.mask_categories.select=high \
+    actor_rollout_ref.rollout.mask_categories.first_select=low \
+    actor_rollout_ref.rollout.mask_categories.select=low \
     actor_rollout_ref.rollout.mask_categories.think=high \
     actor_rollout_ref.rollout.mask_categories.answer=high \
-    actor_rollout_ref.rollout.mask_categories.search=high \
-    actor_rollout_ref.rollout.mask_categories.python=high \
+    actor_rollout_ref.rollout.mask_categories.search=low \
+    actor_rollout_ref.rollout.mask_categories.python=low \
     actor_rollout_ref.rollout.tools.tool_instances.python.params.conda_path=/scratch/user/saratb_tamu.edu/miniconda3 \
     actor_rollout_ref.rollout.tools.tool_instances.python.params.conda_env=arpo \
     actor_rollout_ref.rollout.tools.tool_instances.search.params.cache_file=${SEARCH_CACHE_PATH} \
@@ -168,9 +166,9 @@ python3 -m recipe.echo.main_echo \
     actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=$((4*(MAX_PROMPT_LENGTH+MAX_RESPONSE_LENGTH))) \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     reward_model.reward_manager=${REWARD_MANAGER} \
-    'reward_model.phase_order=["high_level", "low_level"]' \
+    'reward_model.phase_order=["low_level", "high_level"]' \
     reward_model.phase_rewards.high_level.strategy=${HIGH_LEVEL_REWARD_STRATEGY} \
-    reward_model.phase_rewards.high_level.max_entropy.alpha=${MAX_ENTROPY_ALPHA} \
+    reward_model.phase_rewards.low_level.strategy=${LOW_LEVEL_REWARD_STRATEGY} \
     custom_reward_function.path=${CUSTOM_REWARD_FUNCTION_PATH} \
     custom_reward_function.name=${CUSTOM_REWARD_FUNCTION_NAME} \
     trainer.critic_warmup=0 \
@@ -181,7 +179,7 @@ python3 -m recipe.echo.main_echo \
     trainer.nnodes=${NNODES} \
     trainer.save_freq=${SAVE_FREQ} \
     trainer.test_freq=${TEST_FREQ} \
-    trainer.max_actor_ckpt_to_keep=1 \
+    trainer.max_actor_ckpt_to_keep=null \
     trainer.total_epochs=${TOTAL_EPOCHS} \
     trainer.default_local_dir=${SAVE_PATH} \
     trainer.val_before_train=False \

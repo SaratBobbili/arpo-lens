@@ -12,6 +12,8 @@ mkdir -p logs
 # - gsm8k     : run only gsm8k
 # - math500   : run only math500
 # - math_all  : run all math datasets
+# - grpo_mix  : run the mixed math+qa validation set used during ECHO RL training
+#               (mirrors ARPO/rl_datasets/valid.parquet; 100 math + 80 qa rows in one file).
 DATASET_GROUP="${DATASET_GROUP:-math}"
 # Optional explicit dataset list override (space-separated).
 # Example: DATASET_NAMES="math500 gsm8k"
@@ -46,8 +48,10 @@ elif [[ "$DATASET_GROUP" == "math500" ]]; then
   DATASETS=("math500")
 elif [[ "$DATASET_GROUP" == "math_all" ]]; then
   DATASETS=("${MATH_DATASETS[@]}")
+elif [[ "$DATASET_GROUP" == "grpo_mix" ]]; then
+  DATASETS=("grpo_mix")
 else
-  echo "Unsupported DATASET_GROUP=$DATASET_GROUP (expected: math, aime, gsm8k, math500, or math_all)"
+  echo "Unsupported DATASET_GROUP=$DATASET_GROUP (expected: math, aime, gsm8k, math500, math_all, or grpo_mix)"
   exit 1
 fi
 

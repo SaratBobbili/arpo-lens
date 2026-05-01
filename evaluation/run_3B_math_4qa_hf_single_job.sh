@@ -75,8 +75,10 @@ NLTK_DATA_DIR="$CONDA_PATH/envs/$CONDA_ENV/nltk_data"
 # Samples per dataset; large value => full dataset via min(dataset_size, COUNTS) in infer.py.
 COUNTS="1000000"
 
-# Restrict this launcher to math benchmarks only (aime24/aime25/math500/gsm8k/math).
-DATASET_GROUP="math_all"
+# Selects which dataset bundle to evaluate. Supported by echo_infer_math_4qa_hf.sh:
+#   math_all -> aime24/aime25/math500/gsm8k/math (math benchmarks)
+#   grpo_mix -> mirror of the ECHO RL validation set (mixed math+qa, single jsonl)
+DATASET_GROUP="grpo_mix"
 
 # Pass@k turns (one output file per turn); space separated list.
 TURNS="1"
@@ -139,7 +141,7 @@ SERVER_TEARDOWN_WAIT_SECONDS="20"
 # Set to "true" to skip [1/5]-[3/5] (server bring-up + inference) and jump straight to
 # [4/5]-[5/5] (judge launch + evaluation). Use this when inference outputs already exist
 # under OUTPUT_PATH and only the judge/eval stage needs to be re-run.
-RESUME_FROM_EVAL="false"
+RESUME_FROM_EVAL="true"
 # -------------------------------------------------------------
 
 # When PROMPT_TYPE=echo: export ECHO env vars for prompt_manager.PromptManager

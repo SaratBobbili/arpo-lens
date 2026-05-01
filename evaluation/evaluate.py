@@ -17,7 +17,7 @@ async def main():
 
     parser = argparse.ArgumentParser(description="Evaluation Tool")
     parser.add_argument('--output_path', type=str, required=True, help='Path to the model output JSON file')
-    parser.add_argument('--task', type=str, required=True, choices=['math', 'qa'], help='Type of evaluation task')
+    parser.add_argument('--task', type=str, required=True, choices=['math', 'qa', 'grpo_mix'], help='Type of evaluation task')
     parser.add_argument('--use_llm', action='store_true', help='Use LLM for equivalence evaluation')
     parser.add_argument('--api_base_url', type=str, default=None, help='Base URL of the LLM API')
     parser.add_argument('--model_name', type=str, default=None, help='Name of the LLM model used for evaluation')

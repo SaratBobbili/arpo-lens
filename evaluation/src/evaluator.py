@@ -12,7 +12,8 @@ from tqdm.asyncio import tqdm as async_tqdm
 
 from .metrics import (
     evaluate_math_prediction,
-    evaluate_qa_prediction
+    evaluate_qa_prediction,
+    evaluate_grpo_mix_prediction,
 )
 from .utils import extract_answer
 from .llm_evaluator_sds import LLMEvaluator
@@ -48,7 +49,7 @@ class Evaluator:
         Initialize evaluator.
 
         Args:
-            task_type: Task type ('math', 'qa')
+            task_type: Task type ('math', 'qa', 'grpo_mix')
             output_path: Path to the model output JSON file
             use_llm: Whether to use LLM for evaluation
             api_base_url: Base URL for LLM API
@@ -173,7 +174,10 @@ class Evaluator:
         elif self.task_type == 'qa':
             qa_metrics = evaluate_qa_prediction(prediction, answer)
             metrics.update(qa_metrics)
-        else:   
+        elif self.task_type == 'grpo_mix':
+            mix_metrics = evaluate_grpo_mix_prediction(prediction, answer)
+            metrics.update(mix_metrics)
+        else:
             raise ValueError(f"Unsupported task type: {self.task_type}")
 
         # LLM evaluation
@@ -255,7 +259,7 @@ class Evaluator:
 
         if self.task_type == 'math':
             accuracy = np.mean(avg_math) if avg_math else 0.0
-        elif self.task_type == 'qa':
+        elif self.task_type in ('qa', 'grpo_mix'):
             accuracy = np.mean(avg_f1) if avg_f1 else 0.0
         else:
             accuracy = 0.0

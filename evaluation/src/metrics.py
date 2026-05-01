@@ -116,6 +116,39 @@ def evaluate_math_prediction(
     }
 
 
+def evaluate_grpo_mix_prediction(
+    prediction: str,
+    references: Union[str, List[str]]
+) -> Dict[str, Union[int, float]]:
+    """Mixed math+qa scoring that mirrors the ECHO RL training scorer
+    (deep_research_echo.compute_score / get_f1_score). Differs from
+    evaluate_qa_prediction only in that the answer normalizer also strips
+    punctuation, matching the training-side normalize_answer exactly."""
+    if isinstance(references, str):
+        if not references.startswith("["):
+            references = [references]
+        else:
+            references = [e.strip() for e in re.split(r",\s*", references.strip('[]'))]
+
+    result = {"em": 0, "acc": 0, "f1": 0, "math_equal": 0}
+    normalized_prediction = normalize_answer(prediction, remove_articles=True, remove_punctuations=True)
+
+    for reference in references:
+        normalized_reference = normalize_answer(reference, remove_articles=True, remove_punctuations=True)
+
+        em = int(normalized_prediction == normalized_reference)
+        acc = int(normalized_reference in normalized_prediction)
+        num_same, pred_len, ref_len = compute_token_overlap(normalized_prediction, normalized_reference)
+        f1 = compute_f1_score(num_same, pred_len, ref_len)
+
+        result["em"] = max(result["em"], em)
+        result["acc"] = max(result["acc"], acc)
+        result["f1"] = max(result["f1"], f1)
+        result["math_equal"] = max(result["math_equal"], int(is_equiv(normalized_prediction, normalized_reference)))
+
+    return result
+
+
 def evaluate_qa_prediction(
     prediction: str,
     references: Union[str, List[str]]

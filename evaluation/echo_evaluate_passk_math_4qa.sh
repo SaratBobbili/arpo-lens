@@ -36,6 +36,12 @@ declare -A TASK_MAP=(
   ["2wiki"]="qa"
   ["musique"]="qa"
   ["bamboogle"]="qa"
+  # Mixed math+qa val set (100+80). Independent task so it can be tested in
+  # isolation; uses evaluate_grpo_mix_prediction whose normalize_answer mirrors
+  # the training scorer (deep_research_echo.compute_score / get_f1_score) by
+  # stripping articles + punctuation. Fallback accuracy is token F1; headline
+  # metric is still llm_equal when USE_LLM=true.
+  ["grpo_mix"]="grpo_mix"
 )
 
 shopt -s nullglob

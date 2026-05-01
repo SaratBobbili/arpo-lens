@@ -76,8 +76,11 @@ OUTPUT_PATH="outputs/hf_math_4qa/${CUSTOM_RUN_TAG}/${MODEL_OUTPUT_TAG}/${DATASET
 
 # Enable LLM-as-judge at evaluation time (true => --use_llm passed to evaluate.py).
 USE_LLM="true"
-# HF id / local checkpoint of the LLM judge launched by this orchestrator on port 8001.
-JUDGE_MODEL_PATH="Qwen/Qwen2.5-72B-Instruct-GPTQ-Int4"
+# HF id / local checkpoint of the LLM judge. Full-precision (bf16) Qwen2.5-72B-Instruct
+# matches the OLD-README upstream judge; launcher leaves --quantization unset for this
+# release. Switch to Qwen/Qwen2.5-72B-Instruct-GPTQ-Int4 + QUANTIZATION=gptq only when
+# GPU budget forces it -- the GPTQ judge disagrees with math_equal on ~12% of math500.
+JUDGE_MODEL_PATH="Qwen/Qwen2.5-72B-Instruct"
 # Served alias for the judge endpoint; must match --model_name passed to evaluate.py.
 JUDGE_MODEL_NAME="Qwen2.5-72B-Instruct"
 # Endpoint URL the evaluator queries; matches the judge launcher PORT.

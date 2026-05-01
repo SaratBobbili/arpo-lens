@@ -201,13 +201,16 @@ class SampleProcessorCompletion(SampleProcessor):
             tool_tag = self.tool_executor.identify_tool(output)
             if combined_limit is not None and tool_tag in ("python", "search") \
                     and self.python_rounds + self.search_rounds >= combined_limit:
-                # Keep ECHO behavior aligned with completion-mode feedback handling:
-                # do not execute the extra tool call, inject the same limit message.
-                if tool_tag == "python":
-                    self.call_python_max_limit()
-                else:
-                    self.call_search_max_limit()
-                continue
+                # vLLMRolloutECHO appends EOS and ends the rollout when tool_call_limit
+                # is hit (vllm_rollout_echo.py L397-L401); mirror that here instead of
+                # injecting a "<result>...limit is exceeded</result>" feedback message
+                # the trainer never emitted -- otherwise the model would condition on
+                # an OOD continuation context.
+                print(
+                    f"[Warning] ECHO tool_call_limit ({combined_limit}) reached for sample: ",
+                    self.sample_stat["input"],
+                )
+                break
             if tool_tag == "python":
                 if self.python_rounds < self.args.max_python_times:
                     python_code = self.tool_executor.extract_content(output, "python")
@@ -225,8 +228,16 @@ class SampleProcessorCompletion(SampleProcessor):
                 else:
                     self.call_search_max_limit()
             else:
-                if not output.strip().endswith("</answer>"):
-                    await self.call_llm(stop=False)
+                # call_local_llm has already hard-truncated this chunk at </answer> when
+                # the model emitted one; a missing </answer> here means the model never
+                # committed an answer, and a 4096-token continuation would only inject
+                # fresh tokens (often a new \boxed{}) that extract_answer would prefer
+                # over the model's actual answer. Match upstream and just stop.
+                if "</answer>" not in output:
+                    print(
+                        "[Warning] LLM fails to generate final answers, sample is: ",
+                        self.sample_stat["input"],
+                    )
                 break
         self.sample_stat["prediction"] = extract_answer(self.sample_stat["output"])
         self.total_time = time.time() - self.sample_start_time

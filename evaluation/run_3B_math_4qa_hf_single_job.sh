@@ -19,11 +19,11 @@ BING_LOCATION="us"
 # Main reasoning model checkpoint/HF id served on ports 8002/8003.
 CHECKPOINT_DIR="/scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ECHO"
 # Raw VERL actor checkpoint directory to convert before serving.
-RAW_ACTOR_CHECKPOINT_PATH="${CHECKPOINT_DIR}/checkpoint_snapshots/echo3BInstruct/global_step_70/actor"
+RAW_ACTOR_CHECKPOINT_PATH="${CHECKPOINT_DIR}/checkpoint_snapshots/echo3BInstruct/global_step_95/actor"
 # Base HF model used as the config/template during VERL->HF merge.
 REASON_BASE_MODEL_PATH="Qwen/Qwen2.5-3B-Instruct"
 # Converted HF model directory served by vLLM.
-ACTOR_MODEL_PATH="${CHECKPOINT_DIR}/checkpoint_snapshots/echo3BInstruct/global_step_70/hf"
+ACTOR_MODEL_PATH="${CHECKPOINT_DIR}/checkpoint_snapshots/echo3BInstruct/global_step_95/hf"
 REASON_MODEL_PATH="${ACTOR_MODEL_PATH}"
 # Served model alias for reasoning endpoints; must match infer DEFAULT_MODEL.
 REASON_MODEL_NAME="Qwen2.5-3B-Instruct"
@@ -76,7 +76,7 @@ NLTK_DATA_DIR="$CONDA_PATH/envs/$CONDA_ENV/nltk_data"
 COUNTS="1000000"
 
 # Restrict this launcher to math benchmarks only (aime24/aime25/math500/gsm8k/math).
-DATASET_GROUP="math500"
+DATASET_GROUP="math_all"
 
 # Pass@k turns (one output file per turn); space separated list.
 TURNS="1"
@@ -87,6 +87,17 @@ TEMPERATURE="0.6"
 # Max new tokens per model call; raise for long reasoning traces.
 MAX_TOKENS="4096"
 
+# Sampling-distribution shape pinned to vLLMRolloutECHO + ppo_trainer.yaml defaults
+# (top_p=1.0, top_k=-1, repetition_penalty=1.0). Eval was previously running with
+# the Qwen-Instruct-style profile (top_p=0.95/top_k=20/rep_pen=1.1), which deflates
+# repeated format tokens (<select>, <think>, <answer>, ...) that ECHO emits densely
+# and was never exposed to under that penalty during training. Keep TEMPERATURE
+# below the training value (1.0) for sharper single-rollout eval.
+TOP_P="1.0"
+TOP_K="-1"
+MIN_P="0.0"
+REPETITION_PENALTY="1.0"
+
 # End-to-end timeout for a single sample, in seconds.
 SAMPLE_TIMEOUT="900"
 
@@ -96,7 +107,7 @@ SAMPLE_TIMEOUT="900"
 RUN_TAG="T${TEMPERATURE}_K${TURNS// /-}_mt${MAX_TOKENS}_to${SAMPLE_TIMEOUT}"
 # Checkpoint folder (e.g., global_step_40) inferred from ACTOR_MODEL_PATH.
 CHECKPOINT_TAG="$(basename "$(dirname "$ACTOR_MODEL_PATH")")"
-CUSTOM_RUN_TAG="LLM_as_judge/${REASON_MODEL_NAME}/${CHECKPOINT_TAG}"
+CUSTOM_RUN_TAG="LLM_as_judge/echo/${REASON_MODEL_NAME}/${CHECKPOINT_TAG}"
 
 # Model-tagged output directory; "/" -> "__" keeps the model name in one path segment.
 MODEL_OUTPUT_TAG="${REASON_MODEL_NAME//\//__}"
@@ -104,8 +115,11 @@ OUTPUT_PATH="outputs/hf_math_4qa/${CUSTOM_RUN_TAG}/${DATASET_GROUP}${RUN_TAG:+_$
 
 # Enable LLM-as-judge at evaluation time (true => --use_llm passed to evaluate.py).
 USE_LLM="true"
-# HF id / local checkpoint of the LLM judge launched by this orchestrator on port 8001.
-JUDGE_MODEL_PATH="Qwen/Qwen2.5-72B-Instruct-GPTQ-Int4"
+# HF id / local checkpoint of the LLM judge. Full-precision (bf16) Qwen2.5-72B-Instruct
+# matches the OLD-README upstream judge; launcher leaves --quantization unset for this
+# release. Switch to Qwen/Qwen2.5-72B-Instruct-GPTQ-Int4 + QUANTIZATION=gptq only when
+# GPU budget forces it -- the GPTQ judge disagrees with math_equal on ~12% of math500.
+JUDGE_MODEL_PATH="Qwen/Qwen2.5-72B-Instruct"
 # Served alias for the judge endpoint; must match --model_name passed to evaluate.py.
 JUDGE_MODEL_NAME="Qwen2.5-72B-Instruct"
 # Endpoint URL the evaluator queries; matches the judge launcher PORT.
@@ -115,8 +129,9 @@ API_BASE_URL="http://localhost:8001/v1"
 SERVER_BOOT_WAIT_SECONDS="60"
 # Max seconds to wait for each endpoint health check.
 ENDPOINT_READY_TIMEOUT_SECONDS="300"
-# Separate (longer) health-check budget for the 72B-GPTQ judge: torch.compile + KV cache
-# init alone takes ~5min on first launch, so the smaller reasoning timeout is too tight.
+# Separate (longer) health-check budget for the 72B judge: weight loading + KV cache
+# init takes 5-10min on first launch (longer for the unquantized fp16 release than for
+# the GPTQ-Int4 variant), so the smaller reasoning timeout is too tight.
 JUDGE_ENDPOINT_READY_TIMEOUT_SECONDS="900"
 # Grace period after stopping a server group so VRAM is released before the next launch.
 SERVER_TEARDOWN_WAIT_SECONDS="20"
@@ -124,7 +139,7 @@ SERVER_TEARDOWN_WAIT_SECONDS="20"
 # Set to "true" to skip [1/5]-[3/5] (server bring-up + inference) and jump straight to
 # [4/5]-[5/5] (judge launch + evaluation). Use this when inference outputs already exist
 # under OUTPUT_PATH and only the judge/eval stage needs to be re-run.
-RESUME_FROM_EVAL="true"
+RESUME_FROM_EVAL="false"
 # -------------------------------------------------------------
 
 # When PROMPT_TYPE=echo: export ECHO env vars for prompt_manager.PromptManager
@@ -265,6 +280,10 @@ if [[ "$RESUME_FROM_EVAL" != "true" ]]; then
   DATASET_GROUP="$DATASET_GROUP" \
   TURNS="$TURNS" \
   TEMPERATURE="$TEMPERATURE" \
+  TOP_P="$TOP_P" \
+  TOP_K="$TOP_K" \
+  MIN_P="$MIN_P" \
+  REPETITION_PENALTY="$REPETITION_PENALTY" \
   MAX_TOKENS="$MAX_TOKENS" \
   SAMPLE_TIMEOUT="$SAMPLE_TIMEOUT" \
   bash echo_infer_math_4qa_hf.sh | tee "logs/run_infer_math_4qa_hf${RUN_TAG:+_$RUN_TAG}.log"

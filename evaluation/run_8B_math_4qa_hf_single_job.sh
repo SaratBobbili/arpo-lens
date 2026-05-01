@@ -20,11 +20,11 @@ BING_LOCATION="us"
 CHECKPOINT_DIR="/scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ECHO"
 # Optional raw VERL actor checkpoint directory to convert before serving.
 # Leave empty to disable conversion and serve ACTOR_MODEL_PATH directly.
-RAW_ACTOR_CHECKPOINT_PATH="${CHECKPOINT_DIR}/checkpoint_snapshots/echo8BInstruct/global_step_40/actor"
+RAW_ACTOR_CHECKPOINT_PATH="${CHECKPOINT_DIR}/checkpoint_snapshots/echo8BInstruct/global_step_100/actor"
 # Base HF model used as the config/template during VERL->HF merge.
 REASON_BASE_MODEL_PATH="meta-llama/Llama-3.1-8B-Instruct"
 # Converted or directly served HF model directory/repo id used by vLLM.
-ACTOR_MODEL_PATH="${CHECKPOINT_DIR}/checkpoint_snapshots/echo8BInstruct/global_step_40/hf"
+ACTOR_MODEL_PATH="${CHECKPOINT_DIR}/checkpoint_snapshots/echo8BInstruct/global_step_100/hf"
 REASON_MODEL_PATH="${ACTOR_MODEL_PATH}"
 # Served model alias for reasoning endpoints; must match infer DEFAULT_MODEL.
 REASON_MODEL_NAME="Llama-3.1-8B-Instruct"
@@ -70,10 +70,10 @@ NLTK_DATA_DIR="$CONDA_PATH/envs/$CONDA_ENV/nltk_data"
 COUNTS="1000000"
 
 # Restrict this launcher to math benchmarks only (aime24/aime25/math500/gsm8k/math).
-DATASET_GROUP="math"
+DATASET_GROUP="math_all"
 
 # Pass@k turns (one output file per turn); space separated list.
-TURNS="1 2 3"
+TURNS="1"
 
 # Sampling temperature (0.0 => greedy decoding).
 TEMPERATURE="0.6"
@@ -90,7 +90,7 @@ SAMPLE_TIMEOUT="900"
 RUN_TAG="T${TEMPERATURE}_K${TURNS// /-}_mt${MAX_TOKENS}_to${SAMPLE_TIMEOUT}"
 # Checkpoint folder (e.g., global_step_40) inferred from ACTOR_MODEL_PATH.
 CHECKPOINT_TAG="$(basename "$(dirname "$ACTOR_MODEL_PATH")")"
-CUSTOM_RUN_TAG="LLM_as_judge/${REASON_MODEL_NAME}/${CHECKPOINT_TAG}"
+CUSTOM_RUN_TAG="LLM_as_judge/echo/${REASON_MODEL_NAME}/${CHECKPOINT_TAG}"
 
 # Model-tagged output directory; "/" -> "__" keeps the model name in one path segment.
 MODEL_OUTPUT_TAG="${REASON_MODEL_NAME//\//__}"
@@ -98,8 +98,11 @@ OUTPUT_PATH="outputs/hf_math_4qa/${CUSTOM_RUN_TAG}/${DATASET_GROUP}${RUN_TAG:+_$
 
 # Enable LLM-as-judge at evaluation time (true => --use_llm passed to evaluate.py).
 USE_LLM="true"
-# HF id / local checkpoint of the LLM judge launched by this orchestrator.
-JUDGE_MODEL_PATH="Qwen/Qwen2.5-72B-Instruct-GPTQ-Int4"
+# HF id / local checkpoint of the LLM judge. Full-precision (bf16) Qwen2.5-72B-Instruct
+# matches the OLD-README upstream judge; launcher leaves --quantization unset for this
+# release. Switch to Qwen/Qwen2.5-72B-Instruct-GPTQ-Int4 + QUANTIZATION=gptq only when
+# GPU budget forces it -- the GPTQ judge disagrees with math_equal on ~12% of math500.
+JUDGE_MODEL_PATH="Qwen/Qwen2.5-72B-Instruct"
 # Served alias for the judge endpoint; must match --model_name passed to evaluate.py.
 JUDGE_MODEL_NAME="Qwen2.5-72B-Instruct"
 # Port layout for this run (chosen to avoid collisions with other launchers).
@@ -115,8 +118,9 @@ API_BASE_URL="http://localhost:${JUDGE_PORT}/v1"
 SERVER_BOOT_WAIT_SECONDS="60"
 # Max seconds to wait for each endpoint health check.
 ENDPOINT_READY_TIMEOUT_SECONDS="300"
-# Separate (longer) health-check budget for the 72B-GPTQ judge: torch.compile + KV cache
-# init alone takes ~5min on first launch, so the smaller reasoning timeout is too tight.
+# Separate (longer) health-check budget for the 72B judge: weight loading + KV cache
+# init takes 5-10min on first launch (longer for the unquantized fp16 release than for
+# the GPTQ-Int4 variant), so the smaller reasoning timeout is too tight.
 JUDGE_ENDPOINT_READY_TIMEOUT_SECONDS="900"
 # Grace period after stopping a server group so VRAM is released before the next launch.
 SERVER_TEARDOWN_WAIT_SECONDS="20"

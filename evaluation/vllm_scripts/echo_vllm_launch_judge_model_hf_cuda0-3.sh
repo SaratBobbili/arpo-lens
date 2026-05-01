@@ -9,7 +9,7 @@ cd "$SCRIPT_DIR"
 mkdir -p logs
 
 # HuggingFace id or local checkpoint path of the judge model.
-MODEL_PATH="${MODEL_PATH:-Qwen/Qwen2.5-72B-Instruct-GPTQ-Int4}"
+MODEL_PATH="${MODEL_PATH:-Qwen/Qwen2.5-72B-Instruct}"
 
 # Served model alias; must match --model_name passed to evaluate.py.
 MODEL_NAME="${MODEL_NAME:-Qwen2.5-72B-Instruct}"
@@ -20,8 +20,11 @@ MAX_MODEL_LEN="${MAX_MODEL_LEN:-32768}"
 # Fraction of each GPU's memory reserved for vLLM.
 GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.75}"
 
-# vLLM quantization flag; default matches the GPTQ-Int4 release.
-QUANTIZATION="${QUANTIZATION:-gptq}"
+# vLLM quantization flag; empty means full-precision (paired with the
+# unquantized Qwen2.5-72B-Instruct default above). Set to "gptq" / "awq"
+# only when MODEL_PATH points to a matching pre-quantized checkpoint.
+# `-` (no colon) preserves an explicit empty override coming from callers.
+QUANTIZATION="${QUANTIZATION-}"
 
 # Tensor-parallel degree across CUDA_DEVICES (must equal the device count).
 TENSOR_PARALLEL_SIZE="${TENSOR_PARALLEL_SIZE:-4}"
@@ -35,13 +38,20 @@ PORT="${PORT:-8001}"
 echo "Serving judge model: $MODEL_PATH"
 echo "Served model name: $MODEL_NAME"
 
+# Build --quantization only when QUANTIZATION is non-empty; vLLM rejects an
+# empty string, and the unquantized release auto-detects dtype from config.
+QUANT_ARGS=()
+if [[ -n "$QUANTIZATION" ]]; then
+  QUANT_ARGS+=(--quantization "$QUANTIZATION")
+fi
+
 echo "Starting judge instance on GPU $CUDA_DEVICES -> :$PORT"
 CUDA_VISIBLE_DEVICES="$CUDA_DEVICES" nohup vllm serve "$MODEL_PATH" \
   --served-model-name "$MODEL_NAME" \
   --max-model-len "$MAX_MODEL_LEN" \
   --tensor_parallel_size "$TENSOR_PARALLEL_SIZE" \
   --gpu-memory-utilization "$GPU_MEMORY_UTILIZATION" \
-  --quantization "$QUANTIZATION" \
+  "${QUANT_ARGS[@]}" \
   --port "$PORT" > "logs/judge_${PORT}.log" 2>&1 &
 PID=$!
 

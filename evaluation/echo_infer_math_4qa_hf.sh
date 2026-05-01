@@ -93,6 +93,15 @@ TEMPERATURE="${TEMPERATURE:-0.6}"
 # Max new tokens per model call; raise for long reasoning traces (AIME, MATH).
 MAX_TOKENS="${MAX_TOKENS:-4096}"
 
+# Sampling distribution shape; defaults preserve the original Qwen-Instruct-style
+# eval profile (top_p=0.95, top_k=20, rep_penalty=1.1). RL-trained rollouts (ECHO,
+# ARPO) typically train at top_p=1.0, top_k=-1, repetition_penalty=1.0 -- override
+# from the per-model launcher when train/eval parity matters more than this default.
+TOP_P="${TOP_P:-0.95}"
+TOP_K="${TOP_K:-20}"
+MIN_P="${MIN_P:-0.0}"
+REPETITION_PENALTY="${REPETITION_PENALTY:-1.1}"
+
 # Async throughput knobs.
 MAX_CONCURRENT="${MAX_CONCURRENT:-32}"
 PYTHON_MAX_CONCURRENT="${PYTHON_MAX_CONCURRENT:-16}"
@@ -140,10 +149,10 @@ CMD+=(--max_search_times "$MAX_SEARCH_TIMES")
 CMD+=(--sample_timeout "$SAMPLE_TIMEOUT")
 CMD+=(--temperature "$TEMPERATURE")
 CMD+=(--max_tokens "$MAX_TOKENS")
-CMD+=(--top_p 0.95)
-CMD+=(--top_k 20)
-CMD+=(--min_p 0.0)
-CMD+=(--repetition_penalty 1.1)
+CMD+=(--top_p "$TOP_P")
+CMD+=(--top_k "$TOP_K")
+CMD+=(--min_p "$MIN_P")
+CMD+=(--repetition_penalty "$REPETITION_PENALTY")
 CMD+=(--include_stop_str_in_output true)
 CMD+=(--python_max_concurrent "$PYTHON_MAX_CONCURRENT")
 CMD+=(--conda_path "$CONDA_PATH")

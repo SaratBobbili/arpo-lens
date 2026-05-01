@@ -10,26 +10,23 @@ mkdir -p logs
 
 # -------------------- Editable Run Config --------------------
 # Bing search key used by tool-enabled inference.
-BING_API_KEY=""
+BING_API_KEY="9c221824-9a57-4261-b1b7-979959492235"
 # Bright Data proxy zone for Bing search requests.
 BING_ZONE="serp_api1"
 # Bright Data proxy country code for Bing search (cc URL parameter).
 BING_LOCATION="us"
 
-# Main reasoning model checkpoint/HF id served on configurable reasoning ports.
-CHECKPOINT_DIR="/scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ECHO"
-# Optional raw VERL actor checkpoint directory to convert before serving.
-# Leave empty to disable conversion and serve ACTOR_MODEL_PATH directly.
-RAW_ACTOR_CHECKPOINT_PATH="${CHECKPOINT_DIR}/checkpoint_snapshots/echo7BInstruct/global_step_35/actor"
-# Base HF model used as the config/template during VERL->HF merge.
-REASON_BASE_MODEL_PATH="Qwen/Qwen2.5-7B-Instruct"
-# Converted or directly served HF model directory/repo id used by vLLM.
-ACTOR_MODEL_PATH="${CHECKPOINT_DIR}/checkpoint_snapshots/echo7BInstruct/global_step_35/hf"
-REASON_MODEL_PATH="${ACTOR_MODEL_PATH}"
-# Served model alias for reasoning endpoints; must match infer DEFAULT_MODEL.
-REASON_MODEL_NAME="Qwen2.5-7B-Instruct"
+# Main reasoning model checkpoint/HF id served on ports 8002/8003.
 
-# Summarization helper checkpoint/HF id served on configurable summarization ports.
+# Base HF model used as the config/template during VERL->HF merge.
+ACTOR_MODEL_PATH="Qwen/Qwen2.5-3B-Instruct"
+REASON_MODEL_PATH="Qwen/Qwen2.5-3B-Instruct"
+REASON_BASE_MODEL_PATH="Qwen/Qwen2.5-3B-Instruct"
+# Converted HF model directory served by vLLM.
+
+REASON_MODEL_NAME="Qwen2.5-3B-Instruct"
+
+# Summarization helper checkpoint/HF id served on ports 8004/8005.
 SUMM_MODEL_PATH="Qwen/Qwen2.5-7B-Instruct"
 # Served model alias for summarization endpoints; must match infer SUMM_MODEL_NAME.
 SUMM_MODEL_NAME="Qwen2.5-7B-Instruct"
@@ -44,7 +41,7 @@ INFER_MODE="completion"
 #   code_search -> python + search (default for ARPO/AEPO trained checkpoints)
 #   echo        -> ECHO <select>/<tool> schema; loads system prompt from
 #                  ECHO_SYSTEM_PROMPT_YAML below instead of a hardcoded literal.
-PROMPT_TYPE="echo"
+PROMPT_TYPE="base"
 
 # Per-sample tool-call budgets enforced by the SampleProcessor; set to 0 to disable a tool entirely.
 # When PROMPT_TYPE=echo these are overridden below to the combined ECHO budget so
@@ -77,7 +74,8 @@ NLTK_DATA_DIR="$CONDA_PATH/envs/$CONDA_ENV/nltk_data"
 COUNTS="1000000"
 
 # Restrict this launcher to math benchmarks only (aime24/aime25/math500/gsm8k/math).
-DATASET_GROUP="math_all"
+DATASET_GROUP="gsm8k"
+
 
 # Pass@k turns (one output file per turn); space separated list.
 TURNS="1"
@@ -96,8 +94,7 @@ SAMPLE_TIMEOUT="900"
 # to reuse a plain baseline folder.
 RUN_TAG="T${TEMPERATURE}_K${TURNS// /-}_mt${MAX_TOKENS}_to${SAMPLE_TIMEOUT}"
 # Checkpoint folder (e.g., global_step_40) inferred from ACTOR_MODEL_PATH.
-CHECKPOINT_TAG="$(basename "$(dirname "$ACTOR_MODEL_PATH")")"
-CUSTOM_RUN_TAG="LLM_as_judge/echo/${REASON_MODEL_NAME}/${CHECKPOINT_TAG}"
+CUSTOM_RUN_TAG="LLM_as_judge/base/${REASON_MODEL_NAME}"
 
 # Model-tagged output directory; "/" -> "__" keeps the model name in one path segment.
 MODEL_OUTPUT_TAG="${REASON_MODEL_NAME//\//__}"
@@ -112,14 +109,8 @@ USE_LLM="true"
 JUDGE_MODEL_PATH="Qwen/Qwen2.5-72B-Instruct"
 # Served alias for the judge endpoint; must match --model_name passed to evaluate.py.
 JUDGE_MODEL_NAME="Qwen2.5-72B-Instruct"
-# Port layout for this run (chosen to avoid collisions with other launchers).
-REASON_PORT_1="8102"
-REASON_PORT_2="8103"
-SUMM_PORT_1="8104"
-SUMM_PORT_2="8105"
-JUDGE_PORT="8101"
-# Endpoint URL the evaluator queries; must match JUDGE_PORT.
-API_BASE_URL="http://localhost:${JUDGE_PORT}/v1"
+# Endpoint URL the evaluator queries; matches the judge launcher PORT.
+API_BASE_URL="http://localhost:8001/v1"
 
 # Warmup wait time before starting inference.
 SERVER_BOOT_WAIT_SECONDS="60"
@@ -156,19 +147,6 @@ if [[ "$INFER_MODE" == "completion_sds" && "$PROMPT_TYPE" != "base" && "$PROMPT_
 fi
 
 # Convert VERL/FSDP actor shards into a vLLM-loadable HF directory once.
-# When RAW_ACTOR_CHECKPOINT_PATH is empty, conversion is skipped.
-if [[ -n "$RAW_ACTOR_CHECKPOINT_PATH" && -d "$RAW_ACTOR_CHECKPOINT_PATH" ]]; then
-  if [[ ! -f "${ACTOR_MODEL_PATH}/config.json" ]]; then
-    echo "[0/5] Converting VERL actor checkpoint to HF format..."
-    python ../ARPO/merge_ckpt/convert_checkpoint_from_verl_to_hf.py merge \
-      --backend fsdp \
-      --hf_model_path "$REASON_BASE_MODEL_PATH" \
-      --local_dir "$RAW_ACTOR_CHECKPOINT_PATH" \
-      --target_dir "$ACTOR_MODEL_PATH"
-  else
-    echo "[0/5] Found converted HF checkpoint, skipping merge: $ACTOR_MODEL_PATH"
-  fi
-fi
 
 # Hard fail early when the reasoning model is not loadable by vLLM.
 # Valid inputs are either:
@@ -232,7 +210,6 @@ wait_for_endpoint() {
 if [[ "$RESUME_FROM_EVAL" != "true" ]]; then
   echo "[1/5] Starting reasoning servers..."
   setsid env MODEL_PATH="$REASON_MODEL_PATH" MODEL_NAME="$REASON_MODEL_NAME" \
-    REASON_PORT_1="$REASON_PORT_1" REASON_PORT_2="$REASON_PORT_2" \
     bash vllm_scripts/echo_vllm_launch_reasoning_model_hf_cuda4-7.sh \
     > logs/run_reasoning_wrapper.log 2>&1 < /dev/null &
   REASON_PID=$!
@@ -240,7 +217,6 @@ if [[ "$RESUME_FROM_EVAL" != "true" ]]; then
   if [[ "$NEEDS_SUMM" == "true" ]]; then
     echo "[2/5] Starting summarization servers (SDS mode)..."
     setsid env MODEL_PATH="$SUMM_MODEL_PATH" MODEL_NAME="$SUMM_MODEL_NAME" \
-      SUMM_PORT_1="$SUMM_PORT_1" SUMM_PORT_2="$SUMM_PORT_2" \
       bash vllm_scripts/echo_vllm_launch_summarize_model_hf_cuda0-3.sh \
       > logs/run_summarization_wrapper.log 2>&1 < /dev/null &
     SUMM_PID=$!
@@ -251,11 +227,11 @@ if [[ "$RESUME_FROM_EVAL" != "true" ]]; then
   echo "Waiting $SERVER_BOOT_WAIT_SECONDS seconds for server warmup..."
   sleep "$SERVER_BOOT_WAIT_SECONDS"
 
-  wait_for_endpoint "http://localhost:${REASON_PORT_1}/v1" "$ENDPOINT_READY_TIMEOUT_SECONDS"
-  wait_for_endpoint "http://localhost:${REASON_PORT_2}/v1" "$ENDPOINT_READY_TIMEOUT_SECONDS"
+  wait_for_endpoint "http://localhost:8002/v1" "$ENDPOINT_READY_TIMEOUT_SECONDS"
+  wait_for_endpoint "http://localhost:8003/v1" "$ENDPOINT_READY_TIMEOUT_SECONDS"
   if [[ "$NEEDS_SUMM" == "true" ]]; then
-    wait_for_endpoint "http://localhost:${SUMM_PORT_1}/v1" "$ENDPOINT_READY_TIMEOUT_SECONDS"
-    wait_for_endpoint "http://localhost:${SUMM_PORT_2}/v1" "$ENDPOINT_READY_TIMEOUT_SECONDS"
+    wait_for_endpoint "http://localhost:8004/v1" "$ENDPOINT_READY_TIMEOUT_SECONDS"
+    wait_for_endpoint "http://localhost:8005/v1" "$ENDPOINT_READY_TIMEOUT_SECONDS"
   fi
 
   echo "[3/5] Running inference on math benchmarks..."
@@ -276,8 +252,6 @@ if [[ "$RESUME_FROM_EVAL" != "true" ]]; then
   BING_API_KEY="$BING_API_KEY" \
   BING_ZONE="$BING_ZONE" \
   BING_LOCATION="$BING_LOCATION" \
-  ENDPOINTS="http://localhost:${REASON_PORT_1}/v1 http://localhost:${REASON_PORT_2}/v1" \
-  SUMM_MODEL_URLS="http://localhost:${SUMM_PORT_1}/v1 http://localhost:${SUMM_PORT_2}/v1" \
   DATASET_GROUP="$DATASET_GROUP" \
   TURNS="$TURNS" \
   TEMPERATURE="$TEMPERATURE" \
@@ -299,7 +273,7 @@ if [[ "$USE_LLM" == "true" ]]; then
     stop_server SUMM_PID
     sleep "$SERVER_TEARDOWN_WAIT_SECONDS"
   fi
-  setsid env MODEL_PATH="$JUDGE_MODEL_PATH" MODEL_NAME="$JUDGE_MODEL_NAME" PORT="$JUDGE_PORT" \
+  setsid env MODEL_PATH="$JUDGE_MODEL_PATH" MODEL_NAME="$JUDGE_MODEL_NAME" \
     bash vllm_scripts/echo_vllm_launch_judge_model_hf_cuda0-3.sh \
     > logs/run_judge_wrapper.log 2>&1 < /dev/null &
   JUDGE_PID=$!

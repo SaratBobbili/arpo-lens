@@ -25,7 +25,7 @@ BING_LOCATION="us"
 # # Converted HF model directory served by vLLM.
 # ACTOR_MODEL_PATH="${CHECKPOINT_DIR}/checkpoint_snapshots/echo3BInstruct/global_step_40/hf"
 # REASON_MODEL_PATH="${ACTOR_MODEL_PATH}"
-REASON_MODEL_PATH="dongguanting/Qwen2.5-7B-ARPO"
+REASON_MODEL_PATH="dongguanting/Qwen2.5-3B-ARPO"
 # Served model alias for reasoning endpoints; must match infer DEFAULT_MODEL.
 REASON_MODEL_NAME="Qwen2.5-3B-Instruct"
 # Served model alias for reasoning endpoints; must match infer DEFAULT_MODEL.
@@ -79,10 +79,10 @@ NLTK_DATA_DIR="$CONDA_PATH/envs/$CONDA_ENV/nltk_data"
 COUNTS="1000000"
 
 # Restrict this launcher to math benchmarks only (aime24/aime25/math500/gsm8k/math).
-DATASET_GROUP="math"
+DATASET_GROUP="gsm8k"
 
 # Pass@k turns (one output file per turn); space separated list.
-TURNS="1 2 3"
+TURNS="1"
 
 # Sampling temperature (0.0 => greedy decoding).
 TEMPERATURE="0.6"
@@ -106,7 +106,11 @@ OUTPUT_PATH="outputs/hf_math_4qa/${CUSTOM_RUN_TAG}/${MODEL_OUTPUT_TAG}/${DATASET
 
 # Enable LLM-as-judge at evaluation time (true => --use_llm passed to evaluate.py).
 USE_LLM="true"
-# HF id / local checkpoint of the LLM judge launched by this orchestrator.
+# HF id / local checkpoint of the LLM judge. Full-precision (bf16) Qwen2.5-72B-Instruct
+# matches the OLD-README upstream judge ("a large model like Qwen2.5-72B-Instruct"); the
+# launcher's QUANTIZATION default is empty, so no --quantization flag is passed for this
+# unquantized release. Switch to Qwen/Qwen2.5-72B-Instruct-GPTQ-Int4 + QUANTIZATION=gptq
+# only when GPU budget forces it -- it disagrees with math_equal on ~12% of math500.
 JUDGE_MODEL_PATH="Qwen/Qwen2.5-72B-Instruct"
 # Served alias for the judge endpoint; must match --model_name passed to evaluate.py.
 JUDGE_MODEL_NAME="Qwen2.5-72B-Instruct"
@@ -123,15 +127,18 @@ API_BASE_URL="http://localhost:${JUDGE_PORT}/v1"
 SERVER_BOOT_WAIT_SECONDS="60"
 # Max seconds to wait for each endpoint health check.
 ENDPOINT_READY_TIMEOUT_SECONDS="300"
-# Separate (longer) health-check budget for the 72B-GPTQ judge: torch.compile + KV cache
-# init alone takes ~5min on first launch, so the smaller reasoning timeout is too tight.
+# Separate (longer) health-check budget for the 72B judge: weight loading + KV cache
+# init takes 5-10min on first launch (longer for the unquantized fp16 release than for
+# the GPTQ-Int4 variant), so the smaller reasoning timeout is too tight.
 JUDGE_ENDPOINT_READY_TIMEOUT_SECONDS="900"
 # Grace period after stopping a server group so VRAM is released before the next launch.
 SERVER_TEARDOWN_WAIT_SECONDS="20"
 
 # Set to "true" to skip [1/5]-[3/5] (server bring-up + inference) and jump straight to
 # [4/5]-[5/5] (judge launch + evaluation). Use this when inference outputs already exist
-# under OUTPUT_PATH and only the judge/eval stage needs to be re-run.
+# under OUTPUT_PATH and only the judge/eval stage needs to be re-run -- e.g. to isolate
+# the JUDGE_MODEL_PATH switch from GPTQ-Int4 to the unquantized Qwen2.5-72B-Instruct on
+# existing rollouts. Iterate DATASET_GROUP (math/math500/gsm8k/aime) per launch.
 RESUME_FROM_EVAL="true"
 # -------------------------------------------------------------
 

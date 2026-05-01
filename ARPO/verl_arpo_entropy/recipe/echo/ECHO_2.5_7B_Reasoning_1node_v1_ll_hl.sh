@@ -122,7 +122,7 @@ python3 -m recipe.echo.main_echo \
     --config-name=$CONFIG_NAME \
     algorithm.adv_estimator=grpo \
     algorithm.kl_ctrl.kl_coef=0.0 \
-    algorithm.norm_adv_by_std_in_grpo=False \
+    algorithm.norm_adv_by_std_in_grpo=True \
     data.train_files=${TRAIN_FILES} \
     data.val_files=${VALID_FILES} \
     data.prompt_key=${PROMPT_KEY} \
@@ -145,7 +145,7 @@ python3 -m recipe.echo.main_echo \
     actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
     actor_rollout_ref.rollout.name=${ROLLOUT_NAME} \
     actor_rollout_ref.rollout.mode=${ROLLOUT_MODE} \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.7 \
     actor_rollout_ref.rollout.n=${ROLLOUT_N} \
     actor_rollout_ref.rollout.high_level_budget=${HIGH_LEVEL_BUDGET} \
     actor_rollout_ref.rollout.mask_categories.first_select=high \
@@ -154,6 +154,7 @@ python3 -m recipe.echo.main_echo \
     actor_rollout_ref.rollout.mask_categories.answer=high \
     actor_rollout_ref.rollout.mask_categories.search=low \
     actor_rollout_ref.rollout.mask_categories.python=low \
+    actor_rollout_ref.rollout.tools.call_limit=3 \
     actor_rollout_ref.rollout.tools.tool_instances.python.params.conda_path=/scratch/user/saratb_tamu.edu/miniconda3 \
     actor_rollout_ref.rollout.tools.tool_instances.python.params.conda_env=arpo \
     actor_rollout_ref.rollout.tools.tool_instances.search.params.cache_file=${SEARCH_CACHE_PATH} \

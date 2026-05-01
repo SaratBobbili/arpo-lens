@@ -482,6 +482,133 @@ class BingSearchTool(BaseTool):
         return "\n".join(formatted)
 
 
+class BingSearchToolRAG(BaseTool):
+    """
+    Query-side semantic-dedup wrapper around BingSearchTool.
+
+    Pipeline per <search> call:
+      1. POST {queries:[q], topk, return_scores:True, threshold} to a sidecar
+         FAISS server that indexed the trainer's existing search-cache keys
+         with E5. If the top-1 cosine >= similarity_threshold, return that
+         neighbor's cached formatted result verbatim (no Brightdata hit).
+      2. On miss, if soft_fallback is True, delegate to an inner BingSearchTool
+         instance (which keeps its own on-disk cache) and POST the new
+         (query, formatted_result) to /add so the next rollout can hit it
+         in-memory. The on-disk corpus_path is never mutated by the sidecar.
+      3. On miss with soft_fallback=False, return "" so the rollout's
+         retry-then-EOS path treats it like an empty Bing response.
+    """
+
+    def __init__(
+        self,
+        api_key: str,
+        zone: str = "serp_api1",
+        max_results: int = 10,
+        result_length: int = 1000,
+        location: str = "cn",
+        request_timeout: int = 120,
+        cache_file: Optional[str] = None,
+        async_cache_write: bool = True,
+        cache_refresh_interval: float = 15.0,
+        rag_server_url: str = "http://127.0.0.1:5003",
+        similarity_threshold: float = 0.92,
+        topk: int = 1,
+        soft_fallback: bool = True,
+        rag_request_timeout: float = 30.0,
+    ):
+        """
+        Args mirror BingSearchTool for the inner Brightdata client, plus:
+            rag_server_url: base URL of the FAISS sidecar (no trailing slash).
+            similarity_threshold: cosine cutoff for top-1 to be considered a hit.
+            topk: top-k requested from the sidecar (only top-1 is consumed; >1 is for tuning logs).
+            soft_fallback: on miss, fall through to Brightdata via inner BingSearchTool.
+            rag_request_timeout: HTTP read timeout (s) for sidecar /retrieve and /add.
+        """
+        # Inner Bing client owns the on-disk cache + Brightdata HTTP path.
+        self._bing = BingSearchTool(
+            api_key=api_key,
+            zone=zone,
+            max_results=max_results,
+            result_length=result_length,
+            location=location,
+            request_timeout=request_timeout,
+            cache_file=cache_file,
+            async_cache_write=async_cache_write,
+            cache_refresh_interval=cache_refresh_interval,
+        )
+        self._rag_server_url = rag_server_url.rstrip("/")
+        self._similarity_threshold = float(similarity_threshold)
+        self._topk = int(topk)
+        self._soft_fallback = bool(soft_fallback)
+        self._rag_timeout = float(rag_request_timeout)
+
+    @property
+    def name(self) -> str:
+        return "bing_search_rag"
+
+    @property
+    def trigger_tag(self) -> str:
+        return "search"
+
+    def _retrieve(self, query: str) -> Optional[Dict[str, Any]]:
+        # Returns the best hit dict {key, value, score} if top-1 score >=
+        # threshold, else None. A None return is the signal to fall back.
+        resp = requests.post(
+            f"{self._rag_server_url}/retrieve",
+            json={
+                "queries": [query],
+                "topk": self._topk,
+                "return_scores": True,
+                "threshold": self._similarity_threshold,
+            },
+            timeout=self._rag_timeout,
+        )
+        resp.raise_for_status()
+        hits = resp.json().get("result", [[]])[0]
+        if not hits:
+            return None
+        best = hits[0]
+        if best.get("score", 0.0) >= self._similarity_threshold:
+            return best
+        return None
+
+    def _add_to_index(self, query: str, value: str) -> None:
+        # Best-effort online insert; sidecar maintains an in-memory delta only.
+        try:
+            requests.post(
+                f"{self._rag_server_url}/add",
+                json={"query": query, "value": value},
+                timeout=self._rag_timeout,
+            )
+        except Exception as e:
+            print(f"RAG /add failed (non-fatal): {e}")
+
+    def execute(self, query: str, timeout: Optional[int] = None) -> str:
+        # Match BingSearchTool's only piece of normalization so cache keys
+        # produced by past Bing calls (which were stripped) line up.
+        query = query.replace('"', '')
+
+        try:
+            hit = self._retrieve(query)
+        except Exception as e:
+            # Network/sidecar failure must not kill the rollout; fall through
+            # so the inner Bing path can still serve the request.
+            print(f"RAG /retrieve failed, falling back to Bing: {e}")
+            hit = None
+
+        if hit is not None:
+            print(f"RAG hit score={hit['score']:.4f} for query: {query}")
+            return hit["value"]
+
+        if not self._soft_fallback:
+            return ""
+
+        result = self._bing.execute(query, timeout=timeout)
+        if result:
+            self._add_to_index(query, result)
+        return result
+
+
 if __name__ == "__main__":
     import sys
     

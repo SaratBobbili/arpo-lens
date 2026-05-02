@@ -10,7 +10,8 @@ mkdir -p logs
 
 # -------------------- Editable Run Config --------------------
 # Bing search key used by tool-enabled inference.
-BING_API_KEY=""
+#BING_API_KEY="9c221824-9a57-4261-b1b7-979959492235"
+BING_API_KEY="f75663d4-caf9-432a-baf1-dec27a13625a"
 # Bright Data proxy zone for Bing search requests.
 BING_ZONE="serp_api1"
 # Bright Data proxy country code for Bing search (cc URL parameter).
@@ -20,6 +21,9 @@ BING_LOCATION="us"
 CHECKPOINT_DIR="/scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ECHO"
 # Optional raw VERL actor checkpoint directory to convert before serving.
 # Leave empty to disable conversion and serve ACTOR_MODEL_PATH directly.
+# Layout expected by run_layout.sh: <root>/<experiment>/<step>/actor, so the
+# two parents define TRAINING_EXPERIMENT (echo7BInstruct) and CHECKPOINT_STEP
+# (global_step_35) used in OUTPUT_PATH and run_config.yaml.
 RAW_ACTOR_CHECKPOINT_PATH="${CHECKPOINT_DIR}/checkpoint_snapshots/echo7BInstruct/global_step_35/actor"
 # Base HF model used as the config/template during VERL->HF merge.
 REASON_BASE_MODEL_PATH="Qwen/Qwen2.5-7B-Instruct"
@@ -28,6 +32,10 @@ ACTOR_MODEL_PATH="${CHECKPOINT_DIR}/checkpoint_snapshots/echo7BInstruct/global_s
 REASON_MODEL_PATH="${ACTOR_MODEL_PATH}"
 # Served model alias for reasoning endpoints; must match infer DEFAULT_MODEL.
 REASON_MODEL_NAME="Qwen2.5-7B-Instruct"
+# Optional pointer to the training recipe .sh that produced the checkpoint
+# above. Recorded verbatim into run_config.yaml so eval folders stay traceable
+# back to the exact training config; leave empty to skip.
+TRAINING_RECIPE_PATH="${SCRIPT_DIR}/../ARPO/verl_arpo_entropy/recipe/echo/ECHO_2.5_7B_Reasoning_1node_v1_ll_hl.sh"
 
 # Summarization helper checkpoint/HF id served on configurable summarization ports.
 SUMM_MODEL_PATH="Qwen/Qwen2.5-7B-Instruct"
@@ -35,7 +43,7 @@ SUMM_MODEL_PATH="Qwen/Qwen2.5-7B-Instruct"
 SUMM_MODEL_NAME="Qwen2.5-7B-Instruct"
 
 # completion_sds enables SDS with summarization; completion/default skips summarization.
-INFER_MODE="completion"
+INFER_MODE="completion_sds"
 
 # System prompt schema:
 #   base        -> no tools (pure CoT, table row "Qwen2.5-3B-Instruct")
@@ -51,7 +59,7 @@ PROMPT_TYPE="echo"
 # the combined-budget gate in SampleProcessorCompletion fires before the per-tool
 # gate (which would inject an OOD "limit exceeded" feedback message ECHO never saw).
 MAX_PYTHON_TIMES="5"
-MAX_SEARCH_TIMES="0"
+MAX_SEARCH_TIMES="5"
 
 # ---- ECHO-only config (consumed only when PROMPT_TYPE=echo) ----
 # Single source of truth for the ECHO system prompt: shared with the trainer at
@@ -61,7 +69,7 @@ ECHO_SYSTEM_PROMPT_YAML="${SCRIPT_DIR}/../ARPO/verl_arpo_entropy/recipe/echo/con
 # used during ECHO training (echo_trainer.yaml).
 ECHO_ACTIVE_SYSTEM_PROMPT="1"
 # Combined per-sample tool budget (matches vLLMRolloutECHO.tool_call_limit, default 5).
-ECHO_TOOL_CALL_LIMIT="5"
+ECHO_TOOL_CALL_LIMIT="10"
 # Validator profile id (c1..c5) matching the trainer's mask_categories signature;
 # routes which format checks gate HL vs LL inside deep_research_echo.compute_score.
 # c1 = plan/reason/answer HL; tool choice + payload LL (the v1_ll_hl recipes).
@@ -76,8 +84,12 @@ NLTK_DATA_DIR="$CONDA_PATH/envs/$CONDA_ENV/nltk_data"
 # Samples per dataset; large value => full dataset via min(dataset_size, COUNTS) in infer.py.
 COUNTS="1000000"
 
-# Restrict this launcher to math benchmarks only (aime24/aime25/math500/gsm8k/math).
-DATASET_GROUP="math_all"
+# Selects which dataset bundle to evaluate. Supported by echo_infer_math_4qa_hf.sh:
+#   math_all     -> aime24/aime25/math500/gsm8k/math (math benchmarks)
+#   qa_all       -> hotpotqa/2wiki/musique/bamboogle (qa benchmarks)
+#   math_qa_all  -> math_all + qa_all (separate per-dataset folders)
+#   grpo_mix     -> mirror of the ECHO RL validation set (mixed math+qa, single jsonl)
+DATASET_GROUP="math_qa_all"
 
 # Pass@k turns (one output file per turn); space separated list.
 TURNS="1"
@@ -91,17 +103,10 @@ MAX_TOKENS="4096"
 # End-to-end timeout for a single sample, in seconds.
 SAMPLE_TIMEOUT="900"
 
-# Short tag appended to OUTPUT_PATH and log filenames so different configs land in
-# different folders. Auto-composed from the decoding/runtime knobs above; set to ""
-# to reuse a plain baseline folder.
-RUN_TAG="T${TEMPERATURE}_K${TURNS// /-}_mt${MAX_TOKENS}_to${SAMPLE_TIMEOUT}"
-# Checkpoint folder (e.g., global_step_40) inferred from ACTOR_MODEL_PATH.
-CHECKPOINT_TAG="$(basename "$(dirname "$ACTOR_MODEL_PATH")")"
-CUSTOM_RUN_TAG="LLM_as_judge/echo/${REASON_MODEL_NAME}/${CHECKPOINT_TAG}"
-
-# Model-tagged output directory; "/" -> "__" keeps the model name in one path segment.
-MODEL_OUTPUT_TAG="${REASON_MODEL_NAME//\//__}"
-OUTPUT_PATH="outputs/hf_math_4qa/${CUSTOM_RUN_TAG}/${DATASET_GROUP}${RUN_TAG:+_$RUN_TAG}"
+# OUTPUT_PATH and RUN_ID are computed by run_layout.sh (sourced below) once all
+# knobs in this file are set. The resulting folder is
+#   outputs/hf_math_4qa/<training_experiment>/<checkpoint_step>/<run_id>
+# and contains a run_config.yaml mirror of every variable in this script.
 
 # Enable LLM-as-judge at evaluation time (true => --use_llm passed to evaluate.py).
 USE_LLM="true"
@@ -133,9 +138,13 @@ JUDGE_ENDPOINT_READY_TIMEOUT_SECONDS="900"
 SERVER_TEARDOWN_WAIT_SECONDS="20"
 
 # Set to "true" to skip [1/5]-[3/5] (server bring-up + inference) and jump straight to
-# [4/5]-[5/5] (judge launch + evaluation). Use this when inference outputs already exist
-# under OUTPUT_PATH and only the judge/eval stage needs to be re-run.
+# [4/5]-[5/5] (judge launch + evaluation). Requires RESUME_RUN_DIR below to point at
+# the exact prior run folder whose outputs should be re-scored; the eval stage
+# overwrites metrics inside that folder instead of minting a new RUN_ID.
 RESUME_FROM_EVAL="false"
+# Absolute or repo-relative path to an existing run folder to resume into. Only
+# consulted when RESUME_FROM_EVAL=true; ignored otherwise.
+RESUME_RUN_DIR=""
 # -------------------------------------------------------------
 
 # When PROMPT_TYPE=echo: export ECHO env vars for prompt_manager.PromptManager
@@ -154,6 +163,18 @@ NEEDS_SUMM="false"
 if [[ "$INFER_MODE" == "completion_sds" && "$PROMPT_TYPE" != "base" && "$PROMPT_TYPE" != "math" ]]; then
   NEEDS_SUMM="true"
 fi
+
+# Source the shared layout helper and mint a unique OUTPUT_PATH for this
+# invocation (or reuse RESUME_RUN_DIR when resuming). init_run_layout also drops
+# run_config.yaml with a full snapshot of the editable knobs above so the run
+# folder alone identifies the checkpoint + training config + eval settings.
+if [[ "${RESUME_FROM_EVAL}" == "true" && -z "${RESUME_RUN_DIR}" ]]; then
+  echo "ERROR: RESUME_FROM_EVAL=true but RESUME_RUN_DIR is empty." >&2
+  echo "       Set RESUME_RUN_DIR to the existing run folder to resume into." >&2
+  exit 1
+fi
+source "${SCRIPT_DIR}/run_layout.sh"
+init_run_layout
 
 # Convert VERL/FSDP actor shards into a vLLM-loadable HF directory once.
 # When RAW_ACTOR_CHECKPOINT_PATH is empty, conversion is skipped.
@@ -234,7 +255,7 @@ if [[ "$RESUME_FROM_EVAL" != "true" ]]; then
   setsid env MODEL_PATH="$REASON_MODEL_PATH" MODEL_NAME="$REASON_MODEL_NAME" \
     REASON_PORT_1="$REASON_PORT_1" REASON_PORT_2="$REASON_PORT_2" \
     bash vllm_scripts/echo_vllm_launch_reasoning_model_hf_cuda4-7.sh \
-    > logs/run_reasoning_wrapper.log 2>&1 < /dev/null &
+    > "$RUN_LOG_DIR/run_reasoning_wrapper.log" 2>&1 < /dev/null &
   REASON_PID=$!
 
   if [[ "$NEEDS_SUMM" == "true" ]]; then
@@ -242,7 +263,7 @@ if [[ "$RESUME_FROM_EVAL" != "true" ]]; then
     setsid env MODEL_PATH="$SUMM_MODEL_PATH" MODEL_NAME="$SUMM_MODEL_NAME" \
       SUMM_PORT_1="$SUMM_PORT_1" SUMM_PORT_2="$SUMM_PORT_2" \
       bash vllm_scripts/echo_vllm_launch_summarize_model_hf_cuda0-3.sh \
-      > logs/run_summarization_wrapper.log 2>&1 < /dev/null &
+      > "$RUN_LOG_DIR/run_summarization_wrapper.log" 2>&1 < /dev/null &
     SUMM_PID=$!
   else
     echo "[2/5] Skipping summarization servers (INFER_MODE=$INFER_MODE, PROMPT_TYPE=$PROMPT_TYPE)"
@@ -283,7 +304,7 @@ if [[ "$RESUME_FROM_EVAL" != "true" ]]; then
   TEMPERATURE="$TEMPERATURE" \
   MAX_TOKENS="$MAX_TOKENS" \
   SAMPLE_TIMEOUT="$SAMPLE_TIMEOUT" \
-  bash echo_infer_math_4qa_hf.sh | tee "logs/run_infer_math_4qa_hf${RUN_TAG:+_$RUN_TAG}.log"
+  bash echo_infer_math_4qa_hf.sh | tee "$RUN_LOG_DIR/run_infer_math_4qa_hf.log"
 
   echo "Inference complete; stopping reasoning servers to free GPUs 4-7..."
   stop_server REASON_PID
@@ -301,7 +322,7 @@ if [[ "$USE_LLM" == "true" ]]; then
   fi
   setsid env MODEL_PATH="$JUDGE_MODEL_PATH" MODEL_NAME="$JUDGE_MODEL_NAME" PORT="$JUDGE_PORT" \
     bash vllm_scripts/echo_vllm_launch_judge_model_hf_cuda0-3.sh \
-    > logs/run_judge_wrapper.log 2>&1 < /dev/null &
+    > "$RUN_LOG_DIR/run_judge_wrapper.log" 2>&1 < /dev/null &
   JUDGE_PID=$!
   echo "Waiting $SERVER_BOOT_WAIT_SECONDS seconds for judge warmup..."
   sleep "$SERVER_BOOT_WAIT_SECONDS"
@@ -317,6 +338,6 @@ API_BASE_URL="$API_BASE_URL" \
 MODEL_NAME="$JUDGE_MODEL_NAME" \
 PROMPT_TYPE="$PROMPT_TYPE" \
 VALIDATOR_PROFILE="$ECHO_VALIDATOR_PROFILE" \
-bash echo_evaluate_passk_math_4qa.sh | tee "logs/run_eval_math_4qa_hf${RUN_TAG:+_$RUN_TAG}.log"
+bash echo_evaluate_passk_math_4qa.sh | tee "$RUN_LOG_DIR/run_eval_math_4qa_hf.log"
 
 echo "Run completed successfully. Outputs: $OUTPUT_PATH"

@@ -32,7 +32,7 @@ export PYTHONPATH="${VERL_ROOT}:$PYTHONPATH"
 # ============================ Basic Configuration ============================
 # Experiment name and project
 PROJECT_NAME="qwen3B" # Modify experiment group
-EXPERIMENT_NAME="echo3BInstruct-r2" # validator profile c1 (plan/reason/answer HL; tool choice + payload LL), phase_order=[low_level, high_level]
+EXPERIMENT_NAME="echo3B-rerun-hybrid" # validator profile c1 (plan/reason/answer HL; tool choice + payload LL), phase_order=[low_level, high_level]
 
 # Configuration file path
 CONFIG_PATH="${SCRIPT_DIR}/config" # ECHO recipe config colocated with this launch script
@@ -75,7 +75,15 @@ REWARD_MANAGER="echo"              # Reward manager type
 CUSTOM_REWARD_FUNCTION_PATH="${VERL_ROOT}/verl/utils/reward_score/deep_research_echo.py" # Modify reward function path
 CUSTOM_REWARD_FUNCTION_NAME="compute_score"
 HIGH_LEVEL_REWARD_STRATEGY="scorer" # High-level phase reward strategy: {scorer, entropy, entropy-hybrid}.
-LOW_LEVEL_REWARD_STRATEGY="entropy"  # Low-level phase reward strategy: {scorer, entropy, entropy-hybrid}.
+LOW_LEVEL_REWARD_STRATEGY="entropy-hybrid"  # Low-level phase reward strategy: {scorer, entropy, entropy-hybrid}.
+# Coefficient on the direct entropy regularizer added to the LL actor loss:
+#   L_actor = L_GRPO - LL_ENTROPY_REG_COEFF * mean_{m^LL}(H(pi_theta(.|x))).
+# The entropy is the full-vocab entropy of the *current* policy (gradient flows
+# through pi_theta), and m^LL = low_level_loss_mask ∩ select_loss_mask under
+# `entropy-hybrid` (the same mask used for the entropy reward channel). The
+# regularizer is gated on LOW_LEVEL_REWARD_STRATEGY ∈ {entropy, entropy-hybrid}
+# in the trainer, so this knob is a no-op for `scorer` / `maxentropy_rl`.
+LL_ENTROPY_REG_COEFF=0.01
 
 # ============================ Training Configuration ============================
 # Training parameters
@@ -95,10 +103,10 @@ WANDB_API_KEY="0986ce441bdc0e809cd73f235d468fa624518fe8" # Modify your wandb key
 SEARCH_CLASS_PATH="verl.workers.agent.tools.search_tool.BingSearchTool"
 # Bright Data (third-party Bing SERP used by BingSearchTool -> api.brightdata.com/request).
 #BRIGHTDATA_API_KEY="" # Bright Data API token; set manually in terminal before launch
-BRIGHTDATA_API_KEY="9c221824-9a57-4261-b1b7-979959492235"
+BRIGHTDATA_API_KEY="f75663d4-caf9-432a-baf1-dec27a13625a"
 BRIGHTDATA_ZONE="serp_api1"                    # Bright Data SERP zone configured in your Bright Data account
 BRIGHTDATA_LOCATION="us"                       # Country code passed to Bing via &cc=<code>; also selects the Bright Data proxy geo. "us" routes through US proxies (faster+more reliable from this cluster than "cn", which periodically returns HTTP 200 with empty body under load).
-BRIGHTDATA_TIMEOUT=45                        # Per-HTTP-call read timeout (s) to api.brightdata.com. Brightdata SERP tail latency is ~30-60s+ under concurrent rollout load, so 120 absorbs the tail and avoids spurious retries.
+BRIGHTDATA_TIMEOUT=90                        # Per-HTTP-call read timeout (s) to api.brightdata.com. Brightdata SERP tail latency is ~30-60s+ under concurrent rollout load, so 120 absorbs the tail and avoids spurious retries.
 # ============================ Preparation ============================
 # Login to WandB (if API key is provided)
 if [ "$WANDB_API_KEY" != "" ]; then
@@ -170,6 +178,7 @@ python3 -m recipe.echo.main_echo \
     'reward_model.phase_order=["low_level", "high_level"]' \
     reward_model.phase_rewards.high_level.strategy=${HIGH_LEVEL_REWARD_STRATEGY} \
     reward_model.phase_rewards.low_level.strategy=${LOW_LEVEL_REWARD_STRATEGY} \
+    reward_model.phase_rewards.low_level.entropy.reg_coeff=${LL_ENTROPY_REG_COEFF} \
     custom_reward_function.path=${CUSTOM_REWARD_FUNCTION_PATH} \
     custom_reward_function.name=${CUSTOM_REWARD_FUNCTION_NAME} \
     trainer.critic_warmup=0 \

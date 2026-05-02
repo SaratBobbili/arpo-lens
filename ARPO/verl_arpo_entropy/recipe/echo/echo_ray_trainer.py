@@ -346,8 +346,12 @@ class RayECHOTrainer(RayPPOTrainer):
                             loss_agg_mode = self.config.actor_rollout_ref.actor.loss_agg_mode
                             entropys = old_log_prob.batch.pop("entropys", None)
                             if entropys is not None:
+                                # Diagnostic: old-policy entropy aggregated over the GRPO loss
+                                # mask. Distinct from the differentiable `actor/entropy_reg_loss`
+                                # logged by `update_policy` (current-policy entropy reduced over
+                                # m^phase, the term that actually enters the gradient).
                                 entropy_loss = agg_loss(loss_mat=entropys, loss_mask=phase_batch.batch["loss_mask"], loss_agg_mode=loss_agg_mode)
-                                metrics[f"{phase_prefix}actor/entropy_loss"] = entropy_loss.detach().item()
+                                metrics[f"{phase_prefix}actor/entropy_old_policy"] = entropy_loss.detach().item()
                             phase_batch = phase_batch.union(old_log_prob)
 
                             if "rollout_log_probs" in phase_batch.batch.keys():
@@ -383,6 +387,11 @@ class RayECHOTrainer(RayPPOTrainer):
                             )
                             # Diagnostic mirrors the mask actually used for the reduction.
                             phase_batch.batch[f"{phase_name}_token_entropy"] = entropys.to(torch.float32) * entropy_mask_f
+                            # Persist the same m^phase used for the entropy *reward* as the mask
+                            # consumed by the entropy *regularizer* in update_policy. Identity
+                            # of masks across the two channels is intentional: both channels are
+                            # gated on the same scoring strategy, so they share m^phase.
+                            phase_batch.batch["entropy_reg_loss_mask"] = entropy_mask_f
                             reward_tensor, entropy_metrics = self._build_entropy_scalar_reward(
                                 entropys=entropys,
                                 phase_batch=phase_batch,
@@ -497,6 +506,17 @@ class RayECHOTrainer(RayPPOTrainer):
                         if self.config.trainer.critic_warmup <= self.global_steps:
                             with _timer(f"{phase_name}_update_actor", timing_raw):
                                 phase_batch.meta_info["multi_turn"] = self.config.actor_rollout_ref.rollout.multi_turn.enable
+                                # Direct entropy regularizer is gated on the phase's scoring
+                                # strategy: only enabled when the phase uses an entropy-based
+                                # reward (entropy / entropy-hybrid), so the regularizer auto-
+                                # disables for `scorer` and `maxentropy_rl` (where entropy
+                                # already enters via the reward channel). When enabled, the
+                                # mask m^phase is `entropy_reg_loss_mask`, populated above to
+                                # mirror the reward-side intersection (phase_mask, optionally
+                                # ∩ select_loss_mask for entropy-hybrid).
+                                if phase_strategy in ("entropy", "entropy-hybrid"):
+                                    phase_batch.meta_info["entropy_coeff_override"] = float(phase_reward_cfg.entropy.get("reg_coeff", 0.0))
+                                    phase_batch.meta_info["entropy_loss_mask_key"] = "entropy_reg_loss_mask"
                                 actor_output = self.actor_rollout_wg.update_actor(phase_batch)
                             actor_output_metrics = reduce_metrics(actor_output.meta_info["metrics"])
                             metrics.update(self._prefix_metrics(actor_output_metrics, phase_prefix))

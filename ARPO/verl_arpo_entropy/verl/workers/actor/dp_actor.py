@@ -321,10 +321,19 @@ class DataParallelPPOActor(BasePPOActor):
 
         temperature = data.meta_info["temperature"]  # temperature must be in the data.meta_info to avoid silent error
         multi_turn = data.meta_info.get("multi_turn", False)
+        # Per-call overrides for the direct entropy regularizer. When set, they take
+        # precedence over `self.config.entropy_coeff` / `loss_mask` so callers (e.g.
+        # phase-aware trainers) can apply a different beta and a different mask
+        # m^phase on the entropy term while the policy-gradient term keeps using
+        # `loss_mask`. Both default to None (-> fall back to global config).
+        entropy_coeff_override = data.meta_info.get("entropy_coeff_override", None)
+        entropy_loss_mask_key = data.meta_info.get("entropy_loss_mask_key", None)
 
         select_keys = ["responses", "input_ids", "attention_mask", "position_ids", "old_log_probs", "advantages"]
         if multi_turn or "loss_mask" in data.batch.keys():
             select_keys.append("loss_mask")
+        if entropy_loss_mask_key is not None and entropy_loss_mask_key not in select_keys:
+            select_keys.append(entropy_loss_mask_key)
         if self.config.use_kl_loss:
             select_keys.append("ref_log_prob")
         batch = data.select(batch_keys=select_keys).batch
@@ -379,7 +388,10 @@ class DataParallelPPOActor(BasePPOActor):
                     clip_ratio_low = self.config.clip_ratio_low if self.config.clip_ratio_low is not None else clip_ratio
                     clip_ratio_high = self.config.clip_ratio_high if self.config.clip_ratio_high is not None else clip_ratio
                     clip_ratio_c = self.config.get("clip_ratio_c", 3.0)
-                    entropy_coeff = self.config.entropy_coeff
+                    # Caller-provided coefficient (e.g. phase-specific beta from the trainer)
+                    # overrides the global config knob; falling back keeps existing recipes
+                    # unchanged when no override is set.
+                    entropy_coeff = entropy_coeff_override if entropy_coeff_override is not None else self.config.entropy_coeff
                     loss_agg_mode = self.config.loss_agg_mode
 
                     # all return: (bsz, response_length)
@@ -401,10 +413,21 @@ class DataParallelPPOActor(BasePPOActor):
                     )
 
                     if entropy_coeff != 0:
-                        entropy_loss = agg_loss(loss_mat=entropy, loss_mask=response_mask, loss_agg_mode=loss_agg_mode)
+                        # Use a per-call entropy mask m^phase if provided (decoupled from the
+                        # GRPO `response_mask`); otherwise fall back to `response_mask` for
+                        # backward compatibility with non-phase-aware callers.
+                        if entropy_loss_mask_key is not None:
+                            entropy_loss_mask = data[entropy_loss_mask_key][:, -response_length:]
+                        else:
+                            entropy_loss_mask = response_mask
+                        entropy_loss = agg_loss(loss_mat=entropy, loss_mask=entropy_loss_mask, loss_agg_mode=loss_agg_mode)
 
                         # compute policy loss
                         policy_loss = pg_loss - entropy_loss * entropy_coeff
+                        append_to_dict(metrics, {
+                            "actor/entropy_reg_loss": entropy_loss.detach().item(),
+                            "actor/entropy_reg_coef": float(entropy_coeff),
+                        })
                     else:
                         policy_loss = pg_loss
 

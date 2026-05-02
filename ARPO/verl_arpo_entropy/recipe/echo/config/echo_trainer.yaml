@@ -92,6 +92,15 @@ reward_model:
         # Terminal scalar written on format-gate failure. Only consulted when
         # format_gate is true. Matches the scorer strategy's hard-penalty value.
         bad_format_penalty: -1.0
+        # Direct entropy regularizer added to the actor loss as
+        # L_actor = L_GRPO - reg_coeff * mean_{m^phase}(H(pi_theta(.|x))),
+        # where the entropy is the full-vocab entropy of the *current* policy
+        # (gradient flows through pi_theta), m^phase is the phase loss mask
+        # for `strategy=entropy` and m^phase ∩ select_loss_mask for
+        # `strategy=entropy-hybrid` (mirrors the reward path's restriction).
+        # Only consulted when strategy in {"entropy", "entropy-hybrid"};
+        # ignored for "scorer" / "maxentropy_rl". 0.0 disables the term.
+        reg_coeff: 0.0
       # `max_entropy` block below is consulted only when strategy == "maxentropy_rl".
       # Implements r_i = scorer_i + alpha * ent_i with no extra format gating
       # (the scorer's own -1 on bad format is preserved as-is).
@@ -113,6 +122,10 @@ reward_model:
         clamp_max: null
         format_gate: true
         bad_format_penalty: -1.0
+        # See high_level.entropy.reg_coeff for full semantics. Setting this
+        # to a positive value enables the direct entropy gradient on the LL
+        # phase: L_actor += -reg_coeff * sum(m^LL * H(pi_theta)) / sum(m^LL).
+        reg_coeff: 0.0
 
 actor_rollout_ref:
   rollout:

@@ -10,7 +10,8 @@ mkdir -p logs
 
 # -------------------- Editable Run Config --------------------
 # Bing search key used by tool-enabled inference.
-BING_API_KEY="9c221824-9a57-4261-b1b7-979959492235"
+#BING_API_KEY="9c221824-9a57-4261-b1b7-979959492235"
+BING_API_KEY="f75663d4-caf9-432a-baf1-dec27a13625a"
 # Bright Data proxy zone for Bing search requests.
 BING_ZONE="serp_api1"
 # Bright Data proxy country code for Bing search (cc URL parameter).
@@ -19,11 +20,11 @@ BING_LOCATION="us"
 # Main reasoning model checkpoint/HF id served on ports 8002/8003.
 CHECKPOINT_DIR="/scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ECHO"
 # Raw VERL actor checkpoint directory to convert before serving.
-RAW_ACTOR_CHECKPOINT_PATH="${CHECKPOINT_DIR}/checkpoint_snapshots/echo3BInstruct/global_step_95/actor"
+RAW_ACTOR_CHECKPOINT_PATH="${CHECKPOINT_DIR}/checkpoints/echo3BInstruct/global_step_40/actor"
 # Base HF model used as the config/template during VERL->HF merge.
 REASON_BASE_MODEL_PATH="Qwen/Qwen2.5-3B-Instruct"
 # Converted HF model directory served by vLLM.
-ACTOR_MODEL_PATH="${CHECKPOINT_DIR}/checkpoint_snapshots/echo3BInstruct/global_step_95/hf"
+ACTOR_MODEL_PATH="${CHECKPOINT_DIR}/checkpoints/echo3BInstruct/global_step_40/hf"
 REASON_MODEL_PATH="${ACTOR_MODEL_PATH}"
 # Served model alias for reasoning endpoints; must match infer DEFAULT_MODEL.
 REASON_MODEL_NAME="Qwen2.5-3B-Instruct"
@@ -34,7 +35,7 @@ SUMM_MODEL_PATH="Qwen/Qwen2.5-7B-Instruct"
 SUMM_MODEL_NAME="Qwen2.5-7B-Instruct"
 
 # completion_sds enables SDS with summarization; completion/default skips summarization.
-INFER_MODE="completion"
+INFER_MODE="completion_sds"
 
 # System prompt schema:
 #   base        -> no tools (pure CoT, table row "Qwen2.5-3B-Instruct")
@@ -50,7 +51,7 @@ PROMPT_TYPE="echo"
 # the combined-budget gate in SampleProcessorCompletion fires before the per-tool
 # gate (which would inject an OOD "limit exceeded" feedback message ECHO never saw).
 MAX_PYTHON_TIMES="5"
-MAX_SEARCH_TIMES="0"
+MAX_SEARCH_TIMES="5"
 
 # ---- ECHO-only config (consumed only when PROMPT_TYPE=echo) ----
 # Single source of truth for the ECHO system prompt: shared with the trainer at
@@ -78,7 +79,14 @@ COUNTS="1000000"
 # Selects which dataset bundle to evaluate. Supported by echo_infer_math_4qa_hf.sh:
 #   math_all -> aime24/aime25/math500/gsm8k/math (math benchmarks)
 #   grpo_mix -> mirror of the ECHO RL validation set (mixed math+qa, single jsonl)
-DATASET_GROUP="grpo_mix"
+# When DATASET_NAMES below is non-empty it overrides DATASET_GROUP for the actual
+# dataset list (echo_infer_math_4qa_hf.sh, lines 38-40); DATASET_GROUP is then
+# used only as the OUTPUT_PATH folder label, so set it to a descriptive tag.
+DATASET_GROUP="math_qa_all"
+# Explicit dataset list run as separate per-dataset folders under OUTPUT_PATH.
+# Union of MATH_DATASETS + QA_DATASETS in echo_infer_math_4qa_hf.sh; leave empty
+# to fall back to DATASET_GROUP semantics.
+DATASET_NAMES="aime24 aime25 math500 gsm8k math hotpotqa 2wiki musique bamboogle"
 
 # Pass@k turns (one output file per turn); space separated list.
 TURNS="1"
@@ -109,7 +117,7 @@ SAMPLE_TIMEOUT="900"
 RUN_TAG="T${TEMPERATURE}_K${TURNS// /-}_mt${MAX_TOKENS}_to${SAMPLE_TIMEOUT}"
 # Checkpoint folder (e.g., global_step_40) inferred from ACTOR_MODEL_PATH.
 CHECKPOINT_TAG="$(basename "$(dirname "$ACTOR_MODEL_PATH")")"
-CUSTOM_RUN_TAG="LLM_as_judge/echo/${REASON_MODEL_NAME}/${CHECKPOINT_TAG}"
+CUSTOM_RUN_TAG="LLM_as_judge/echo_search/${REASON_MODEL_NAME}/${CHECKPOINT_TAG}"
 
 # Model-tagged output directory; "/" -> "__" keeps the model name in one path segment.
 MODEL_OUTPUT_TAG="${REASON_MODEL_NAME//\//__}"
@@ -141,7 +149,7 @@ SERVER_TEARDOWN_WAIT_SECONDS="20"
 # Set to "true" to skip [1/5]-[3/5] (server bring-up + inference) and jump straight to
 # [4/5]-[5/5] (judge launch + evaluation). Use this when inference outputs already exist
 # under OUTPUT_PATH and only the judge/eval stage needs to be re-run.
-RESUME_FROM_EVAL="true"
+RESUME_FROM_EVAL="false"
 # -------------------------------------------------------------
 
 # When PROMPT_TYPE=echo: export ECHO env vars for prompt_manager.PromptManager
@@ -280,6 +288,7 @@ if [[ "$RESUME_FROM_EVAL" != "true" ]]; then
   BING_ZONE="$BING_ZONE" \
   BING_LOCATION="$BING_LOCATION" \
   DATASET_GROUP="$DATASET_GROUP" \
+  DATASET_NAMES="$DATASET_NAMES" \
   TURNS="$TURNS" \
   TEMPERATURE="$TEMPERATURE" \
   TOP_P="$TOP_P" \

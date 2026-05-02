@@ -77,16 +77,11 @@ NLTK_DATA_DIR="$CONDA_PATH/envs/$CONDA_ENV/nltk_data"
 COUNTS="1000000"
 
 # Selects which dataset bundle to evaluate. Supported by echo_infer_math_4qa_hf.sh:
-#   math_all -> aime24/aime25/math500/gsm8k/math (math benchmarks)
-#   grpo_mix -> mirror of the ECHO RL validation set (mixed math+qa, single jsonl)
-# When DATASET_NAMES below is non-empty it overrides DATASET_GROUP for the actual
-# dataset list (echo_infer_math_4qa_hf.sh, lines 38-40); DATASET_GROUP is then
-# used only as the OUTPUT_PATH folder label, so set it to a descriptive tag.
+#   math_all     -> aime24/aime25/math500/gsm8k/math (math benchmarks)
+#   qa_all       -> hotpotqa/2wiki/musique/bamboogle (qa benchmarks)
+#   math_qa_all  -> math_all + qa_all (separate per-dataset folders)
+#   grpo_mix     -> mirror of the ECHO RL validation set (mixed math+qa, single jsonl)
 DATASET_GROUP="math_qa_all"
-# Explicit dataset list run as separate per-dataset folders under OUTPUT_PATH.
-# Union of MATH_DATASETS + QA_DATASETS in echo_infer_math_4qa_hf.sh; leave empty
-# to fall back to DATASET_GROUP semantics.
-DATASET_NAMES="aime24 aime25 math500 gsm8k math hotpotqa 2wiki musique bamboogle"
 
 # Pass@k turns (one output file per turn); space separated list.
 TURNS="1"
@@ -288,7 +283,6 @@ if [[ "$RESUME_FROM_EVAL" != "true" ]]; then
   BING_ZONE="$BING_ZONE" \
   BING_LOCATION="$BING_LOCATION" \
   DATASET_GROUP="$DATASET_GROUP" \
-  DATASET_NAMES="$DATASET_NAMES" \
   TURNS="$TURNS" \
   TEMPERATURE="$TEMPERATURE" \
   TOP_P="$TOP_P" \

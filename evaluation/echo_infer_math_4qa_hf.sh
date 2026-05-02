@@ -12,6 +12,8 @@ mkdir -p logs
 # - gsm8k     : run only gsm8k
 # - math500   : run only math500
 # - math_all  : run all math datasets
+# - qa_all    : run all qa datasets (hotpotqa/2wiki/musique/bamboogle)
+# - math_qa_all : run all math datasets + all qa datasets as separate per-dataset folders
 # - grpo_mix  : run the mixed math+qa validation set used during ECHO RL training
 #               (mirrors ARPO/rl_datasets/valid.parquet; 100 math + 80 qa rows in one file).
 DATASET_GROUP="${DATASET_GROUP:-math}"
@@ -48,10 +50,14 @@ elif [[ "$DATASET_GROUP" == "math500" ]]; then
   DATASETS=("math500")
 elif [[ "$DATASET_GROUP" == "math_all" ]]; then
   DATASETS=("${MATH_DATASETS[@]}")
+elif [[ "$DATASET_GROUP" == "qa_all" ]]; then
+  DATASETS=("${QA_DATASETS[@]}")
+elif [[ "$DATASET_GROUP" == "math_qa_all" ]]; then
+  DATASETS=("${MATH_DATASETS[@]}" "${QA_DATASETS[@]}")
 elif [[ "$DATASET_GROUP" == "grpo_mix" ]]; then
   DATASETS=("grpo_mix")
 else
-  echo "Unsupported DATASET_GROUP=$DATASET_GROUP (expected: math, aime, gsm8k, math500, math_all, or grpo_mix)"
+  echo "Unsupported DATASET_GROUP=$DATASET_GROUP (expected: math, aime, gsm8k, math500, math_all, qa_all, math_qa_all, or grpo_mix)"
   exit 1
 fi
 

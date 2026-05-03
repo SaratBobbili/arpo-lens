@@ -13,6 +13,8 @@ This module keeps ECHO behavior identical to ARPO PPO while hosting recipe-local
 trainer code that can diverge later.
 """
 
+import json
+import os
 import uuid
 from copy import deepcopy
 import math
@@ -39,6 +41,39 @@ from .echo_core_algos import agg_loss
 class RayECHOTrainer(RayPPOTrainer):
     """ECHO trainer with ARPO-identical PPO training loop."""
 
+    # Per-phase JSONL dump spec consumed by `_dump_logging_data`. Each entry is
+    # (filename_under_logging_data/<phase>/, metric_suffix appended to "<phase>/"
+    # to look up in the per-step `metrics` dict). LL "reward" reads the pre-gate
+    # entropy mean over good-format ∧ has-tool only (clean entropy axis); HL
+    # "reward" reads f1_mean (clean task axis, ignores -1 by construction).
+    # `entropy_reg_loss` is only populated for entropy/entropy-hybrid phases, so
+    # it is intentionally absent from the high_level spec.
+    _LOGGING_SPEC = {
+        "low_level": [
+            ("reward.jsonl", "reward/entropy_scalar_mean_good"),
+            ("format_penalty.jsonl", "reward/bad_format_rate"),
+            ("pg_loss.jsonl", "actor/pg_loss"),
+            ("entropy_reg_loss.jsonl", "actor/entropy_reg_loss"),
+            ("grad_norm.jsonl", "actor/grad_norm"),
+            ("entropy_old_policy.jsonl", "actor/entropy_old_policy"),
+            ("high_level_valid_rate.jsonl", "reward/high_level_valid_rate"),
+            ("low_level_valid_rate.jsonl", "reward/low_level_valid_rate"),
+            ("tools_total_calls.jsonl", "tools/total_calls"),
+            ("tools_successful_calls.jsonl", "tools/successful_calls"),
+        ],
+        "high_level": [
+            ("reward.jsonl", "reward/f1_mean"),
+            ("format_penalty.jsonl", "reward/bad_format_rate"),
+            ("pg_loss.jsonl", "actor/pg_loss"),
+            ("grad_norm.jsonl", "actor/grad_norm"),
+            ("entropy_old_policy.jsonl", "actor/entropy_old_policy"),
+            ("high_level_valid_rate.jsonl", "reward/high_level_valid_rate"),
+            ("low_level_valid_rate.jsonl", "reward/low_level_valid_rate"),
+            ("tools_total_calls.jsonl", "tools/total_calls"),
+            ("tools_successful_calls.jsonl", "tools/successful_calls"),
+        ],
+    }
+
     @staticmethod
     def _prefix_metrics(metrics_dict: dict, prefix: str) -> dict:
         return {f"{prefix}{key}": value for key, value in metrics_dict.items()}
@@ -46,6 +81,32 @@ class RayECHOTrainer(RayPPOTrainer):
     def _phase_reward_cfg(self, phase_name: str):
         # Per-phase reward config block (strategy + strategy-specific params).
         return self.config.reward_model.phase_rewards[phase_name]
+
+    def _init_logging_data(self) -> None:
+        # One JSONL per (phase, metric) under {default_local_dir}/logging_data/.
+        # Read by recipe/echo/plot_training_log.py for offline per-step plots.
+        self._logging_data_root = os.path.join(self.config.trainer.default_local_dir, "logging_data")
+        self._prev_logged_values: dict[str, float] = {}
+        for phase in self._LOGGING_SPEC:
+            os.makedirs(os.path.join(self._logging_data_root, phase), exist_ok=True)
+
+    def _dump_logging_data(self, metrics: dict) -> None:
+        # Append one line per metric file: {"step", "value", "gain"}. `gain` is
+        # the difference vs the previous dumped step for the same key, or null
+        # on the first dump. Keys absent from `metrics` (e.g. entropy_reg_loss
+        # on a scorer phase) are skipped without erroring.
+        for phase, specs in self._LOGGING_SPEC.items():
+            phase_dir = os.path.join(self._logging_data_root, phase)
+            for filename, metric_suffix in specs:
+                full_key = f"{phase}/{metric_suffix}"
+                if full_key not in metrics:
+                    continue
+                value = float(metrics[full_key])
+                prev = self._prev_logged_values.get(full_key)
+                gain = None if prev is None else value - prev
+                self._prev_logged_values[full_key] = value
+                with open(os.path.join(phase_dir, filename), "a") as f:
+                    f.write(json.dumps({"step": self.global_steps, "value": value, "gain": gain}) + "\n")
 
     @staticmethod
     def _build_scorer_metrics(reward_extra_info: dict) -> dict:
@@ -133,6 +194,25 @@ class RayECHOTrainer(RayPPOTrainer):
             no_tool = torch.tensor(no_tool_flags, dtype=torch.bool, device=per_sample.device)
             metrics["reward/bad_format_rate"] = bad.float().mean().item()
             metrics["reward/no_tool_rate"] = no_tool.float().mean().item()
+            # Pre-gate mean over good-format ∧ has-tool samples only. Isolates the
+            # entropy-reward axis from the format-penalty / no-tool axes so the
+            # downstream JSONL trace has a clean per-step reward signal that
+            # doesn't drift just because the bad-format share moves.
+            keep = (~bad) & (~no_tool)
+            metrics["reward/entropy_scalar_mean_good"] = (
+                per_sample[keep].mean().detach().item() if keep.any() else 0.0
+            )
+            # Hoist HL/LL validator pass rates from the same scorer extras so
+            # the entropy path exposes the same validity diagnostics that
+            # `_build_scorer_metrics` emits for scorer phases.
+            if "high_level_valid" in reward_extra:
+                metrics["reward/high_level_valid_rate"] = (
+                    torch.tensor(reward_extra["high_level_valid"], dtype=torch.float32).mean().item()
+                )
+            if "low_level_valid" in reward_extra:
+                metrics["reward/low_level_valid_rate"] = (
+                    torch.tensor(reward_extra["low_level_valid"], dtype=torch.float32).mean().item()
+                )
             penalty = float(entropy_cfg.bad_format_penalty)
             per_sample = torch.where(bad, torch.full_like(per_sample, penalty), per_sample)
             # `no_tool_calls` is only set by the scorer when phase_valid is True,
@@ -175,6 +255,8 @@ class RayECHOTrainer(RayPPOTrainer):
         self._validator_profile = resolve_validator_profile(
             self.config.actor_rollout_ref.rollout.mask_categories
         )
+
+        self._init_logging_data()
 
         # load checkpoint before doing anything
         self._load_checkpoint()
@@ -564,6 +646,7 @@ class RayECHOTrainer(RayPPOTrainer):
                 metrics.update(compute_throughout_metrics(batch=batch, timing_raw=timing_raw, n_gpus=n_gpus))
 
                 logger.log(data=metrics, step=self.global_steps)
+                self._dump_logging_data(metrics)
 
                 progress_bar.update(1)
                 self.global_steps += 1

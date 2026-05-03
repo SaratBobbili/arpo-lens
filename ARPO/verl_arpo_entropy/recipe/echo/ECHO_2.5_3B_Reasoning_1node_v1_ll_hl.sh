@@ -67,7 +67,7 @@ ROLLOUT_N=16                         # Number of responses generated per sample
 HIGH_LEVEL_BUDGET=8                 # Number of rollouts used for high-level masked update
 ENABLE_MULTI_TURN=False            # Toggle multi-turn tool interaction in rollout
 # ============================ Rollout Tools Configuration ==========================
-SEARCH_CACHE_PATH="${ARPO_ROOT}/search_cache/search_cache_echo_3B.json" # Per-variant cache for v1 with phase_order=[low_level, high_level]
+SEARCH_CACHE_PATH="${ARPO_ROOT}/search_cache/search_cache_echo_3B_v2.json" # Per-variant cache for v1 with phase_order=[low_level, high_level]
 
 # ============================ Reward Model Configuration ==========================
 # Reward model settings
@@ -83,6 +83,10 @@ LOW_LEVEL_REWARD_STRATEGY="entropy-hybrid"  # Low-level phase reward strategy: {
 # `entropy-hybrid` (the same mask used for the entropy reward channel). The
 # regularizer is gated on LOW_LEVEL_REWARD_STRATEGY ∈ {entropy, entropy-hybrid}
 # in the trainer, so this knob is a no-op for `scorer` / `maxentropy_rl`.
+# Units of H tracked by LL_ENTROPY_NORMALIZE (see below): when true, H ∈ [0,1];
+# when false, H is in raw nats (≤ log(vocab_size) ≈ 11.93 for Qwen2.5). pg_loss
+# under GRPO+token-mean is typically O(1e-2..1e-1), so reg_coeff = 1.0 with
+# normalize=false dominates pg_loss by ~30-500x and collapses the policy.
 LL_ENTROPY_REG_COEFF=1.0
 
 # ---------- LL entropy reward channel knobs ----------
@@ -91,9 +95,9 @@ LL_ENTROPY_REG_COEFF=1.0
 # shape the per-sample LL reward *before* GRPO mean/std-normalization.
 LL_ENTROPY_REDUCTION="mean"        # How per-token H is reduced to a per-sample scalar over m^LL ∩ select_loss_mask: {sum, mean}. `mean` is length-invariant; `sum` introduces mask-length variance into σ_g.
 LL_ENTROPY_SCALE=1.0               # Scalar multiplier applied to the reduced entropy before clamp/format_gate. Pure rescaling; under GRPO with norm_adv_by_std_in_grpo=True it is absorbed by σ_g and has no effect on advantages.
-LL_ENTROPY_NORMALIZE=false         # If true, divides per-token H by log(vocab_size) → reward ∈ [0,1]. No effect on GRPO advantages (scale-invariant); only changes the absolute logged reward magnitude and the regularizer-vs-reward scale ratio.
+LL_ENTROPY_NORMALIZE=true        # If true, divides per-token H by log(vocab_size) → H ∈ [0,1]. Applies to BOTH channels: (a) reward channel (no effect on GRPO advantages — σ_g absorbs the scale — only changes logged reward magnitude); (b) regularizer channel (dp_actor divides H by log(vocab_size) before agg_loss, so LL_ENTROPY_REG_COEFF acts on H ∈ [0,1] instead of raw nats; without this the coefficient is silently ~12x larger than expected for Qwen2.5).
 LL_FORMAT_GATE=true                # If true, samples failing scorer phase-local format checks have their entropy scalar replaced with LL_BAD_FORMAT_PENALTY (and LL soft-fail samples zeroed); good-format samples keep their entropy.
-LL_BAD_FORMAT_PENALTY=0.0          # Terminal scalar written on format-gate failure. 0.0 makes format pass a *positive selection* signal (good-format ≥ bad-format) without letting the format axis dominate σ_g; -1.0 (the old default) made σ_g essentially the format-vs-good axis and washed out within-good H spread.
+LL_BAD_FORMAT_PENALTY=-0.1          # Terminal scalar written on format-gate failure. 0.0 makes format pass a *positive selection* signal (good-format ≥ bad-format) without letting the format axis dominate σ_g; -1.0 (the old default) made σ_g essentially the format-vs-good axis and washed out within-good H spread.
 
 # ============================ Training Configuration ============================
 # Training parameters

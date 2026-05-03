@@ -328,6 +328,15 @@ class DataParallelPPOActor(BasePPOActor):
         # `loss_mask`. Both default to None (-> fall back to global config).
         entropy_coeff_override = data.meta_info.get("entropy_coeff_override", None)
         entropy_loss_mask_key = data.meta_info.get("entropy_loss_mask_key", None)
+        # Optional positive scalar that the per-token entropy is divided by before
+        # `agg_loss` in the regularizer branch below. Used by phase-aware trainers
+        # to mirror the reward-channel `normalize` flag: when the entropy *reward*
+        # divides H by log(vocab_size) to land in [0,1], we apply the same divisor
+        # here so `entropy_coeff` carries the same physical meaning across both
+        # channels (otherwise the regularizer is in raw nats and the coefficient
+        # is silently ~log(vocab_size) ≈ 12x larger than the user thinks).
+        # None -> no normalization (raw nats), which matches the legacy behavior.
+        entropy_loss_normalizer = data.meta_info.get("entropy_loss_normalizer", None)
 
         select_keys = ["responses", "input_ids", "attention_mask", "position_ids", "old_log_probs", "advantages"]
         if multi_turn or "loss_mask" in data.batch.keys():
@@ -420,7 +429,13 @@ class DataParallelPPOActor(BasePPOActor):
                             entropy_loss_mask = data[entropy_loss_mask_key][:, -response_length:]
                         else:
                             entropy_loss_mask = response_mask
-                        entropy_loss = agg_loss(loss_mat=entropy, loss_mask=entropy_loss_mask, loss_agg_mode=loss_agg_mode)
+                        # Optional pre-aggregation divisor: when the trainer mirrors the
+                        # reward-channel `normalize=true` here, `entropy_loss_normalizer`
+                        # is log(vocab_size) and `entropy_for_reg` is per-token H ∈ [0,1]
+                        # in the same units as the reward channel. Otherwise (None) we
+                        # keep raw nats for backward compatibility.
+                        entropy_for_reg = entropy if entropy_loss_normalizer is None else entropy / entropy_loss_normalizer
+                        entropy_loss = agg_loss(loss_mat=entropy_for_reg, loss_mask=entropy_loss_mask, loss_agg_mode=loss_agg_mode)
 
                         # compute policy loss
                         policy_loss = pg_loss - entropy_loss * entropy_coeff

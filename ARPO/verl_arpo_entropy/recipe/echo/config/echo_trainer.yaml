@@ -80,7 +80,17 @@ reward_model:
       entropy:
         reduction: sum    # How per-token entropy is reduced to a per-sample scalar: {sum, mean}.
         scale: 1.0        # Multiplies the reduced entropy before writing the scalar.
-        normalize: false  # If true, divide per-token entropy by log(vocab_size) for bounded scale.
+        # If true, divide per-token entropy by log(vocab_size) so H lands in [0,1].
+        # Applies to BOTH channels of this strategy:
+        #   (a) reward channel  -> bounded entropy reward scalar (this file's
+        #       `_build_entropy_scalar_reward`); GRPO σ_g absorbs the absolute
+        #       scale anyway, so this primarily affects logged reward magnitude.
+        #   (b) regularizer channel (reg_coeff > 0) -> dp_actor divides H by
+        #       log(vocab_size) before agg_loss so `reg_coeff` is interpreted on
+        #       H ∈ [0,1] units, matching the reward channel. Without this, the
+        #       regularizer is in raw nats and `reg_coeff` is silently ~12x
+        #       larger than the user expects (Qwen2.5: log(152K) ≈ 11.93).
+        normalize: false
         clamp_min: null   # Optional lower bound applied after scale/normalize.
         clamp_max: null   # Optional upper bound applied after scale/normalize.
         # When true, samples whose decoded response fails the scorer's
@@ -117,7 +127,7 @@ reward_model:
         # variable-length tool-call traces.
         reduction: mean
         scale: 1.0
-        normalize: true
+        normalize: false
         clamp_min: null
         clamp_max: null
         format_gate: true

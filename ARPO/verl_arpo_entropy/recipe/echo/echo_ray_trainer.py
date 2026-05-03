@@ -599,6 +599,14 @@ class RayECHOTrainer(RayPPOTrainer):
                                 if phase_strategy in ("entropy", "entropy-hybrid"):
                                     phase_batch.meta_info["entropy_coeff_override"] = float(phase_reward_cfg.entropy.get("reg_coeff", 0.0))
                                     phase_batch.meta_info["entropy_loss_mask_key"] = "entropy_reg_loss_mask"
+                                    # Mirror the reward-channel `normalize` flag onto the
+                                    # regularizer so a single yaml knob sets the units of H
+                                    # for both channels. When true, dp_actor divides per-token
+                                    # H by log(vocab_size) before agg_loss, so reg_coeff acts
+                                    # on H ∈ [0,1] (matching the reward path). When false, the
+                                    # regularizer keeps raw nats (~log(vocab_size) ≈ 12x scale).
+                                    if bool(phase_reward_cfg.entropy.get("normalize", False)):
+                                        phase_batch.meta_info["entropy_loss_normalizer"] = math.log(self.tokenizer.vocab_size)
                                 actor_output = self.actor_rollout_wg.update_actor(phase_batch)
                             actor_output_metrics = reduce_metrics(actor_output.meta_info["metrics"])
                             metrics.update(self._prefix_metrics(actor_output_metrics, phase_prefix))

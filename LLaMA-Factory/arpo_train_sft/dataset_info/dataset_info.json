@@ -1,4 +1,12 @@
 {
+  "arpo_sft_54k": {
+    "hf_hub_url": "dongguanting/ARPO-SFT-54K",
+    "formatting": "sharegpt",
+    "columns": {
+      "messages": "conversations",
+      "system": "system"
+    }
+  },
   "echo_dataset":{
     "file_name": "../dataset/echo_sft_thinkfirst.jsonl",
     "formatting": "sharegpt",

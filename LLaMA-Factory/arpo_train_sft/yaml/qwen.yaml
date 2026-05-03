@@ -10,7 +10,7 @@ deepspeed: ../examples/deepspeed/ds_z3_config.json  # ZeRO-3 without CPU offload
 
 ### dataset
 dataset_dir: /scratch/user/saratb_tamu.edu/research/arpo-lens/LLaMA-Factory/arpo_train_sft/dataset_info
-dataset: echo_dataset
+dataset: arpo_sft_54k
 template: qwen
 cutoff_len: 15000
 max_samples: 1000000
@@ -39,7 +39,7 @@ ddp_timeout: 180000000
 
 #logging
 report_to: wandb
-run_name: arpo_sft_tool # optional
+run_name: arpo_sft_qwen25_3b
 
 ### eval
 # eval_dataset: alpaca_en_demo

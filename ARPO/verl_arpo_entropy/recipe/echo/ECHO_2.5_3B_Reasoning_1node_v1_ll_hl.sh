@@ -67,7 +67,7 @@ ROLLOUT_N=16                         # Number of responses generated per sample
 HIGH_LEVEL_BUDGET=8                 # Number of rollouts used for high-level masked update
 ENABLE_MULTI_TURN=False            # Toggle multi-turn tool interaction in rollout
 # ============================ Rollout Tools Configuration ==========================
-SEARCH_CACHE_PATH="${ARPO_ROOT}/search_cache/search_cache_echo_3B_v2.json" # Per-variant cache for v1 with phase_order=[low_level, high_level]
+SEARCH_CACHE_PATH="${ARPO_ROOT}/search_cache/search_cache_echo_3B.json" # Per-variant cache for v1 with phase_order=[low_level, high_level]
 
 # ============================ Reward Model Configuration ==========================
 # Reward model settings
@@ -137,6 +137,16 @@ fi
 if [ ! -d "$ROLLOUT_SAVE_PATH" ]; then
     mkdir -p $ROLLOUT_SAVE_PATH
 fi
+
+# Snapshot training config into the checkpoint folder so each run is self-describing:
+#   - launch_script.sh : exact .sh used (captures every CLI override on the python3 line)
+#   - config/          : the Hydra config dir referenced by --config-path
+# Note: hydra.run.dir already writes the *resolved* config under ${SAVE_PATH}/outputs/.hydra,
+# but we also keep the raw sources here for quick diffing across runs.
+CONFIG_SNAPSHOT_DIR="${SAVE_PATH}/training_config"
+mkdir -p "$CONFIG_SNAPSHOT_DIR"
+cp "${BASH_SOURCE[0]}" "$CONFIG_SNAPSHOT_DIR/launch_script.sh"
+cp -r "$CONFIG_PATH" "$CONFIG_SNAPSHOT_DIR/config"
 
 # ============================ Start Training ============================
 python3 -m recipe.echo.main_echo \

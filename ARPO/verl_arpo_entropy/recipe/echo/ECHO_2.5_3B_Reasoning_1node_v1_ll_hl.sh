@@ -32,7 +32,7 @@ export PYTHONPATH="${VERL_ROOT}:$PYTHONPATH"
 # ============================ Basic Configuration ============================
 # Experiment name and project
 PROJECT_NAME="qwen3B" # Modify experiment group
-EXPERIMENT_NAME="echo3B-rerun-hybrid-entropy-1.0-bfp0" # validator profile c1 (plan/reason/answer HL; tool choice + payload LL), phase_order=[low_level, high_level]; LL bad_format_penalty=0 so format pass acts as a positive selection signal instead of a -1 axis that dominates σ_g under GRPO std-norm.
+EXPERIMENT_NAME="echo3B-rerun-entropy-10.0-bfp01" # validator profile c1 (plan/reason/answer HL; tool choice + payload LL), phase_order=[low_level, high_level]; LL strategy=entropy (full LL mask, not select-only) so the entropy reward+reg channels see <search>/<python> tokens too; reg_coeff=10.0 to push entropy_reg_loss toward parity with pg_loss (B3 magnitude balance).
 
 # Configuration file path
 CONFIG_PATH="${SCRIPT_DIR}/config" # ECHO recipe config colocated with this launch script
@@ -75,7 +75,7 @@ REWARD_MANAGER="echo"              # Reward manager type
 CUSTOM_REWARD_FUNCTION_PATH="${VERL_ROOT}/verl/utils/reward_score/deep_research_echo.py" # Modify reward function path
 CUSTOM_REWARD_FUNCTION_NAME="compute_score"
 HIGH_LEVEL_REWARD_STRATEGY="scorer" # High-level phase reward strategy: {scorer, entropy, entropy-hybrid}.
-LOW_LEVEL_REWARD_STRATEGY="entropy-hybrid"  # Low-level phase reward strategy: {scorer, entropy, entropy-hybrid}.
+LOW_LEVEL_REWARD_STRATEGY="entropy"  # Low-level phase reward strategy: {scorer, entropy, entropy-hybrid}. `entropy` reduces over the full LL mask (m^LL = <select>+<search>+<python>); `entropy-hybrid` further intersects with select_loss_mask, which under mask_categories.select=low collapses to just the inner <select> tokens (deterministic for SFT init -> H ≈ 0). Use `entropy` here so the regularizer sees enough variable tokens to actually move H.
 # Coefficient on the direct entropy regularizer added to the LL actor loss:
 #   L_actor = L_GRPO - LL_ENTROPY_REG_COEFF * mean_{m^LL}(H(pi_theta(.|x))).
 # The entropy is the full-vocab entropy of the *current* policy (gradient flows
@@ -87,7 +87,7 @@ LOW_LEVEL_REWARD_STRATEGY="entropy-hybrid"  # Low-level phase reward strategy: {
 # when false, H is in raw nats (≤ log(vocab_size) ≈ 11.93 for Qwen2.5). pg_loss
 # under GRPO+token-mean is typically O(1e-2..1e-1), so reg_coeff = 1.0 with
 # normalize=false dominates pg_loss by ~30-500x and collapses the policy.
-LL_ENTROPY_REG_COEFF=1.0
+LL_ENTROPY_REG_COEFF=10.0
 
 # ---------- LL entropy reward channel knobs ----------
 # All knobs below feed the LL `entropy` reward block in echo_trainer.yaml and are

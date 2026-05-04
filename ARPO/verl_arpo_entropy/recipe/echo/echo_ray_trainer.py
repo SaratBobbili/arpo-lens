@@ -138,10 +138,10 @@ class RayECHOTrainer(RayPPOTrainer):
 
         return metrics
 
-    def _build_entropy_scalar_reward(self, entropys: torch.Tensor, phase_batch: DataProto, phase_mask_key: str, entropy_cfg, extra_mask_key: str | None = None):
+    def _build_entropy_scalar_reward(self, entropys: torch.Tensor, phase_batch: DataProto, phase_mask_key: str, entropy_cfg, entropy_mask: torch.Tensor):
         """Sparse entropy reward shaped like the scorer's output.
 
-        Reduces per-token entropy over phase-mask tokens to one per-sample
+        Reduces per-token entropy over `entropy_mask` tokens to one per-sample
         scalar (sum or mean per `entropy_cfg.reduction`), optionally
         normalized by log(vocab_size) and scaled/clamped, then writes that
         scalar at the last valid response token. When `format_gate` is on,
@@ -151,21 +151,18 @@ class RayECHOTrainer(RayPPOTrainer):
         per-sample score as the scorer path, so no dense layout or post-hoc
         aggregation is needed.
 
-        When `extra_mask_key` is provided (e.g. `entropy-hybrid` passes
-        `"select_loss_mask"`), the reduction is further restricted to the
-        intersection `phase_mask * extra_mask`, and the mean-reduction
-        denominator uses the intersected count so the per-sample scalar is
-        the average entropy over the restricted span. The sparse write
-        position is still the last valid response token (from the phase's
+        `entropy_mask` is precomputed by the caller (trainer) and is the
+        single source of truth for which tokens enter the reduction. The
+        caller is responsible for intersecting the phase mask with any
+        strategy-specific masks (`select_loss_mask` for entropy-hybrid,
+        `tool_loss_mask` for maxentropy_rl) and the global tag-border
+        exclusion (`non_border_loss_mask`). The mean-reduction denominator
+        uses `entropy_mask.sum(dim=-1)` so the per-sample scalar is the
+        average entropy over exactly the restricted span. The sparse write
+        position is the last valid response token (from `phase_mask_key`'s
         attention mask), not the last restricted token, so GRPO's
         `sum(dim=-1)` over the phase `response_mask` still sees the scalar.
         """
-        # Phase-local (optionally restricted) entropy reduced per sample to a single scalar.
-        phase_mask = phase_batch.batch[phase_mask_key].to(torch.float32)
-        if extra_mask_key is not None:
-            entropy_mask = phase_mask * phase_batch.batch[extra_mask_key].to(torch.float32)
-        else:
-            entropy_mask = phase_mask
         ent = entropys.to(torch.float32)
         if bool(entropy_cfg.normalize):
             ent = ent / math.log(self.tokenizer.vocab_size)
@@ -175,7 +172,7 @@ class RayECHOTrainer(RayPPOTrainer):
         if reduction == "sum":
             per_sample = masked.sum(dim=-1)
         else:
-            # clamp_min(1.0) guards empty (phase ∩ extra) masks without affecting the ratio when denom >= 1.
+            # clamp_min(1.0) guards empty masks without affecting the ratio when denom >= 1.
             denom = entropy_mask.sum(dim=-1).clamp_min(1.0)
             per_sample = masked.sum(dim=-1) / denom
         per_sample = per_sample * float(entropy_cfg.scale)
@@ -222,6 +219,10 @@ class RayECHOTrainer(RayPPOTrainer):
         metrics["reward/entropy_scalar_mean"] = per_sample.mean().detach().item()
 
         # Sparse write at the last valid response token, matching ECHORewardManager's placement.
+        # Use the *phase* mask (not entropy_mask) for the write template so the scalar
+        # lands at the phase's last response token even when entropy_mask is empty
+        # (e.g. all-border samples) or zero on that final token.
+        phase_mask = phase_batch.batch[phase_mask_key].to(torch.float32)
         response_length = phase_mask.size(-1)
         resp_attn = phase_batch.batch["attention_mask"][:, -response_length:]
         last_idx = (resp_attn.sum(dim=-1).long() - 1).clamp_min(0)
@@ -460,13 +461,18 @@ class RayECHOTrainer(RayPPOTrainer):
                             # mask. Users who want to exclude the initial <select> block from this
                             # computation can move `first_select` to the other phase via
                             # `mask_categories`; the intersection will drop it automatically.
-                            extra_mask_key = "select_loss_mask" if phase_strategy == "entropy-hybrid" else None
                             phase_mask_f = phase_batch.batch[phase_mask_key].to(torch.float32)
-                            entropy_mask_f = (
-                                phase_mask_f * phase_batch.batch[extra_mask_key].to(torch.float32)
-                                if extra_mask_key is not None
-                                else phase_mask_f
-                            )
+                            entropy_mask_f = phase_mask_f
+                            if phase_strategy == "entropy-hybrid":
+                                entropy_mask_f = entropy_mask_f * phase_batch.batch["select_loss_mask"].to(torch.float32)
+                            # Always exclude open/close tag boundary tokens (any of <select>,
+                            # </select>, <think>, </think>, <answer>, </answer>, <search>,
+                            # </search>, <python>, </python>, <result>, </result>) from the
+                            # entropy reduction. This protects tool-call structure: the policy
+                            # gradient still credits these tokens through the GRPO `response_mask`,
+                            # but the entropy bonus and direct entropy regularizer skip them so
+                            # entropy maximization cannot push the model off the structural tags.
+                            entropy_mask_f = entropy_mask_f * phase_batch.batch["non_border_loss_mask"].to(torch.float32)
                             # Diagnostic mirrors the mask actually used for the reduction.
                             phase_batch.batch[f"{phase_name}_token_entropy"] = entropys.to(torch.float32) * entropy_mask_f
                             # Persist the same m^phase used for the entropy *reward* as the mask
@@ -479,7 +485,7 @@ class RayECHOTrainer(RayPPOTrainer):
                                 phase_batch=phase_batch,
                                 phase_mask_key=phase_mask_key,
                                 entropy_cfg=phase_reward_cfg.entropy,
-                                extra_mask_key=extra_mask_key,
+                                entropy_mask=entropy_mask_f,
                             )
                             metrics.update(self._prefix_metrics(entropy_metrics, phase_prefix))
                         elif phase_strategy == "maxentropy_rl":
@@ -487,10 +493,12 @@ class RayECHOTrainer(RayPPOTrainer):
                                 raise RuntimeError(f"{phase_name} phase uses maxentropy_rl reward but compute_log_prob did not return entropys.")
                             me_cfg = phase_reward_cfg.max_entropy
                             # Reduction support set: phase mask intersected with the rollout-emitted
-                            # tool-portion mask (default `tool_loss_mask` -> first_select+select+search+python).
-                            extra_mask_key = me_cfg.mask_key
+                            # tool-portion mask (default `tool_loss_mask` -> first_select+select+search+python),
+                            # then border-excluded so entropy maximization on tag tokens can't
+                            # break tool-call structure (same rationale as the entropy strategies).
                             phase_mask_f = phase_batch.batch[phase_mask_key].to(torch.float32)
-                            entropy_mask_f = phase_mask_f * phase_batch.batch[extra_mask_key].to(torch.float32)
+                            entropy_mask_f = phase_mask_f * phase_batch.batch[me_cfg.mask_key].to(torch.float32)
+                            entropy_mask_f = entropy_mask_f * phase_batch.batch["non_border_loss_mask"].to(torch.float32)
                             phase_batch.batch[f"{phase_name}_token_entropy"] = entropys.to(torch.float32) * entropy_mask_f
                             # Reuse `_build_entropy_scalar_reward` by mapping `alpha` -> `scale`
                             # and disabling the format gate; the scorer's -1 on bad format is
@@ -509,7 +517,7 @@ class RayECHOTrainer(RayPPOTrainer):
                                 phase_batch=phase_batch,
                                 phase_mask_key=phase_mask_key,
                                 entropy_cfg=me_entropy_cfg,
-                                extra_mask_key=extra_mask_key,
+                                entropy_mask=entropy_mask_f,
                             )
                             metrics.update(self._prefix_metrics(entropy_metrics, phase_prefix))
 

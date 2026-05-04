@@ -34,6 +34,14 @@ reward_model:
   # its token-level reward tensor is produced. Both strategies emit a sparse
   # scalar at the last valid response token so GRPO's sum(dim=-1) recovers the
   # per-sample score directly (no extra aggregation needed in the trainer).
+  # Border tokens (open/close tag chars: <select>, </select>, <think>, </think>,
+  # <answer>, </answer>, <search>, </search>, <python>, </python>, <result>,
+  # </result>) are *always* excluded from the entropy reduction across all three
+  # entropy-bearing strategies (entropy / entropy-hybrid / maxentropy_rl) via the
+  # rollout-emitted `non_border_loss_mask`. The policy gradient still credits
+  # these tokens through the GRPO response_mask; only the entropy bonus and the
+  # direct entropy regularizer skip them, so entropy maximization cannot push
+  # the model off the structural tags that tool calling and answer parsing depend on.
   # Supported strategies:
   #   scorer         -> ECHORewardManager + custom_reward_function on the
   #                     decoded answer. Emits -1 on format failure, else the

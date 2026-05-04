@@ -40,21 +40,29 @@ PY="${PY:-/scratch/user/saratb_tamu.edu/miniconda3/envs/arpo/bin/python}"
 # Candidate x-metrics to sweep — one PNG/CSV per entry. Add or remove freely;
 # any metric present in run.log works (run with a bogus name to dump the list).
 X_METRICS=(
+    # NOTE: deliberately exclude metrics that are bit-identical aliases of the
+    # LL/HL reward levels used to compute the y-axis Δs:
+    #   low_level/critic/rewards/mean ≡ low_level/critic/score/mean ≡ low_level/reward/entropy_scalar_mean
+    #   high_level/critic/rewards/mean ≡ high_level/critic/score/mean ≡ high_level/reward/score_mean
+    # Including those would make the 3-D monotone selection partly tautological
+    # (x↑ already implies Δ_LL>0 / Δ_HL>0). plot_monotonic_trend.py also prints
+    # a warning when |ρ(x, reward_level)| > 0.95 to catch any leakage.
     # --- policy / actor diagnostics --------------------------------------
     "low_level/actor/entropy_loss"           # LL policy entropy after the LL update (HL has no entropy_loss field; only LL phase tracks policy entropy in this trainer)
     "low_level/actor/grad_norm"              # LL pre-step gradient norm
     "high_level/actor/grad_norm"             # HL pre-step gradient norm
     "low_level/actor/pg_loss"                # LL PPO clipped policy-gradient loss
     "high_level/actor/pg_loss"               # HL PPO clipped policy-gradient loss
+    "low_level/actor/kl_loss"                # LL KL-to-reference (low_var_kl); proxy for how far policy drifted from ref this step
+    "high_level/actor/kl_loss"               # HL KL-to-reference
     # --- reward / format diagnostics --------------------------------------
     "high_level/reward/format_pass_rate"     # HL valid-format share (the "valid format rate" axis)
     "high_level/reward/bad_format_rate"      # HL bad-format share (= 1 - format_pass_rate up to soft fails)
-    "high_level/reward/score_mean"           # HL scorer reward mean (raw, pre-Δ)
     "low_level/reward/bad_format_rate"       # LL bad-format share
     "low_level/reward/no_tool_rate"          # LL no-tool-call share (signal of degenerate policy)
-    # --- critic / advantage diagnostics -----------------------------------
-    "low_level/critic/rewards/mean"          # LL critic reward mean (post-norm)
-    "high_level/critic/rewards/mean"         # HL critic reward mean (post-norm)
+    # --- response-length / behaviour diagnostics --------------------------
+    "low_level/response_length/mean"         # mean LL response length (proxy for tool-call density)
+    "high_level/response_length/mean"        # mean HL response length
 )
 
 # Output root: <RUN_DIR-basename>__<direction>[_strict] under SCRIPT_DIR.

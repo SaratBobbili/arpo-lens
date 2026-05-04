@@ -145,6 +145,13 @@ def main() -> None:
     # Restrict to rows where every required metric is present, then take per-step Δ
     # using `.diff()` on chronologically sorted rows (NaN for the first row).
     df = df[needed].dropna().sort_index()
+    # Pearson(x, reward_level) on the *level* series (not Δ). Bit-identical
+    # aliases yield ρ=1.0 and the joint-monotone selection becomes partly
+    # tautological (x↑ ⇒ y_level↑ ⇒ Δy mostly ≥ 0). We surface the value here
+    # and warn loudly above the 0.95 threshold so users notice.
+    rho_ll_lvl = df[args.x_metric].corr(df[args.ll_y_metric])
+    rho_hl_lvl = df[args.x_metric].corr(df[args.hl_y_metric])
+
     df_d = pd.DataFrame({
         "x": df[args.x_metric],
         "dy_ll": df[args.ll_y_metric].diff(),
@@ -164,6 +171,9 @@ def main() -> None:
 
     print(f"[{args.run_dir.name}] {len(df_d)} consecutive Δ-pairs (steps {steps[0]}..{steps[-1]})")
     print(f"x={args.x_metric} | selected k={len(sel)} joint-monotone-{args.direction} steps: {sel_steps}")
+    print(f"  ρ(x, LL reward level) = {rho_ll_lvl:.3f} | ρ(x, HL reward level) = {rho_hl_lvl:.3f}")
+    if max(abs(rho_ll_lvl), abs(rho_hl_lvl)) > 0.95:
+        print("  WARNING: x is near-collinear with a reward level — selection is partly tautological.")
     if sel:
         x_sel = [xs[i] for i in sel]
         print(f"  x range over selection: [{min(x_sel):.4g}, {max(x_sel):.4g}]")
@@ -196,6 +206,7 @@ def main() -> None:
 
     if args.summary_file is not None:
         # Append a single TSV row; the wrapping shell sorts/prints at the end.
+        # rho_ll/rho_hl let the ranking flag tautological x's (|ρ|→1) at a glance.
         first_step = sel_steps[0] if sel_steps else ""
         last_step = sel_steps[-1] if sel_steps else ""
         sel_csv = ",".join(str(s) for s in sel_steps)
@@ -203,8 +214,8 @@ def main() -> None:
         args.summary_file.parent.mkdir(parents=True, exist_ok=True)
         with open(args.summary_file, "a") as f:
             if write_header:
-                f.write("x_metric\tdirection\tk\tfirst_step\tlast_step\tsel_steps\n")
-            f.write(f"{args.x_metric}\t{args.direction}\t{len(sel)}\t{first_step}\t{last_step}\t{sel_csv}\n")
+                f.write("x_metric\tdirection\tk\trho_ll\trho_hl\tfirst_step\tlast_step\tsel_steps\n")
+            f.write(f"{args.x_metric}\t{args.direction}\t{len(sel)}\t{rho_ll_lvl:.3f}\t{rho_hl_lvl:.3f}\t{first_step}\t{last_step}\t{sel_csv}\n")
 
 
 if __name__ == "__main__":

@@ -1,4 +1,5 @@
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+SCRIPT_PATH="${SCRIPT_DIR}/$(basename "${BASH_SOURCE[0]}")"
 VERL_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 ARPO_ROOT="$(dirname "$VERL_ROOT")"
 REPO_ROOT="$(dirname "$ARPO_ROOT")"
@@ -32,7 +33,7 @@ export PYTHONPATH="${VERL_ROOT}:$PYTHONPATH"
 # ============================ Basic Configuration ============================
 # Experiment name and project
 PROJECT_NAME="qwen3B" # Modify experiment group
-EXPERIMENT_NAME="echo3B-rerun-entropy-10.0-bfp01" # validator profile c1 (plan/reason/answer HL; tool choice + payload LL), phase_order=[low_level, high_level]; LL strategy=entropy (full LL mask, not select-only) so the entropy reward+reg channels see <search>/<python> tokens too; reg_coeff=10.0 to push entropy_reg_loss toward parity with pg_loss (B3 magnitude balance).
+EXPERIMENT_NAME="echo3B-rerun-entropy-hybrid-10-bfp0" # validator profile c1 (plan/reason/answer HL; tool choice + payload LL), phase_order=[low_level, high_level]; LL strategy=entropy (full LL mask, not select-only) so the entropy reward+reg channels see <search>/<python> tokens too; reg_coeff=10.0 to push entropy_reg_loss toward parity with pg_loss (B3 magnitude balance).
 
 # Configuration file path
 CONFIG_PATH="${SCRIPT_DIR}/config" # ECHO recipe config colocated with this launch script
@@ -67,7 +68,7 @@ ROLLOUT_N=16                         # Number of responses generated per sample
 HIGH_LEVEL_BUDGET=8                 # Number of rollouts used for high-level masked update
 ENABLE_MULTI_TURN=False            # Toggle multi-turn tool interaction in rollout
 # ============================ Rollout Tools Configuration ==========================
-SEARCH_CACHE_PATH="${ARPO_ROOT}/search_cache/search_cache_echo_3B.json" # Per-variant cache for v1 with phase_order=[low_level, high_level]
+SEARCH_CACHE_PATH="${ARPO_ROOT}/search_cache/search_cache_echo_3B_entropy_hybrid_10.json" # Per-variant cache for v1 with phase_order=[low_level, high_level]
 
 # ============================ Reward Model Configuration ==========================
 # Reward model settings
@@ -75,7 +76,7 @@ REWARD_MANAGER="echo"              # Reward manager type
 CUSTOM_REWARD_FUNCTION_PATH="${VERL_ROOT}/verl/utils/reward_score/deep_research_echo.py" # Modify reward function path
 CUSTOM_REWARD_FUNCTION_NAME="compute_score"
 HIGH_LEVEL_REWARD_STRATEGY="scorer" # High-level phase reward strategy: {scorer, entropy, entropy-hybrid}.
-LOW_LEVEL_REWARD_STRATEGY="entropy"  # Low-level phase reward strategy: {scorer, entropy, entropy-hybrid}. `entropy` reduces over the full LL mask (m^LL = <select>+<search>+<python>); `entropy-hybrid` further intersects with select_loss_mask, which under mask_categories.select=low collapses to just the inner <select> tokens (deterministic for SFT init -> H ≈ 0). Use `entropy` here so the regularizer sees enough variable tokens to actually move H.
+LOW_LEVEL_REWARD_STRATEGY="entropy-hybrid"  # Low-level phase reward strategy: {scorer, entropy, entropy-hybrid}. `entropy` reduces over the full LL mask (m^LL = <select>+<search>+<python>); `entropy-hybrid` further intersects with select_loss_mask, which under mask_categories.select=low collapses to just the inner <select> tokens (deterministic for SFT init -> H ≈ 0). Use `entropy` here so the regularizer sees enough variable tokens to actually move H.
 # Coefficient on the direct entropy regularizer added to the LL actor loss:
 #   L_actor = L_GRPO - LL_ENTROPY_REG_COEFF * mean_{m^LL}(H(pi_theta(.|x))).
 # The entropy is the full-vocab entropy of the *current* policy (gradient flows
@@ -117,7 +118,7 @@ WANDB_API_KEY="0986ce441bdc0e809cd73f235d468fa624518fe8" # Modify your wandb key
 SEARCH_CLASS_PATH="verl.workers.agent.tools.search_tool.BingSearchTool"
 # Bright Data (third-party Bing SERP used by BingSearchTool -> api.brightdata.com/request).
 #BRIGHTDATA_API_KEY="" # Bright Data API token; set manually in terminal before launch
-BRIGHTDATA_API_KEY="f75663d4-caf9-432a-baf1-dec27a13625a"
+BRIGHTDATA_API_KEY="9c221824-9a57-4261-b1b7-979959492235"
 BRIGHTDATA_ZONE="serp_api1"                    # Bright Data SERP zone configured in your Bright Data account
 BRIGHTDATA_LOCATION="us"                       # Country code passed to Bing via &cc=<code>; also selects the Bright Data proxy geo. "us" routes through US proxies (faster+more reliable from this cluster than "cn", which periodically returns HTTP 200 with empty body under load).
 BRIGHTDATA_TIMEOUT=90                        # Per-HTTP-call read timeout (s) to api.brightdata.com. Brightdata SERP tail latency is ~30-60s+ under concurrent rollout load, so 120 absorbs the tail and avoids spurious retries.
@@ -145,7 +146,7 @@ fi
 # but we also keep the raw sources here for quick diffing across runs.
 CONFIG_SNAPSHOT_DIR="${SAVE_PATH}/training_config"
 mkdir -p "$CONFIG_SNAPSHOT_DIR"
-cp "${BASH_SOURCE[0]}" "$CONFIG_SNAPSHOT_DIR/launch_script.sh"
+cp "${SCRIPT_PATH}" "$CONFIG_SNAPSHOT_DIR/launch_script.sh"
 cp -r "$CONFIG_PATH" "$CONFIG_SNAPSHOT_DIR/config"
 
 # ============================ Start Training ============================

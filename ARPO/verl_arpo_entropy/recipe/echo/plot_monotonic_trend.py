@@ -6,22 +6,57 @@
 #
 #     http://www.apache.org/licenses/LICENSE-2.0
 
-"""Δreward monotone-trend extractor for ECHO runs.
+"""Δreward joint-monotone-trend extractor (ECHO + single-phase baselines).
 
+What
+----
 For every consecutive pair of logged training steps t-1 → t in `<run>/run.log`
-we compute Δr_t for the LL phase (default: low_level/reward/entropy_scalar_mean)
-and the HL phase (default: high_level/reward/f1_mean). The script then picks
-the longest chronological subsequence of steps i_1 < i_2 < ... < i_k along
-which the *triple* (x_t, Δ_LL_t, Δ_HL_t) is jointly monotone in the chosen
-direction (default 'up' → all three non-decreasing = "x co-moves with sustained
-joint reward improvement"). The selected step set is now x-dependent, so
-sweeping `--x-metric` across candidates and comparing the resulting `k`
-(subsequence length) directly answers "which axis is most consistent with
-joint reward improvement?".
+we compute Δr_t for each user-supplied y-metric (one per "phase" panel). The
+script then picks the longest chronological subsequence of steps
+i_1 < i_2 < ... < i_k along which the (k+1)-tuple
+    (x_t, Δr¹_t, Δr²_t, ...)
+is jointly monotone in the chosen direction (default 'up' = "x co-moves with
+sustained joint reward improvement"). Sweeping `--x-metric` across candidates
+and ranking by `k` answers "which axis is most consistent with joint reward
+improvement?". A self-correlation guard prints |ρ(x, y_level)| per phase so
+near-tautological x's (e.g. x ≡ a reward alias, ρ → ±1) are flagged.
 
-Source of truth is `run.log` (every per-step trainer dump contains
-`training/global_step:N.000` and inline `key:value` fields), which is uniform
-across older runs (no logging_data/) and newer runs.
+Why run.log
+-----------
+Source of truth is `<run_dir>/run.log` — every per-step trainer dump contains
+`training/global_step:N.000` and inline `key:val` fields. This is uniform
+across:
+  - older ECHO runs without `logging_data/` (e.g. echo3BInstruct);
+  - newer ECHO runs *with* `logging_data/<phase>/<metric>.jsonl` traces;
+  - non-ECHO baselines (ARPO, GRPO) that emit a single-phase metric set.
+The new JSONL dumps are a strict subset of run.log keys (just under different
+naming, e.g. `low_level/reward.jsonl` ↔ `low_level/reward/entropy_scalar_mean`),
+so we don't need a second loader.
+
+Usage
+-----
+ECHO dual-phase (default — LL entropy reward + HL F1):
+  python -m recipe.echo.plot_monotonic_trend \\
+      --run-dir /scratch/.../checkpoints/echo3BInstruct \\
+      --x-metric low_level/actor/entropy_loss
+
+ECHO with custom phase pair (e.g. raw HL score instead of F1):
+  python -m recipe.echo.plot_monotonic_trend \\
+      --run-dir .../checkpoints/echo3BInstruct \\
+      --x-metric high_level/actor/kl_loss \\
+      --y-metrics LL:low_level/reward/entropy_scalar_mean \\
+                  HL:high_level/reward/score_mean
+
+ARPO/GRPO single-phase baseline:
+  python -m recipe.echo.plot_monotonic_trend \\
+      --run-dir /scratch/.../GRPO/Qwen3B-Instruct/checkpoints/grpo \\
+      --x-metric actor/entropy_loss \\
+      --y-metrics actor:critic/rewards/mean
+
+Each `--y-metrics` entry is `LABEL:metric_name`; LABEL is used for panel
+titles, summary TSV columns (`rho_<LABEL>`), and step annotations. Number of
+labels = number of subplot rows. Run with a bogus metric to dump the list of
+keys present in the run.log.
 """
 
 from __future__ import annotations
@@ -40,6 +75,8 @@ _STEP_RE = re.compile(r"training/global_step:([0-9]+)\.000")
 # Each kv field is preceded by ` - ` so the leading `step:N` (no leading sep)
 # is intentionally skipped — we read the step from `_STEP_RE` instead.
 _KV_RE = re.compile(r" - ([\w/]+):(-?[0-9.eE+-]+)")
+
+_PANEL_COLORS = ["tab:blue", "tab:orange", "tab:green", "tab:red", "tab:purple"]
 
 
 def load_run_log(run_dir: Path) -> pd.DataFrame:
@@ -114,29 +151,45 @@ def _plot_panel(ax, x_all, y_all, sel, x_label, y_label, title, color):
     ax.legend(loc="best", fontsize=8)
 
 
+def _parse_y_metric_spec(spec: str) -> tuple[str, str]:
+    """Split a `LABEL:metric_name` CLI entry. Errors out on a bare metric (no label)."""
+    if ":" not in spec:
+        raise SystemExit(f"--y-metrics entry must be 'LABEL:metric_name', got: {spec!r}")
+    label, metric = spec.split(":", 1)
+    if not label or not metric:
+        raise SystemExit(f"--y-metrics entry has empty label or metric: {spec!r}")
+    return label, metric
+
+
 def main() -> None:
-    p = argparse.ArgumentParser(description=__doc__)
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--run-dir", type=Path, required=True,
                    help="Checkpoint directory containing run.log (e.g. .../checkpoints/echo3BInstruct).")
     p.add_argument("--x-metric", default="low_level/actor/entropy_loss",
-                   help="Metric to plot on x-axis of BOTH subplots (one of run.log keys).")
-    p.add_argument("--ll-y-metric", default="low_level/reward/entropy_scalar_mean",
-                   help="LL reward metric whose Δ is plotted on row 1's y-axis.")
-    p.add_argument("--hl-y-metric", default="high_level/reward/f1_mean",
-                   help="HL reward metric whose Δ is plotted on row 2's y-axis.")
+                   help="Metric to plot on the x-axis of every subplot (one of run.log keys).")
+    p.add_argument("--y-metrics", nargs="+",
+                   default=["LL:low_level/reward/entropy_scalar_mean",
+                            "HL:high_level/reward/f1_mean"],
+                   help="One or more LABEL:metric_name pairs. Each defines a Δ-reward panel "
+                        "and a DP axis. Default = ECHO dual-phase. For ARPO/GRPO baselines: "
+                        "`--y-metrics actor:critic/rewards/mean`.")
     p.add_argument("--direction", choices=["up", "down", "auto"], default="up",
-                   help="Direction of joint monotonicity required on (Δ_LL, Δ_HL).")
+                   help="Direction of joint monotonicity required across (x, Δy¹, Δy², …).")
     p.add_argument("--strict", action="store_true",
                    help="Require strict < / > (default: allow equal values).")
     p.add_argument("--output-dir", type=Path, default=Path("./echo_monotone_plots"),
                    help="Where to write the PNG + CSV (created if missing).")
     p.add_argument("--summary-file", type=Path, default=None,
                    help="Optional TSV that we append a single-row ranking summary to "
-                        "(x_metric, direction, k, first_step, last_step, sel_steps).")
+                        "(x_metric, direction, k, rho_<LABEL>..., first_step, last_step, sel_steps).")
     args = p.parse_args()
 
+    y_specs = [_parse_y_metric_spec(s) for s in args.y_metrics]
+    y_labels = [lbl for lbl, _ in y_specs]
+    y_metrics = [m for _, m in y_specs]
+
     df = load_run_log(args.run_dir)
-    needed = [args.x_metric, args.ll_y_metric, args.hl_y_metric]
+    needed = [args.x_metric] + y_metrics
     missing = [m for m in needed if m not in df.columns]
     if missing:
         sample = sorted(df.columns)[:25]
@@ -149,48 +202,48 @@ def main() -> None:
     # aliases yield ρ=1.0 and the joint-monotone selection becomes partly
     # tautological (x↑ ⇒ y_level↑ ⇒ Δy mostly ≥ 0). We surface the value here
     # and warn loudly above the 0.95 threshold so users notice.
-    rho_ll_lvl = df[args.x_metric].corr(df[args.ll_y_metric])
-    rho_hl_lvl = df[args.x_metric].corr(df[args.hl_y_metric])
+    rhos = {lbl: df[args.x_metric].corr(df[m]) for lbl, m in y_specs}
 
-    df_d = pd.DataFrame({
-        "x": df[args.x_metric],
-        "dy_ll": df[args.ll_y_metric].diff(),
-        "dy_hl": df[args.hl_y_metric].diff(),
-    }).dropna()
+    df_d = pd.DataFrame({"x": df[args.x_metric],
+                         **{f"dy_{lbl}": df[m].diff() for lbl, m in y_specs}}).dropna()
 
     steps = df_d.index.tolist()
     xs = df_d["x"].tolist()
-    ys_ll = df_d["dy_ll"].tolist()
-    ys_hl = df_d["dy_hl"].tolist()
+    dys = {lbl: df_d[f"dy_{lbl}"].tolist() for lbl in y_labels}
 
-    # 3-D joint monotone selection: (x_t, Δ_LL_t, Δ_HL_t) all monotone in the
-    # same direction. Selected step set is now x-dependent, so the resulting `k`
-    # ranks how well this x co-moves with sustained joint reward improvement.
-    sel = longest_monotone_kd([xs, ys_ll, ys_hl], args.direction, args.strict)
+    # (k+1)-D joint monotone selection: (x_t, Δy¹_t, …, Δy^K_t) all monotone in
+    # the same direction. Selected step set is x-dependent, so `k` ranks how
+    # well this x co-moves with sustained joint reward improvement.
+    sel = longest_monotone_kd([xs, *dys.values()], args.direction, args.strict)
     sel_steps = [steps[i] for i in sel]
 
     print(f"[{args.run_dir.name}] {len(df_d)} consecutive Δ-pairs (steps {steps[0]}..{steps[-1]})")
-    print(f"x={args.x_metric} | selected k={len(sel)} joint-monotone-{args.direction} steps: {sel_steps}")
-    print(f"  ρ(x, LL reward level) = {rho_ll_lvl:.3f} | ρ(x, HL reward level) = {rho_hl_lvl:.3f}")
-    if max(abs(rho_ll_lvl), abs(rho_hl_lvl)) > 0.95:
+    print(f"x={args.x_metric} | y={y_labels} | k={len(sel)} joint-monotone-{args.direction} steps: {sel_steps}")
+    rho_str = " | ".join(f"ρ(x, {lbl} level)={r:.3f}" for lbl, r in rhos.items())
+    print(f"  {rho_str}")
+    if any(abs(r) > 0.95 for r in rhos.values()):
         print("  WARNING: x is near-collinear with a reward level — selection is partly tautological.")
     if sel:
         x_sel = [xs[i] for i in sel]
         print(f"  x range over selection: [{min(x_sel):.4g}, {max(x_sel):.4g}]")
-        print(f"  Δ_LL range over selection: [{min(ys_ll[i] for i in sel):.4g}, {max(ys_ll[i] for i in sel):.4g}]")
-        print(f"  Δ_HL range over selection: [{min(ys_hl[i] for i in sel):.4g}, {max(ys_hl[i] for i in sel):.4g}]")
+        for lbl in y_labels:
+            ys = dys[lbl]
+            print(f"  Δ_{lbl} range over selection: [{min(ys[i] for i in sel):.4g}, {max(ys[i] for i in sel):.4g}]")
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    fig, axes = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
-    _plot_panel(axes[0], xs, ys_ll, sel, "", f"Δ {args.ll_y_metric}",
-                f"{args.run_dir.name} — LL Δreward vs {args.x_metric}", "tab:blue")
-    _plot_panel(axes[1], xs, ys_hl, sel, args.x_metric, f"Δ {args.hl_y_metric}",
-                f"{args.run_dir.name} — HL Δreward vs {args.x_metric}", "tab:orange")
-    for i in sel:
-        axes[0].annotate(str(steps[i]), (xs[i], ys_ll[i]),
-                         textcoords="offset points", xytext=(4, 4), fontsize=7)
-        axes[1].annotate(str(steps[i]), (xs[i], ys_hl[i]),
-                         textcoords="offset points", xytext=(4, 4), fontsize=7)
+    n_panels = len(y_labels)
+    fig, axes = plt.subplots(n_panels, 1, figsize=(10, 4 * n_panels), sharex=True, squeeze=False)
+    axes = axes[:, 0]
+    for idx, lbl in enumerate(y_labels):
+        # Only the bottom subplot gets the x label (sharex hides others' tick labels).
+        x_label = args.x_metric if idx == n_panels - 1 else ""
+        color = _PANEL_COLORS[idx % len(_PANEL_COLORS)]
+        _plot_panel(axes[idx], xs, dys[lbl], sel, x_label,
+                    f"Δ {y_specs[idx][1]}",
+                    f"{args.run_dir.name} — {lbl} Δreward vs {args.x_metric}", color)
+        for i in sel:
+            axes[idx].annotate(str(steps[i]), (xs[i], dys[lbl][i]),
+                               textcoords="offset points", xytext=(4, 4), fontsize=7)
     fig.tight_layout()
 
     slug = args.x_metric.replace("/", "_")
@@ -206,16 +259,20 @@ def main() -> None:
 
     if args.summary_file is not None:
         # Append a single TSV row; the wrapping shell sorts/prints at the end.
-        # rho_ll/rho_hl let the ranking flag tautological x's (|ρ|→1) at a glance.
+        # rho_<label> per phase lets the ranking flag tautological x's (|ρ|→1) at a glance.
         first_step = sel_steps[0] if sel_steps else ""
         last_step = sel_steps[-1] if sel_steps else ""
         sel_csv = ",".join(str(s) for s in sel_steps)
+        rho_cols = [f"rho_{lbl}" for lbl in y_labels]
+        rho_vals = [f"{rhos[lbl]:.3f}" for lbl in y_labels]
         write_header = not args.summary_file.exists()
         args.summary_file.parent.mkdir(parents=True, exist_ok=True)
         with open(args.summary_file, "a") as f:
             if write_header:
-                f.write("x_metric\tdirection\tk\trho_ll\trho_hl\tfirst_step\tlast_step\tsel_steps\n")
-            f.write(f"{args.x_metric}\t{args.direction}\t{len(sel)}\t{rho_ll_lvl:.3f}\t{rho_hl_lvl:.3f}\t{first_step}\t{last_step}\t{sel_csv}\n")
+                f.write("\t".join(["x_metric", "direction", "k", *rho_cols,
+                                   "first_step", "last_step", "sel_steps"]) + "\n")
+            f.write("\t".join([args.x_metric, args.direction, str(len(sel)), *rho_vals,
+                               str(first_step), str(last_step), sel_csv]) + "\n")
 
 
 if __name__ == "__main__":

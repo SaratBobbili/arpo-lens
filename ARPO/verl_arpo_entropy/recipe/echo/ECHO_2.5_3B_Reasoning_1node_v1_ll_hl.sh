@@ -33,7 +33,7 @@ export PYTHONPATH="${VERL_ROOT}:$PYTHONPATH"
 # ============================ Basic Configuration ============================
 # Experiment name and project
 PROJECT_NAME="qwen3B" # Modify experiment group
-EXPERIMENT_NAME="echo3B-rerun-entropy-hybrid-10-bfp0" # validator profile c1 (plan/reason/answer HL; tool choice + payload LL), phase_order=[low_level, high_level]; LL strategy=entropy (full LL mask, not select-only) so the entropy reward+reg channels see <search>/<python> tokens too; reg_coeff=10.0 to push entropy_reg_loss toward parity with pg_loss (B3 magnitude balance).
+EXPERIMENT_NAME="echo3B-rerun-entropy-hybrid-coeff-0-penalty-0.1" # validator profile c1 (plan/reason/answer HL; tool choice + payload LL), phase_order=[low_level, high_level]; LL strategy=entropy-hybrid (entropy reduces over m^LL ∩ select_loss_mask); reg_coeff=0 disables the direct entropy term so exploration flows only through the GRPO-σ_g-normalized entropy *reward* channel; bad_format_penalty=-0.1 keeps format-vs-good axis present without dominating σ_g (vs -1.0 default which washed out within-good H spread).
 
 # Configuration file path
 CONFIG_PATH="${SCRIPT_DIR}/config" # ECHO recipe config colocated with this launch script
@@ -68,7 +68,7 @@ ROLLOUT_N=16                         # Number of responses generated per sample
 HIGH_LEVEL_BUDGET=8                 # Number of rollouts used for high-level masked update
 ENABLE_MULTI_TURN=False            # Toggle multi-turn tool interaction in rollout
 # ============================ Rollout Tools Configuration ==========================
-SEARCH_CACHE_PATH="${ARPO_ROOT}/search_cache/search_cache_echo_3B_entropy_hybrid_10.json" # Per-variant cache for v1 with phase_order=[low_level, high_level]
+SEARCH_CACHE_PATH="${ARPO_ROOT}/search_cache/search_cache_echo_hybrid_0_3B_penalty-0_1.json" # Per-variant cache for v1 with phase_order=[low_level, high_level]
 
 # ============================ Reward Model Configuration ==========================
 # Reward model settings
@@ -88,7 +88,7 @@ LOW_LEVEL_REWARD_STRATEGY="entropy-hybrid"  # Low-level phase reward strategy: {
 # when false, H is in raw nats (≤ log(vocab_size) ≈ 11.93 for Qwen2.5). pg_loss
 # under GRPO+token-mean is typically O(1e-2..1e-1), so reg_coeff = 1.0 with
 # normalize=false dominates pg_loss by ~30-500x and collapses the policy.
-LL_ENTROPY_REG_COEFF=10.0
+LL_ENTROPY_REG_COEFF=0
 
 # ---------- LL entropy reward channel knobs ----------
 # All knobs below feed the LL `entropy` reward block in echo_trainer.yaml and are
@@ -111,6 +111,11 @@ TEST_FREQ=5                        # Test frequency
 CHECKPOINT_DIR="/scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ECHO"
 SAVE_PATH="${CHECKPOINT_DIR}/checkpoints/${EXPERIMENT_NAME}" # Modify save path
 ROLLOUT_SAVE_PATH="${SAVE_PATH}/rollout"
+
+# Checkpoint resume (trainer.resume_mode=auto): loads ${SAVE_PATH}/global_step_<N>/actor
+# where N is the integer in ${SAVE_PATH}/latest_checkpointed_iteration.txt. Set N to
+# the step you keep after removing newer checkpoints; global_step_<N> must exist.
+# If that file is absent, training starts from scratch.
 
 # ============================ WandB / API Keys ==============================
 # WandB settings
@@ -155,7 +160,7 @@ python3 -m recipe.echo.main_echo \
     --config-name=$CONFIG_NAME \
     algorithm.adv_estimator=grpo \
     algorithm.kl_ctrl.kl_coef=0.0 \
-    algorithm.norm_adv_by_std_in_grpo=True \
+    algorithm.norm_adv_by_std_in_grpo=False \
     data.train_files=${TRAIN_FILES} \
     data.val_files=${VALID_FILES} \
     data.prompt_key=${PROMPT_KEY} \
@@ -222,6 +227,7 @@ python3 -m recipe.echo.main_echo \
     trainer.max_actor_ckpt_to_keep=null \
     trainer.total_epochs=${TOTAL_EPOCHS} \
     trainer.default_local_dir=${SAVE_PATH} \
+    trainer.resume_mode=auto \
     trainer.val_before_train=False \
     trainer.rollout_data_dir=${ROLLOUT_SAVE_PATH} \
     hydra.run.dir=${SAVE_PATH}/outputs 2>&1 | tee ${SAVE_PATH}/run.log

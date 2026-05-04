@@ -77,6 +77,10 @@ mkdir -p "$OUTPUT_DIR"
 } > "${OUTPUT_DIR}/sweep_config.txt"
 cp "$SCRIPT_PATH" "${OUTPUT_DIR}/run_monotonic_trend_sweep.sh"
 
+# Truncate the summary so reruns don't accumulate stale rankings.
+SUMMARY_FILE="${OUTPUT_DIR}/sweep_summary.tsv"
+rm -f "$SUMMARY_FILE"
+
 echo "Sweeping ${#X_METRICS[@]} x-metrics for ${RUN_TAG} (direction=${DIRECTION}) -> ${OUTPUT_DIR}"
 n_ok=0; n_fail=0
 for x in "${X_METRICS[@]}"; do
@@ -91,8 +95,16 @@ for x in "${X_METRICS[@]}"; do
         --hl-y-metric "$HL_Y_METRIC" \
         --direction "$DIRECTION" \
         ${STRICT_FLAG} \
-        --output-dir "$OUTPUT_DIR" || rc=$?
+        --output-dir "$OUTPUT_DIR" \
+        --summary-file "$SUMMARY_FILE" || rc=$?
     if [[ $rc -eq 0 ]]; then n_ok=$((n_ok+1)); else n_fail=$((n_fail+1)); fi
 done
 
 echo "done: ${n_ok} ok, ${n_fail} skipped -> ${OUTPUT_DIR}"
+if [[ -f "$SUMMARY_FILE" ]]; then
+    echo
+    echo "=== ranking by k (longest joint-monotone-${DIRECTION} subseq across (x, Δ_LL, Δ_HL)) ==="
+    # Header pass-through, then numeric sort on column 3 (k) descending.
+    { head -n1 "$SUMMARY_FILE"; tail -n +2 "$SUMMARY_FILE" | sort -t$'\t' -k3,3nr; } \
+        | column -ts $'\t'
+fi

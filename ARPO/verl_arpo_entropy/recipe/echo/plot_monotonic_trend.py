@@ -12,10 +12,12 @@ For every consecutive pair of logged training steps t-1 → t in `<run>/run.log`
 we compute Δr_t for the LL phase (default: low_level/reward/entropy_scalar_mean)
 and the HL phase (default: high_level/reward/f1_mean). The script then picks
 the longest chronological subsequence of steps i_1 < i_2 < ... < i_k along
-which BOTH Δr_LL and Δr_HL are monotone (default direction: 'up' →
-"sustained joint improvement"). Two scatter panels share a user-chosen
-x-metric so the user can rerun with different `--x-metric` values and visually
-identify which axis is also monotone over the same selected step set.
+which the *triple* (x_t, Δ_LL_t, Δ_HL_t) is jointly monotone in the chosen
+direction (default 'up' → all three non-decreasing = "x co-moves with sustained
+joint reward improvement"). The selected step set is now x-dependent, so
+sweeping `--x-metric` across candidates and comparing the resulting `k`
+(subsequence length) directly answers "which axis is most consistent with
+joint reward improvement?".
 
 Source of truth is `run.log` (every per-step trainer dump contains
 `training/global_step:N.000` and inline `key:value` fields), which is uniform
@@ -58,25 +60,28 @@ def load_run_log(run_dir: Path) -> pd.DataFrame:
     return pd.DataFrame(rows).drop_duplicates("step", keep="last").set_index("step").sort_index()
 
 
-def longest_monotone_2d(xs: list[float], ys: list[float], direction: str, strict: bool) -> list[int]:
-    """Longest order-preserving subseq where xs and ys are jointly monotone.
+def longest_monotone_kd(series: list[list[float]], direction: str, strict: bool) -> list[int]:
+    """Longest order-preserving subseq where every series in `series` is jointly monotone.
 
-    direction: "up" / "down" / "auto" (auto picks the longer of the two).
-    strict:    True → < / > ;   False → ≤ / ≥ (default; allows equal Δ values).
-    Returns the selected indices in chronological order.
+    series:    list of equal-length value arrays; index ordering is chronological.
+    direction: "up" / "down" / "auto" (auto picks the longer of joint-up vs joint-down).
+    strict:    True → < / > ;   False → ≤ / ≥ (default; allows equal values).
+    Returns the selected indices in chronological order. O(n² k) where k=len(series).
     """
+    n = len(series[0]) if series else 0
+
     def run_dp(want_up: bool) -> list[int]:
         if want_up:
             cmp = (lambda a, b: a < b) if strict else (lambda a, b: a <= b)
         else:
             cmp = (lambda a, b: a > b) if strict else (lambda a, b: a >= b)
-        n = len(xs)
         # dp[i] = length of longest valid subseq ending at i; prev[i] back-pointer.
         dp = [1] * n
         prev = [-1] * n
         for i in range(n):
             for j in range(i):
-                if cmp(xs[j], xs[i]) and cmp(ys[j], ys[i]) and dp[j] + 1 > dp[i]:
+                # All k axes must be jointly monotone; short-circuit on first failure.
+                if all(cmp(s[j], s[i]) for s in series) and dp[j] + 1 > dp[i]:
                     dp[i] = dp[j] + 1
                     prev[i] = j
         if not n:
@@ -125,6 +130,9 @@ def main() -> None:
                    help="Require strict < / > (default: allow equal values).")
     p.add_argument("--output-dir", type=Path, default=Path("./echo_monotone_plots"),
                    help="Where to write the PNG + CSV (created if missing).")
+    p.add_argument("--summary-file", type=Path, default=None,
+                   help="Optional TSV that we append a single-row ranking summary to "
+                        "(x_metric, direction, k, first_step, last_step, sel_steps).")
     args = p.parse_args()
 
     df = load_run_log(args.run_dir)
@@ -148,14 +156,14 @@ def main() -> None:
     ys_ll = df_d["dy_ll"].tolist()
     ys_hl = df_d["dy_hl"].tolist()
 
-    # Selection happens on (Δ_LL, Δ_HL) — independent of x. The user iterates
-    # `--x-metric` over candidate axes to discover which one is monotone on the
-    # same selected step set.
-    sel = longest_monotone_2d(ys_ll, ys_hl, args.direction, args.strict)
+    # 3-D joint monotone selection: (x_t, Δ_LL_t, Δ_HL_t) all monotone in the
+    # same direction. Selected step set is now x-dependent, so the resulting `k`
+    # ranks how well this x co-moves with sustained joint reward improvement.
+    sel = longest_monotone_kd([xs, ys_ll, ys_hl], args.direction, args.strict)
     sel_steps = [steps[i] for i in sel]
 
     print(f"[{args.run_dir.name}] {len(df_d)} consecutive Δ-pairs (steps {steps[0]}..{steps[-1]})")
-    print(f"selected k={len(sel)} monotone-{args.direction} steps: {sel_steps}")
+    print(f"x={args.x_metric} | selected k={len(sel)} joint-monotone-{args.direction} steps: {sel_steps}")
     if sel:
         x_sel = [xs[i] for i in sel]
         print(f"  x range over selection: [{min(x_sel):.4g}, {max(x_sel):.4g}]")
@@ -185,6 +193,18 @@ def main() -> None:
     df_d.to_csv(out_csv)
     print(f"wrote {out_png}")
     print(f"wrote {out_csv}")
+
+    if args.summary_file is not None:
+        # Append a single TSV row; the wrapping shell sorts/prints at the end.
+        first_step = sel_steps[0] if sel_steps else ""
+        last_step = sel_steps[-1] if sel_steps else ""
+        sel_csv = ",".join(str(s) for s in sel_steps)
+        write_header = not args.summary_file.exists()
+        args.summary_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(args.summary_file, "a") as f:
+            if write_header:
+                f.write("x_metric\tdirection\tk\tfirst_step\tlast_step\tsel_steps\n")
+            f.write(f"{args.x_metric}\t{args.direction}\t{len(sel)}\t{first_step}\t{last_step}\t{sel_csv}\n")
 
 
 if __name__ == "__main__":

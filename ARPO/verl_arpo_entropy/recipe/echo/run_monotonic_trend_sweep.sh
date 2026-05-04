@@ -6,6 +6,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+# Resolve the script path now (absolute) so the post-`cd` snapshot copy works
+# regardless of how the user invoked us (relative or absolute path).
+SCRIPT_PATH="${SCRIPT_DIR}/$(basename "${BASH_SOURCE[0]}")"
 VERL_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$VERL_ROOT"
 
@@ -72,7 +75,7 @@ mkdir -p "$OUTPUT_DIR"
     echo "HL_Y_METRIC=$HL_Y_METRIC"
     echo "X_METRICS=(${X_METRICS[*]})"
 } > "${OUTPUT_DIR}/sweep_config.txt"
-cp "${BASH_SOURCE[0]}" "${OUTPUT_DIR}/run_monotonic_trend_sweep.sh"
+cp "$SCRIPT_PATH" "${OUTPUT_DIR}/run_monotonic_trend_sweep.sh"
 
 echo "Sweeping ${#X_METRICS[@]} x-metrics for ${RUN_TAG} (direction=${DIRECTION}) -> ${OUTPUT_DIR}"
 n_ok=0; n_fail=0

@@ -53,20 +53,24 @@ def main():
         if len(low_part) > len(low_kl_by_step):
             low_kl_by_step = low_part
     steps = _snapshot_steps(args.ckpt_root)
-    if len(steps) < 2:
-        raise ValueError(f"Need at least 2 snapshot checkpoints in {args.ckpt_root}, found {len(steps)}")
+    if len(steps) < 4:
+        raise ValueError(f"Need at least 4 snapshot checkpoints in {args.ckpt_root}, found {len(steps)}")
 
     low_candidates = [(s, low_kl_by_step[s]) for s in steps if s in low_kl_by_step]
-    if len(low_candidates) < 2:
-        raise ValueError("Need at least 2 low-level checkpoints with kl_loss in wandb log.")
+    if len(low_candidates) < 4:
+        raise ValueError("Need at least 4 low-level checkpoints with kl_loss in wandb log.")
 
     low_sorted = sorted(low_candidates, key=lambda x: x[1])
     low_a_step, low_a_kl = low_sorted[0]
-    low_b_step, low_b_kl = low_sorted[-1]
-    high_a_step, high_a_kl = low_a_step, low_a_kl
-    high_b_step, high_b_kl = low_b_step, low_b_kl
+    low_b_step, low_b_kl = low_sorted[1]
+    high_a_step, high_a_kl = low_sorted[-2]
+    high_b_step, high_b_kl = low_sorted[-1]
     if low_a_step == low_b_step:
         raise ValueError("Low pair collapsed to the same step.")
+    if high_a_step == high_b_step:
+        raise ValueError("High pair collapsed to the same step.")
+    if len({low_a_step, low_b_step, high_a_step, high_b_step}) < 4:
+        raise ValueError("Low/high pairs must use four distinct checkpoints.")
 
     payload = {
         "LOW_A_STEP": low_a_step,

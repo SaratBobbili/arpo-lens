@@ -51,17 +51,18 @@ require_float() {
   fi
 }
 
-# Define two low checkpoints and two high checkpoints with kl_loss, then order
-# each pair so *_2 is always the higher-kl_loss member.
-LOW_A_STEP="${LOW_A_STEP:-}"
-LOW_A_KL_LOSS="${LOW_A_KL_LOSS:-}"
-LOW_B_STEP="${LOW_B_STEP:-}"
-LOW_B_KL_LOSS="${LOW_B_KL_LOSS:-}"
-
-HIGH_A_STEP="${HIGH_A_STEP:-}"
-HIGH_A_KL_LOSS="${HIGH_A_KL_LOSS:-}"
-HIGH_B_STEP="${HIGH_B_STEP:-}"
-HIGH_B_KL_LOSS="${HIGH_B_KL_LOSS:-}"
+# Auto-extract checkpoint pairs using wandb actor/kl_loss from training logs.
+TRAIN_CHECKPOINT_DIR="/scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ECHO/checkpoints/echo3B-rerun-entropy-hybrid-coeff-0-penalty-0.1"
+KL_PICK_JSON="${EVAL_DIR}/xmix_runs/${BASE_RUN}/kl_picker.json"
+mkdir -p "$(dirname "${KL_PICK_JSON}")"
+while IFS='=' read -r key value; do
+  export "${key}=${value}"
+done < <(
+  python -u "${SCRIPT_DIR}/select_checkpoints_by_kl.py" \
+    --ckpt_root "${CKPT_ROOT}" \
+    --train_checkpoint_dir "${TRAIN_CHECKPOINT_DIR}" \
+    --out_json "${KL_PICK_JSON}"
+)
 
 for required_var in LOW_A_STEP LOW_A_KL_LOSS LOW_B_STEP LOW_B_KL_LOSS HIGH_A_STEP HIGH_A_KL_LOSS HIGH_B_STEP HIGH_B_KL_LOSS; do
   require_set "${required_var}"
@@ -70,38 +71,23 @@ for kl_var in LOW_A_KL_LOSS LOW_B_KL_LOSS HIGH_A_KL_LOSS HIGH_B_KL_LOSS; do
   require_float "${kl_var}"
 done
 
-if awk "BEGIN{exit !(${LOW_A_KL_LOSS} == ${LOW_B_KL_LOSS})}"; then
-  echo "ERROR: low pair kl_loss values must be strictly ordered, got equal values ${LOW_A_KL_LOSS}" >&2
+if awk "BEGIN{exit !(${LOW_A_KL_LOSS} >= ${LOW_B_KL_LOSS})}"; then
+  echo "ERROR: Expected strict ordering LOW_A_KL_LOSS < LOW_B_KL_LOSS, got ${LOW_A_KL_LOSS}, ${LOW_B_KL_LOSS}" >&2
   exit 1
 fi
-if awk "BEGIN{exit !(${HIGH_A_KL_LOSS} == ${HIGH_B_KL_LOSS})}"; then
-  echo "ERROR: high pair kl_loss values must be strictly ordered, got equal values ${HIGH_A_KL_LOSS}" >&2
+if awk "BEGIN{exit !(${HIGH_A_KL_LOSS} >= ${HIGH_B_KL_LOSS})}"; then
+  echo "ERROR: Expected strict ordering HIGH_A_KL_LOSS < HIGH_B_KL_LOSS, got ${HIGH_A_KL_LOSS}, ${HIGH_B_KL_LOSS}" >&2
   exit 1
 fi
 
-if awk "BEGIN{exit !(${LOW_A_KL_LOSS} < ${LOW_B_KL_LOSS})}"; then
-  LOW_1_STEP="${LOW_A_STEP}"
-  LOW_1_KL_LOSS="${LOW_A_KL_LOSS}"
-  LOW_2_STEP="${LOW_B_STEP}"
-  LOW_2_KL_LOSS="${LOW_B_KL_LOSS}"
-else
-  LOW_1_STEP="${LOW_B_STEP}"
-  LOW_1_KL_LOSS="${LOW_B_KL_LOSS}"
-  LOW_2_STEP="${LOW_A_STEP}"
-  LOW_2_KL_LOSS="${LOW_A_KL_LOSS}"
-fi
-
-if awk "BEGIN{exit !(${HIGH_A_KL_LOSS} < ${HIGH_B_KL_LOSS})}"; then
-  HIGH_1_STEP="${HIGH_A_STEP}"
-  HIGH_1_KL_LOSS="${HIGH_A_KL_LOSS}"
-  HIGH_2_STEP="${HIGH_B_STEP}"
-  HIGH_2_KL_LOSS="${HIGH_B_KL_LOSS}"
-else
-  HIGH_1_STEP="${HIGH_B_STEP}"
-  HIGH_1_KL_LOSS="${HIGH_B_KL_LOSS}"
-  HIGH_2_STEP="${HIGH_A_STEP}"
-  HIGH_2_KL_LOSS="${HIGH_A_KL_LOSS}"
-fi
+LOW_1_STEP="${LOW_A_STEP}"
+LOW_1_KL_LOSS="${LOW_A_KL_LOSS}"
+LOW_2_STEP="${LOW_B_STEP}"
+LOW_2_KL_LOSS="${LOW_B_KL_LOSS}"
+HIGH_1_STEP="${HIGH_A_STEP}"
+HIGH_1_KL_LOSS="${HIGH_A_KL_LOSS}"
+HIGH_2_STEP="${HIGH_B_STEP}"
+HIGH_2_KL_LOSS="${HIGH_B_KL_LOSS}"
 
 echo "[kl_loss] low input:  A(step=${LOW_A_STEP}, kl_loss=${LOW_A_KL_LOSS})  B(step=${LOW_B_STEP}, kl_loss=${LOW_B_KL_LOSS})"
 echo "[kl_loss] high input: A(step=${HIGH_A_STEP}, kl_loss=${HIGH_A_KL_LOSS})  B(step=${HIGH_B_STEP}, kl_loss=${HIGH_B_KL_LOSS})"

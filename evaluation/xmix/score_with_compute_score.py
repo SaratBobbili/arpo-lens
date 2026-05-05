@@ -22,6 +22,7 @@ def _score_file(path: str, validator_profile: str, compute_score):
         rows = json.load(f)
 
     scored_rows = []
+    reward_rows = []
     f1_scores = []
     format_ok = 0
     hl_ok = 0
@@ -42,8 +43,9 @@ def _score_file(path: str, validator_profile: str, compute_score):
         f1 = float(result.get("f1_score", 0.0) or 0.0)
 
         row_copy = row.copy()
+        reward = float(result.get("score", 0.0))
         row_copy["metrics"] = {
-            "score": float(result.get("score", 0.0)),
+            "score": reward,
             "f1": f1,
             "echo_format_valid": fmt_valid,
             "echo_high_level_valid": hl_valid,
@@ -53,6 +55,17 @@ def _score_file(path: str, validator_profile: str, compute_score):
             "answer": result.get("answer", ""),
         }
         scored_rows.append(row_copy)
+        reward_rows.append(
+            {
+                "question": row.get("input", ""),
+                "answer": row.get("answer", ""),
+                "prediction": row.get("prediction", ""),
+                "reward": reward,
+                "f1": f1,
+                "bad_format": bad_fmt,
+                "reason": result.get("reason", ""),
+            }
+        )
 
         f1_scores.append(f1)
         format_ok += fmt_valid
@@ -72,8 +85,11 @@ def _score_file(path: str, validator_profile: str, compute_score):
     }
 
     base, _ = os.path.splitext(path)
+    rewards_path = f"{base}_rewards.json"
     metrics_path = f"{base}_metrics.json"
     overall_path = f"{base}_metrics_overall.json"
+    with open(rewards_path, "w", encoding="utf-8") as f:
+        json.dump(reward_rows, f, indent=2, ensure_ascii=False)
     with open(metrics_path, "w", encoding="utf-8") as f:
         json.dump(scored_rows, f, indent=2, ensure_ascii=False)
     with open(overall_path, "w", encoding="utf-8") as f:

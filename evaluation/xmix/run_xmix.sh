@@ -52,7 +52,7 @@ require_float() {
 }
 
 # Auto-extract checkpoint pairs using wandb actor/kl_loss from training logs.
-TRAIN_CHECKPOINT_DIR="/scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ECHO/checkpoints/echo3B-rerun-entropy-hybrid-coeff-0-penalty-0.1"
+TRAIN_CHECKPOINT_DIR="/scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ECHO/checkpoints/echo3B-rerun-entropy-coeff0-penalty-0.1"
 KL_PICK_JSON="${EVAL_DIR}/xmix_runs/${BASE_RUN}/kl_picker.json"
 mkdir -p "$(dirname "${KL_PICK_JSON}")"
 KL_PICK_KV="$(python -u "${SCRIPT_DIR}/select_checkpoints_by_kl.py" \
@@ -74,10 +74,6 @@ if awk "BEGIN{exit !(${LOW_A_KL_LOSS} >= ${LOW_B_KL_LOSS})}"; then
   echo "ERROR: Expected strict ordering LOW_A_KL_LOSS < LOW_B_KL_LOSS, got ${LOW_A_KL_LOSS}, ${LOW_B_KL_LOSS}" >&2
   exit 1
 fi
-if awk "BEGIN{exit !(${HIGH_A_KL_LOSS} >= ${HIGH_B_KL_LOSS})}"; then
-  echo "ERROR: Expected strict ordering HIGH_A_KL_LOSS < HIGH_B_KL_LOSS, got ${HIGH_A_KL_LOSS}, ${HIGH_B_KL_LOSS}" >&2
-  exit 1
-fi
 
 LOW_1_STEP="${LOW_A_STEP}"
 LOW_1_KL_LOSS="${LOW_A_KL_LOSS}"
@@ -88,8 +84,9 @@ HIGH_1_KL_LOSS="${HIGH_A_KL_LOSS}"
 HIGH_2_STEP="${HIGH_B_STEP}"
 HIGH_2_KL_LOSS="${HIGH_B_KL_LOSS}"
 
+echo "[kl_loss] using low_level actor kl_loss for both low/high pair selection"
 echo "[kl_loss] low input:  A(step=${LOW_A_STEP}, kl_loss=${LOW_A_KL_LOSS})  B(step=${LOW_B_STEP}, kl_loss=${LOW_B_KL_LOSS})"
-echo "[kl_loss] high input: A(step=${HIGH_A_STEP}, kl_loss=${HIGH_A_KL_LOSS})  B(step=${HIGH_B_STEP}, kl_loss=${HIGH_B_KL_LOSS})"
+echo "[kl_loss] high input: A(step=${HIGH_A_STEP}, kl_loss=${HIGH_A_KL_LOSS})  B(step=${HIGH_B_STEP}, kl_loss=${HIGH_B_KL_LOSS}) [mirrored from low pair]"
 echo "[kl_loss] low ordered:  low_1(step=${LOW_1_STEP}, kl_loss=${LOW_1_KL_LOSS})  low_2(step=${LOW_2_STEP}, kl_loss=${LOW_2_KL_LOSS})"
 echo "[kl_loss] high ordered: high_1(step=${HIGH_1_STEP}, kl_loss=${HIGH_1_KL_LOSS})  high_2(step=${HIGH_2_STEP}, kl_loss=${HIGH_2_KL_LOSS})"
 

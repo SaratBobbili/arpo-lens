@@ -47,35 +47,26 @@ def main():
     output_logs = sorted(glob.glob(os.path.join(args.train_checkpoint_dir, "wandb", "run-*", "files", "output.log")))
     if not output_logs:
         raise ValueError(f"Missing wandb output.log under: {args.train_checkpoint_dir}/wandb/run-*/files/output.log")
-    high_kl_by_step = {}
     low_kl_by_step = {}
     for output_log in output_logs:
-        high_part, low_part = _parse_wandb_output_log(output_log)
-        if len(high_part) > len(high_kl_by_step):
-            high_kl_by_step = high_part
+        _, low_part = _parse_wandb_output_log(output_log)
         if len(low_part) > len(low_kl_by_step):
             low_kl_by_step = low_part
     steps = _snapshot_steps(args.ckpt_root)
     if len(steps) < 2:
         raise ValueError(f"Need at least 2 snapshot checkpoints in {args.ckpt_root}, found {len(steps)}")
 
-    high_candidates = [(s, high_kl_by_step[s]) for s in steps if s in high_kl_by_step]
     low_candidates = [(s, low_kl_by_step[s]) for s in steps if s in low_kl_by_step]
-    if len(high_candidates) < 2:
-        raise ValueError("Need at least 2 high-level checkpoints with kl_loss in wandb log.")
     if len(low_candidates) < 2:
         raise ValueError("Need at least 2 low-level checkpoints with kl_loss in wandb log.")
 
     low_sorted = sorted(low_candidates, key=lambda x: x[1])
-    high_sorted = sorted(high_candidates, key=lambda x: x[1])
     low_a_step, low_a_kl = low_sorted[0]
     low_b_step, low_b_kl = low_sorted[-1]
-    high_a_step, high_a_kl = high_sorted[0]
-    high_b_step, high_b_kl = high_sorted[-1]
+    high_a_step, high_a_kl = low_a_step, low_a_kl
+    high_b_step, high_b_kl = low_b_step, low_b_kl
     if low_a_step == low_b_step:
         raise ValueError("Low pair collapsed to the same step.")
-    if high_a_step == high_b_step:
-        raise ValueError("High pair collapsed to the same step.")
 
     payload = {
         "LOW_A_STEP": low_a_step,

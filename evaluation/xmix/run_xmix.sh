@@ -41,7 +41,7 @@ CAND2_STEP="${CAND2_STEP:-40}"
 PREFIX_TAG="c1_${CAND1_STEP}_c2_${CAND2_STEP}"
 
 # Per-experiment shared output root; both candidates and the mix live here.
-XMIX_ROOT_DEFAULT="/scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ECHO/xmix"
+XMIX_ROOT_DEFAULT="${EVAL_DIR}/xmix_runs"
 XMIX_ROOT="${XMIX_ROOT:-${XMIX_ROOT_DEFAULT}/${BASE_RUN}/${PREFIX_TAG}}"
 
 # Base HF model used as the merge template + the served alias for the
@@ -107,9 +107,9 @@ URL_CACHE_FILE="${URL_CACHE_FILE:-${XMIX_ROOT}/search_url_cache.db}"
 # Endpoint topology (matches the existing vLLM launchers).
 ENDPOINTS_STR="${ENDPOINTS:-http://localhost:8002/v1 http://localhost:8003/v1}"
 SUMM_MODEL_URLS_STR="${SUMM_MODEL_URLS:-http://localhost:8004/v1 http://localhost:8005/v1}"
-SERVER_BOOT_WAIT_SECONDS="${SERVER_BOOT_WAIT_SECONDS:-60}"
-ENDPOINT_READY_TIMEOUT_SECONDS="${ENDPOINT_READY_TIMEOUT_SECONDS:-300}"
-JUDGE_ENDPOINT_READY_TIMEOUT_SECONDS="${JUDGE_ENDPOINT_READY_TIMEOUT_SECONDS:-900}"
+SERVER_BOOT_WAIT_SECONDS="${SERVER_BOOT_WAIT_SECONDS:-120}"
+ENDPOINT_READY_TIMEOUT_SECONDS="${ENDPOINT_READY_TIMEOUT_SECONDS:-900}"
+JUDGE_ENDPOINT_READY_TIMEOUT_SECONDS="${JUDGE_ENDPOINT_READY_TIMEOUT_SECONDS:-1200}"
 SERVER_TEARDOWN_WAIT_SECONDS="${SERVER_TEARDOWN_WAIT_SECONDS:-20}"
 
 # Splicer needs to import verl.utils.reward_score.deep_research_echo from the

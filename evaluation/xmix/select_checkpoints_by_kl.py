@@ -37,6 +37,13 @@ def _snapshot_steps(ckpt_root: str):
     return steps
 
 
+def _nearest_low_kl(step: int, low_kl_by_step: dict):
+    if step in low_kl_by_step:
+        return step, low_kl_by_step[step]
+    nearest_step = min(low_kl_by_step, key=lambda s: abs(s - step))
+    return nearest_step, low_kl_by_step[nearest_step]
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--ckpt_root", required=True)
@@ -53,34 +60,45 @@ def main():
         if len(low_part) > len(low_kl_by_step):
             low_kl_by_step = low_part
     steps = _snapshot_steps(args.ckpt_root)
-    if len(steps) < 4:
-        raise ValueError(f"Need at least 4 snapshot checkpoints in {args.ckpt_root}, found {len(steps)}")
+    if len(steps) < 2:
+        raise ValueError(f"Need at least 2 snapshot checkpoints in {args.ckpt_root}, found {len(steps)}")
 
-    low_candidates = [(s, low_kl_by_step[s]) for s in steps if s in low_kl_by_step]
-    if len(low_candidates) < 4:
-        raise ValueError("Need at least 4 low-level checkpoints with kl_loss in wandb log.")
+    low_candidates = []
+    for step in steps:
+        matched_log_step, kl_loss = _nearest_low_kl(step, low_kl_by_step)
+        low_candidates.append((step, kl_loss, matched_log_step))
+    if len(low_candidates) < 2:
+        raise ValueError("Need at least 2 snapshot checkpoints to form 2 pairs.")
 
     low_sorted = sorted(low_candidates, key=lambda x: x[1])
-    low_a_step, low_a_kl = low_sorted[0]
-    low_b_step, low_b_kl = low_sorted[1]
-    high_a_step, high_a_kl = low_sorted[-2]
-    high_b_step, high_b_kl = low_sorted[-1]
+    low_a_step, low_a_kl, low_a_log_step = low_sorted[0]
+    low_b_step, low_b_kl, low_b_log_step = low_sorted[1]
+    high_a_step, high_a_kl, high_a_log_step = low_sorted[-2]
+    high_b_step, high_b_kl, high_b_log_step = low_sorted[-1]
     if low_a_step == low_b_step:
         raise ValueError("Low pair collapsed to the same step.")
     if high_a_step == high_b_step:
         raise ValueError("High pair collapsed to the same step.")
-    if len({low_a_step, low_b_step, high_a_step, high_b_step}) < 4:
-        raise ValueError("Low/high pairs must use four distinct checkpoints.")
+    if len(low_sorted) < 4:
+        print(
+            f"WARNING: Only {len(low_sorted)} checkpoints with low-level KL found; "
+            "low/high pairs may overlap.",
+            file=os.sys.stderr,
+        )
 
     payload = {
         "LOW_A_STEP": low_a_step,
         "LOW_A_KL_LOSS": low_a_kl,
+        "LOW_A_MATCHED_LOG_STEP": low_a_log_step,
         "LOW_B_STEP": low_b_step,
         "LOW_B_KL_LOSS": low_b_kl,
+        "LOW_B_MATCHED_LOG_STEP": low_b_log_step,
         "HIGH_A_STEP": high_a_step,
         "HIGH_A_KL_LOSS": high_a_kl,
+        "HIGH_A_MATCHED_LOG_STEP": high_a_log_step,
         "HIGH_B_STEP": high_b_step,
         "HIGH_B_KL_LOSS": high_b_kl,
+        "HIGH_B_MATCHED_LOG_STEP": high_b_log_step,
     }
     if args.out_json:
         with open(args.out_json, "w", encoding="utf-8") as f:

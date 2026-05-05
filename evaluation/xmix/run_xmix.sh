@@ -58,6 +58,7 @@ SUMM_MODEL_NAME="${SUMM_MODEL_NAME:-Qwen2.5-7B-Instruct}"
 JUDGE_MODEL_PATH="${JUDGE_MODEL_PATH:-Qwen/Qwen2.5-72B-Instruct}"
 JUDGE_MODEL_NAME="${JUDGE_MODEL_NAME:-Qwen2.5-72B-Instruct}"
 API_BASE_URL="${API_BASE_URL:-http://localhost:8001/v1}"
+USE_LLM="${USE_LLM:-false}"
 
 # Inference knobs: greedy decoding (T=0, top_p=1, top_k=-1, no rep penalty) so
 # both candidates produce a single deterministic rollout per question. Matches
@@ -337,27 +338,38 @@ stop_server REASON_PID
 stop_server SUMM_PID
 sleep "${SERVER_TEARDOWN_WAIT_SECONDS}"
 
-# ============================ Phase 5: judge + scoring ============================
-echo "================ [5/5] LLM-judge scoring (single boot, three runs) ================"
-start_judge_server
-sleep "${SERVER_BOOT_WAIT_SECONDS}"
-wait_for_endpoint "${API_BASE_URL}" "${JUDGE_ENDPOINT_READY_TIMEOUT_SECONDS}"
+# ============================ Phase 5: scoring ============================
+if [[ "${USE_LLM}" == "true" ]]; then
+  echo "================ [5/5] LLM-judge scoring (single boot, three runs) ================"
+  start_judge_server
+  sleep "${SERVER_BOOT_WAIT_SECONDS}"
+  wait_for_endpoint "${API_BASE_URL}" "${JUDGE_ENDPOINT_READY_TIMEOUT_SECONDS}"
 
-# echo_evaluate_passk_math_4qa.sh scans <OUTPUT_DIR>/*/*_output_*.json; point
-# it at each phase folder in turn so metrics land next to the inference JSONs.
-for phase_dir in "${CAND1_OUT}" "${CAND2_OUT}" "${MIX_OUT}"; do
-  phase_name="$(basename "${phase_dir}")"
-  echo "[scoring] ${phase_name} -> ${phase_dir}"
-  OUTPUT_DIR="${phase_dir}" \
-  USE_LLM=true \
-  API_BASE_URL="${API_BASE_URL}" \
-  MODEL_NAME="${JUDGE_MODEL_NAME}" \
-  PROMPT_TYPE="${PROMPT_TYPE}" \
-  VALIDATOR_PROFILE="${ECHO_VALIDATOR_PROFILE}" \
-  bash echo_evaluate_passk_math_4qa.sh 2>&1 | tee -a "${LOG_DIR}/eval.log"
-done
+  # echo_evaluate_passk_math_4qa.sh scans <OUTPUT_DIR>/*/*_output_*.json; point
+  # it at each phase folder in turn so metrics land next to the inference JSONs.
+  for phase_dir in "${CAND1_OUT}" "${CAND2_OUT}" "${MIX_OUT}"; do
+    phase_name="$(basename "${phase_dir}")"
+    echo "[scoring] ${phase_name} -> ${phase_dir}"
+    OUTPUT_DIR="${phase_dir}" \
+    USE_LLM=true \
+    API_BASE_URL="${API_BASE_URL}" \
+    MODEL_NAME="${JUDGE_MODEL_NAME}" \
+    PROMPT_TYPE="${PROMPT_TYPE}" \
+    VALIDATOR_PROFILE="${ECHO_VALIDATOR_PROFILE}" \
+    bash echo_evaluate_passk_math_4qa.sh 2>&1 | tee -a "${LOG_DIR}/eval.log"
+  done
 
-stop_server JUDGE_PID
+  stop_server JUDGE_PID
+else
+  echo "================ [5/5] compute_score scoring (no judge) ================"
+  for phase_dir in "${CAND1_OUT}" "${CAND2_OUT}" "${MIX_OUT}"; do
+    phase_name="$(basename "${phase_dir}")"
+    echo "[scoring] ${phase_name} -> ${phase_dir}"
+    python -u "${SCRIPT_DIR}/score_with_compute_score.py" \
+      --output_dir "${phase_dir}" \
+      --validator_profile "${ECHO_VALIDATOR_PROFILE}" 2>&1 | tee -a "${LOG_DIR}/eval.log"
+  done
+fi
 
 # ============================ Phase 5.5: aggregate summary ============================
 # Read each phase's *_metrics_overall.json and stitch a single summary.json so

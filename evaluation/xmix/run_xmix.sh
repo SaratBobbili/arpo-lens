@@ -539,4 +539,7 @@ for i in "${!PAIR_NAMES[@]}"; do
   run_pair "${PAIR_NAMES[$i]}" "${PAIR_HIGH_STEPS[$i]}" "${PAIR_LOW_STEPS[$i]}" "${PAIR_HIGH_KLS[$i]}" "${PAIR_LOW_KLS[$i]}"
 done
 
+python -u "${SCRIPT_DIR}/compute_delta_h.py" \
+  --metrics_dir "${XMIX_ROOT}/per_example_metrics"
+
 echo "================ Done. All pair artifacts under ${XMIX_ROOT} ================"

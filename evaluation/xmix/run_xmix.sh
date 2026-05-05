@@ -25,7 +25,7 @@ cd "${EVAL_DIR}"
 # Bing search key + zone used by the search tool inside both rollout passes
 # and the prefix-continuation pass. Identical to the training config so the
 # tool surface the model sees in eval matches what it saw during RL.
-BING_API_KEY="${BING_API_KEY:-9c221824-9a57-4261-b1b7-979959492235}"
+BING_API_KEY="9c221824-9a57-4261-b1b7-979959492235"
 BING_ZONE="${BING_ZONE:-serp_api1}"
 BING_LOCATION="${BING_LOCATION:-us}"
 
@@ -34,15 +34,19 @@ BING_LOCATION="${BING_LOCATION:-us}"
 BASE_RUN="${BASE_RUN:-echo3BInstruct}"
 CKPT_ROOT="${CKPT_ROOT:-/scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ECHO/checkpoint_snapshots/${BASE_RUN}}"
 
-# Two ECHO checkpoints from the same training run. Defaults: step 15 (cand1)
-# and step 40 (cand2) of echo3BInstruct, both pre-merged under <step>/hf.
-CAND1_STEP="${CAND1_STEP:-15}"
-CAND2_STEP="${CAND2_STEP:-40}"
-PREFIX_TAG="c1_${CAND1_STEP}_c2_${CAND2_STEP}"
+# Four hardcoded pair combinations are evaluated:
+#   pair1: high_1 x low_1
+#   pair2: high_2 x low_1
+#   pair3: high_1 x low_2
+#   pair4: high_2 x low_2
+LOW_1_STEP="${LOW_1_STEP:-${CAND1_STEP:-15}}"
+LOW_2_STEP="${LOW_2_STEP:-${CAND1_STEP:-15}}"
+HIGH_1_STEP="${HIGH_1_STEP:-${CAND2_STEP:-40}}"
+HIGH_2_STEP="${HIGH_2_STEP:-${CAND2_STEP:-40}}"
 
-# Per-experiment shared output root; both candidates and the mix live here.
+# Per-experiment shared output root; each pair gets its own subfolder.
 XMIX_ROOT_DEFAULT="${EVAL_DIR}/xmix_runs"
-XMIX_ROOT="${XMIX_ROOT:-${XMIX_ROOT_DEFAULT}/${BASE_RUN}/${PREFIX_TAG}}"
+XMIX_ROOT="${XMIX_ROOT:-${XMIX_ROOT_DEFAULT}/${BASE_RUN}/multi_pair}"
 
 # Base HF model used as the merge template + the served alias for the
 # reasoning endpoints. Must match the training run.
@@ -53,6 +57,7 @@ REASON_MODEL_NAME="${REASON_MODEL_NAME:-Qwen2.5-3B-Instruct}"
 # echo_vllm_launch_summarize_model_hf_cuda0-3.sh defaults.
 SUMM_MODEL_PATH="${SUMM_MODEL_PATH:-Qwen/Qwen2.5-7B-Instruct}"
 SUMM_MODEL_NAME="${SUMM_MODEL_NAME:-Qwen2.5-7B-Instruct}"
+USE_SUMMARIZATION_MODEL="${USE_SUMMARIZATION_MODEL:-false}"
 
 # Judge model (loaded once at the end to score all three runs in one pass).
 JUDGE_MODEL_PATH="${JUDGE_MODEL_PATH:-Qwen/Qwen2.5-72B-Instruct}"
@@ -100,10 +105,9 @@ NLTK_DATA_DIR="${CONDA_PATH}/envs/${CONDA_ENV}/nltk_data"
 mkdir -p "${NLTK_DATA_DIR}"
 export NLTK_DATA="${NLTK_DATA_DIR}"
 
-# Persistent caches (shared across all three phases so the search/python work
-# done in cand1 is reused by cand2 / mix wherever the queries match).
-SEARCH_CACHE_FILE="${SEARCH_CACHE_FILE:-${XMIX_ROOT}/search_cache.db}"
-URL_CACHE_FILE="${URL_CACHE_FILE:-${XMIX_ROOT}/search_url_cache.db}"
+# Per-pair caches are assigned inside run_pair().
+SEARCH_CACHE_FILE=""
+URL_CACHE_FILE=""
 
 # Endpoint topology (matches the existing vLLM launchers).
 ENDPOINTS_STR="${ENDPOINTS:-http://localhost:8002/v1 http://localhost:8003/v1}"
@@ -119,37 +123,27 @@ VERL_PYTHONPATH="${REPO_ROOT}/ARPO/verl_arpo_entropy"
 # -----------------------------------------------------------------------------
 
 # ============================ Layout setup ============================
-CAND1_HF="${CKPT_ROOT}/global_step_${CAND1_STEP}/hf"
-CAND2_HF="${CKPT_ROOT}/global_step_${CAND2_STEP}/hf"
-
-CAND1_OUT="${XMIX_ROOT}/cand1"
-CAND2_OUT="${XMIX_ROOT}/cand2"
-MIX_DATA="${XMIX_ROOT}/data_mixed"
-MIX_OUT="${XMIX_ROOT}/mix"
-LOG_DIR="${XMIX_ROOT}/logs"
-SUMMARY_PATH="${XMIX_ROOT}/summary.json"
-mkdir -p "${CAND1_OUT}" "${CAND2_OUT}" "${MIX_DATA}" "${MIX_OUT}" "${LOG_DIR}"
+mkdir -p "${XMIX_ROOT}"
 chmod -R u+rw "${XMIX_ROOT}" 2>/dev/null || true
-
-# Sanity-check both candidate HF dirs before we boot anything.
-for hf_dir in "${CAND1_HF}" "${CAND2_HF}"; do
-  if [[ ! -f "${hf_dir}/config.json" ]]; then
-    echo "ERROR: Expected pre-merged HF checkpoint at ${hf_dir}/config.json" >&2
-    exit 1
-  fi
-done
 
 # Snapshot the run config so the output folder is fully self-describing.
 cat > "${XMIX_ROOT}/run_config.yaml" <<EOF
 timestamp: "$(date -Iseconds)"
 driver_script: "$(basename "$0")"
 base_run: "${BASE_RUN}"
-cand1:
-  step: "${CAND1_STEP}"
-  hf_path: "${CAND1_HF}"
-cand2:
-  step: "${CAND2_STEP}"
-  hf_path: "${CAND2_HF}"
+pairs:
+  pair1:
+    high_step: "${HIGH_1_STEP}"
+    low_step: "${LOW_1_STEP}"
+  pair2:
+    high_step: "${HIGH_2_STEP}"
+    low_step: "${LOW_1_STEP}"
+  pair3:
+    high_step: "${HIGH_1_STEP}"
+    low_step: "${LOW_2_STEP}"
+  pair4:
+    high_step: "${HIGH_2_STEP}"
+    low_step: "${LOW_2_STEP}"
 infer:
   mode: "${INFER_MODE}"
   prompt_type: "${PROMPT_TYPE}"
@@ -257,6 +251,14 @@ run_inference() {
   local endpoints=( ${ENDPOINTS_STR} )
   # shellcheck disable=SC2206
   local summ_urls=( ${SUMM_MODEL_URLS_STR} )
+  local summ_model_name="${SUMM_MODEL_NAME}"
+  local summ_model_path="${SUMM_MODEL_PATH}"
+  if [[ "${USE_SUMMARIZATION_MODEL}" != "true" ]]; then
+    # Reuse reasoning endpoints/model so no extra summarization servers are needed.
+    summ_urls=( ${ENDPOINTS_STR} )
+    summ_model_name="${REASON_MODEL_NAME}"
+    summ_model_path="${REASON_BASE_MODEL_PATH}"
+  fi
   cmd+=(--endpoints "${endpoints[@]}")
   cmd+=(--model_path "${REASON_BASE_MODEL_PATH}")
   cmd+=(--default_model "${REASON_MODEL_NAME}")
@@ -288,96 +290,134 @@ run_inference() {
   cmd+=(--bing_zone "${BING_ZONE}")
   cmd+=(--bing_location "${BING_LOCATION}")
   cmd+=(--summ_model_urls "${summ_urls[@]}")
-  cmd+=(--summ_model_name "${SUMM_MODEL_NAME}")
-  cmd+=(--summ_model_path "${SUMM_MODEL_PATH}")
+  cmd+=(--summ_model_name "${summ_model_name}")
+  cmd+=(--summ_model_path "${summ_model_path}")
   cmd+=(--search_cache_file "${SEARCH_CACHE_FILE}")
   cmd+=(--url_cache_file "${URL_CACHE_FILE}")
   echo "Running: ${cmd[*]}"
   "${cmd[@]}"
 }
 
-# ============================ Phase 1: cand1 rollouts ============================
-echo "================ [1/5] cand1 (step ${CAND1_STEP}) rollouts ================"
-start_reasoning_servers "${CAND1_HF}"
-start_summ_servers
-sleep "${SERVER_BOOT_WAIT_SECONDS}"
-wait_for_endpoint "http://localhost:8002/v1" "${ENDPOINT_READY_TIMEOUT_SECONDS}"
-wait_for_endpoint "http://localhost:8003/v1" "${ENDPOINT_READY_TIMEOUT_SECONDS}"
-wait_for_endpoint "http://localhost:8004/v1" "${ENDPOINT_READY_TIMEOUT_SECONDS}"
-wait_for_endpoint "http://localhost:8005/v1" "${ENDPOINT_READY_TIMEOUT_SECONDS}"
-run_inference "infer.py" "${CAND1_OUT}" "${DATA_PATH_BASE}" 2>&1 | tee "${LOG_DIR}/cand1_infer.log"
-stop_server REASON_PID
-sleep "${SERVER_TEARDOWN_WAIT_SECONDS}"
+run_pair() {
+  local pair_name="$1"
+  local high_step="$2"
+  local low_step="$3"
 
-# ============================ Phase 2: cand2 rollouts ============================
-echo "================ [2/5] cand2 (step ${CAND2_STEP}) rollouts ================"
-start_reasoning_servers "${CAND2_HF}"
-sleep "${SERVER_BOOT_WAIT_SECONDS}"
-wait_for_endpoint "http://localhost:8002/v1" "${ENDPOINT_READY_TIMEOUT_SECONDS}"
-wait_for_endpoint "http://localhost:8003/v1" "${ENDPOINT_READY_TIMEOUT_SECONDS}"
-run_inference "infer.py" "${CAND2_OUT}" "${DATA_PATH_BASE}" 2>&1 | tee "${LOG_DIR}/cand2_infer.log"
-stop_server REASON_PID
-sleep "${SERVER_TEARDOWN_WAIT_SECONDS}"
+  local pair_root="${XMIX_ROOT}/${pair_name}"
+  local high_hf="${CKPT_ROOT}/global_step_${high_step}/hf"
+  local low_hf="${CKPT_ROOT}/global_step_${low_step}/hf"
 
-# ============================ Phase 3: splice ============================
-echo "================ [3/5] splice (HL=cand1 thinks, LL=cand2 selects+tools) ================"
-PYTHONPATH="${VERL_PYTHONPATH}:${PYTHONPATH:-}" python -u "${SCRIPT_DIR}/splicer.py" \
-  --cand1 "${CAND1_OUT}/${DATASET_GROUP}/${DATASET_GROUP}_output_1.json" \
-  --cand2 "${CAND2_OUT}/${DATASET_GROUP}/${DATASET_GROUP}_output_1.json" \
-  --dataset_name "${DATASET_GROUP}" \
-  --out "${MIX_DATA}" 2>&1 | tee "${LOG_DIR}/splice.log"
+  local HIGH_OUT="${pair_root}/high"
+  local LOW_OUT="${pair_root}/low"
+  local MIX_DATA="${pair_root}/data_mixed"
+  local MIX_OUT="${pair_root}/mix"
+  LOG_DIR="${pair_root}/logs"
+  local SUMMARY_PATH="${pair_root}/summary.json"
+  SEARCH_CACHE_FILE="${pair_root}/search_cache.db"
+  URL_CACHE_FILE="${pair_root}/search_url_cache.db"
+  mkdir -p "${HIGH_OUT}" "${LOW_OUT}" "${MIX_DATA}" "${MIX_OUT}" "${LOG_DIR}"
+  chmod -R u+rw "${pair_root}" 2>/dev/null || true
 
-# ============================ Phase 4: cand1 + prefix continuation ============================
-echo "================ [4/5] cand1 (step ${CAND1_STEP}) + prefix continuation ================"
-start_reasoning_servers "${CAND1_HF}"
-sleep "${SERVER_BOOT_WAIT_SECONDS}"
-wait_for_endpoint "http://localhost:8002/v1" "${ENDPOINT_READY_TIMEOUT_SECONDS}"
-wait_for_endpoint "http://localhost:8003/v1" "${ENDPOINT_READY_TIMEOUT_SECONDS}"
-run_inference "${SCRIPT_DIR}/infer_prefix.py" "${MIX_OUT}" "${MIX_DATA}" 2>&1 | tee "${LOG_DIR}/mix_infer.log"
-stop_server REASON_PID
-stop_server SUMM_PID
-sleep "${SERVER_TEARDOWN_WAIT_SECONDS}"
+  for hf_dir in "${high_hf}" "${low_hf}"; do
+    if [[ ! -f "${hf_dir}/config.json" ]]; then
+      echo "ERROR: Expected pre-merged HF checkpoint at ${hf_dir}/config.json" >&2
+      exit 1
+    fi
+  done
 
-# ============================ Phase 5: scoring ============================
-if [[ "${USE_LLM}" == "true" ]]; then
-  echo "================ [5/5] LLM-judge scoring (single boot, three runs) ================"
-  start_judge_server
+  cat > "${pair_root}/run_config.yaml" <<EOF
+timestamp: "$(date -Iseconds)"
+pair_name: "${pair_name}"
+base_run: "${BASE_RUN}"
+high:
+  step: "${high_step}"
+  hf_path: "${high_hf}"
+low:
+  step: "${low_step}"
+  hf_path: "${low_hf}"
+EOF
+
+  # ============================ Phase 1: high rollouts ============================
+  echo "================ [${pair_name}] [1/5] high (step ${high_step}) rollouts ================"
+  start_reasoning_servers "${high_hf}"
+  if [[ "${USE_SUMMARIZATION_MODEL}" == "true" ]]; then
+    start_summ_servers
+  fi
   sleep "${SERVER_BOOT_WAIT_SECONDS}"
-  wait_for_endpoint "${API_BASE_URL}" "${JUDGE_ENDPOINT_READY_TIMEOUT_SECONDS}"
+  wait_for_endpoint "http://localhost:8002/v1" "${ENDPOINT_READY_TIMEOUT_SECONDS}"
+  wait_for_endpoint "http://localhost:8003/v1" "${ENDPOINT_READY_TIMEOUT_SECONDS}"
+  if [[ "${USE_SUMMARIZATION_MODEL}" == "true" ]]; then
+    wait_for_endpoint "http://localhost:8004/v1" "${ENDPOINT_READY_TIMEOUT_SECONDS}"
+    wait_for_endpoint "http://localhost:8005/v1" "${ENDPOINT_READY_TIMEOUT_SECONDS}"
+  fi
+  run_inference "infer.py" "${HIGH_OUT}" "${DATA_PATH_BASE}" 2>&1 | tee "${LOG_DIR}/high_infer.log"
+  stop_server REASON_PID
+  sleep "${SERVER_TEARDOWN_WAIT_SECONDS}"
 
-  # echo_evaluate_passk_math_4qa.sh scans <OUTPUT_DIR>/*/*_output_*.json; point
-  # it at each phase folder in turn so metrics land next to the inference JSONs.
-  for phase_dir in "${CAND1_OUT}" "${CAND2_OUT}" "${MIX_OUT}"; do
-    phase_name="$(basename "${phase_dir}")"
-    echo "[scoring] ${phase_name} -> ${phase_dir}"
-    OUTPUT_DIR="${phase_dir}" \
-    USE_LLM=true \
-    API_BASE_URL="${API_BASE_URL}" \
-    MODEL_NAME="${JUDGE_MODEL_NAME}" \
-    PROMPT_TYPE="${PROMPT_TYPE}" \
-    VALIDATOR_PROFILE="${ECHO_VALIDATOR_PROFILE}" \
-    bash echo_evaluate_passk_math_4qa.sh 2>&1 | tee -a "${LOG_DIR}/eval.log"
-  done
+  # ============================ Phase 2: low rollouts ============================
+  echo "================ [${pair_name}] [2/5] low (step ${low_step}) rollouts ================"
+  start_reasoning_servers "${low_hf}"
+  sleep "${SERVER_BOOT_WAIT_SECONDS}"
+  wait_for_endpoint "http://localhost:8002/v1" "${ENDPOINT_READY_TIMEOUT_SECONDS}"
+  wait_for_endpoint "http://localhost:8003/v1" "${ENDPOINT_READY_TIMEOUT_SECONDS}"
+  run_inference "infer.py" "${LOW_OUT}" "${DATA_PATH_BASE}" 2>&1 | tee "${LOG_DIR}/low_infer.log"
+  stop_server REASON_PID
+  sleep "${SERVER_TEARDOWN_WAIT_SECONDS}"
 
-  stop_server JUDGE_PID
-else
-  echo "================ [5/5] compute_score scoring (no judge) ================"
-  for phase_dir in "${CAND1_OUT}" "${CAND2_OUT}" "${MIX_OUT}"; do
-    phase_name="$(basename "${phase_dir}")"
-    echo "[scoring] ${phase_name} -> ${phase_dir}"
-    python -u "${SCRIPT_DIR}/score_with_compute_score.py" \
-      --output_dir "${phase_dir}" \
-      --validator_profile "${ECHO_VALIDATOR_PROFILE}" 2>&1 | tee -a "${LOG_DIR}/eval.log"
-  done
-fi
+  # ============================ Phase 3: splice ============================
+  echo "================ [${pair_name}] [3/5] splice (HL=high thinks, LL=low selects+tools) ================"
+  PYTHONPATH="${VERL_PYTHONPATH}:${PYTHONPATH:-}" python -u "${SCRIPT_DIR}/splicer.py" \
+    --cand1 "${HIGH_OUT}/${DATASET_GROUP}/${DATASET_GROUP}_output_1.json" \
+    --cand2 "${LOW_OUT}/${DATASET_GROUP}/${DATASET_GROUP}_output_1.json" \
+    --dataset_name "${DATASET_GROUP}" \
+    --out "${MIX_DATA}" 2>&1 | tee "${LOG_DIR}/splice.log"
 
-# ============================ Phase 5.5: aggregate summary ============================
-# Read each phase's *_metrics_overall.json and stitch a single summary.json so
-# the headline numbers (cand1 / cand2 / mix) sit alongside splice diagnostics.
-python - <<'PY' "${CAND1_OUT}" "${CAND2_OUT}" "${MIX_OUT}" "${XMIX_ROOT}/splice_summary.json" "${SUMMARY_PATH}"
+  # ============================ Phase 4: high + prefix continuation ============================
+  echo "================ [${pair_name}] [4/5] high (step ${high_step}) + prefix continuation ================"
+  start_reasoning_servers "${high_hf}"
+  sleep "${SERVER_BOOT_WAIT_SECONDS}"
+  wait_for_endpoint "http://localhost:8002/v1" "${ENDPOINT_READY_TIMEOUT_SECONDS}"
+  wait_for_endpoint "http://localhost:8003/v1" "${ENDPOINT_READY_TIMEOUT_SECONDS}"
+  run_inference "${SCRIPT_DIR}/infer_prefix.py" "${MIX_OUT}" "${MIX_DATA}" 2>&1 | tee "${LOG_DIR}/mix_infer.log"
+  stop_server REASON_PID
+  stop_server SUMM_PID
+  sleep "${SERVER_TEARDOWN_WAIT_SECONDS}"
+
+  # ============================ Phase 5: scoring ============================
+  if [[ "${USE_LLM}" == "true" ]]; then
+    echo "================ [${pair_name}] [5/5] LLM-judge scoring ================"
+    start_judge_server
+    sleep "${SERVER_BOOT_WAIT_SECONDS}"
+    wait_for_endpoint "${API_BASE_URL}" "${JUDGE_ENDPOINT_READY_TIMEOUT_SECONDS}"
+
+    for phase_dir in "${HIGH_OUT}" "${LOW_OUT}" "${MIX_OUT}"; do
+      phase_name="$(basename "${phase_dir}")"
+      echo "[scoring] ${phase_name} -> ${phase_dir}"
+      OUTPUT_DIR="${phase_dir}" \
+      USE_LLM=true \
+      API_BASE_URL="${API_BASE_URL}" \
+      MODEL_NAME="${JUDGE_MODEL_NAME}" \
+      PROMPT_TYPE="${PROMPT_TYPE}" \
+      VALIDATOR_PROFILE="${ECHO_VALIDATOR_PROFILE}" \
+      bash echo_evaluate_passk_math_4qa.sh 2>&1 | tee -a "${LOG_DIR}/eval.log"
+    done
+
+    stop_server JUDGE_PID
+  else
+    echo "================ [${pair_name}] [5/5] compute_score scoring (no judge) ================"
+    for phase_dir in "${HIGH_OUT}" "${LOW_OUT}" "${MIX_OUT}"; do
+      phase_name="$(basename "${phase_dir}")"
+      echo "[scoring] ${phase_name} -> ${phase_dir}"
+      python -u "${SCRIPT_DIR}/score_with_compute_score.py" \
+        --output_dir "${phase_dir}" \
+        --validator_profile "${ECHO_VALIDATOR_PROFILE}" 2>&1 | tee -a "${LOG_DIR}/eval.log"
+    done
+  fi
+
+  python - <<'PY' "${HIGH_OUT}" "${LOW_OUT}" "${MIX_OUT}" "${pair_root}/splice_summary.json" "${SUMMARY_PATH}"
 import json, sys, glob, os
 
-cand1, cand2, mix, splice_summary_path, out_path = sys.argv[1:]
+high, low, mix, splice_summary_path, out_path = sys.argv[1:]
 
 def load_phase(phase_dir):
     overalls = {}
@@ -388,8 +428,8 @@ def load_phase(phase_dir):
     return overalls
 
 summary = {
-    "cand1": load_phase(cand1),
-    "cand2": load_phase(cand2),
+    "high": load_phase(high),
+    "low": load_phase(low),
     "mix": load_phase(mix),
 }
 if os.path.isfile(splice_summary_path):
@@ -401,4 +441,15 @@ with open(out_path, "w") as f:
 print(f"Wrote summary: {out_path}")
 PY
 
-echo "================ Done. All artifacts under ${XMIX_ROOT} ================"
+  echo "================ [${pair_name}] Done. Artifacts under ${pair_root} ================"
+}
+
+PAIR_NAMES=("pair1_h1_l1" "pair2_h2_l1" "pair3_h1_l2" "pair4_h2_l2")
+PAIR_HIGH_STEPS=("${HIGH_1_STEP}" "${HIGH_2_STEP}" "${HIGH_1_STEP}" "${HIGH_2_STEP}")
+PAIR_LOW_STEPS=("${LOW_1_STEP}" "${LOW_1_STEP}" "${LOW_2_STEP}" "${LOW_2_STEP}")
+
+for i in "${!PAIR_NAMES[@]}"; do
+  run_pair "${PAIR_NAMES[$i]}" "${PAIR_HIGH_STEPS[$i]}" "${PAIR_LOW_STEPS[$i]}"
+done
+
+echo "================ Done. All pair artifacts under ${XMIX_ROOT} ================"

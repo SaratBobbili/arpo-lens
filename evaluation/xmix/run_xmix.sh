@@ -34,15 +34,79 @@ BING_LOCATION="${BING_LOCATION:-us}"
 BASE_RUN="${BASE_RUN:-echo3BInstruct}"
 CKPT_ROOT="${CKPT_ROOT:-/scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ECHO/checkpoint_snapshots/${BASE_RUN}}"
 
-# Four hardcoded pair combinations are evaluated:
-#   pair1: high_1 x low_1
-#   pair2: high_2 x low_1
-#   pair3: high_1 x low_2
-#   pair4: high_2 x low_2
-LOW_1_STEP="${LOW_1_STEP:-${CAND1_STEP:-15}}"
-LOW_2_STEP="${LOW_2_STEP:-${CAND1_STEP:-15}}"
-HIGH_1_STEP="${HIGH_1_STEP:-${CAND2_STEP:-40}}"
-HIGH_2_STEP="${HIGH_2_STEP:-${CAND2_STEP:-40}}"
+require_set() {
+  local name="$1"
+  if [[ -z "${!name:-}" ]]; then
+    echo "ERROR: Missing required variable: ${name}" >&2
+    exit 1
+  fi
+}
+
+require_float() {
+  local name="$1"
+  local value="${!name}"
+  if [[ ! "${value}" =~ ^-?[0-9]+([.][0-9]+)?([eE][-+]?[0-9]+)?$ ]]; then
+    echo "ERROR: ${name} must be numeric, got: ${value}" >&2
+    exit 1
+  fi
+}
+
+# Define two low checkpoints and two high checkpoints with kl_loss, then order
+# each pair so *_2 is always the higher-kl_loss member.
+LOW_A_STEP="${LOW_A_STEP:-}"
+LOW_A_KL_LOSS="${LOW_A_KL_LOSS:-}"
+LOW_B_STEP="${LOW_B_STEP:-}"
+LOW_B_KL_LOSS="${LOW_B_KL_LOSS:-}"
+
+HIGH_A_STEP="${HIGH_A_STEP:-}"
+HIGH_A_KL_LOSS="${HIGH_A_KL_LOSS:-}"
+HIGH_B_STEP="${HIGH_B_STEP:-}"
+HIGH_B_KL_LOSS="${HIGH_B_KL_LOSS:-}"
+
+for required_var in LOW_A_STEP LOW_A_KL_LOSS LOW_B_STEP LOW_B_KL_LOSS HIGH_A_STEP HIGH_A_KL_LOSS HIGH_B_STEP HIGH_B_KL_LOSS; do
+  require_set "${required_var}"
+done
+for kl_var in LOW_A_KL_LOSS LOW_B_KL_LOSS HIGH_A_KL_LOSS HIGH_B_KL_LOSS; do
+  require_float "${kl_var}"
+done
+
+if awk "BEGIN{exit !(${LOW_A_KL_LOSS} == ${LOW_B_KL_LOSS})}"; then
+  echo "ERROR: low pair kl_loss values must be strictly ordered, got equal values ${LOW_A_KL_LOSS}" >&2
+  exit 1
+fi
+if awk "BEGIN{exit !(${HIGH_A_KL_LOSS} == ${HIGH_B_KL_LOSS})}"; then
+  echo "ERROR: high pair kl_loss values must be strictly ordered, got equal values ${HIGH_A_KL_LOSS}" >&2
+  exit 1
+fi
+
+if awk "BEGIN{exit !(${LOW_A_KL_LOSS} < ${LOW_B_KL_LOSS})}"; then
+  LOW_1_STEP="${LOW_A_STEP}"
+  LOW_1_KL_LOSS="${LOW_A_KL_LOSS}"
+  LOW_2_STEP="${LOW_B_STEP}"
+  LOW_2_KL_LOSS="${LOW_B_KL_LOSS}"
+else
+  LOW_1_STEP="${LOW_B_STEP}"
+  LOW_1_KL_LOSS="${LOW_B_KL_LOSS}"
+  LOW_2_STEP="${LOW_A_STEP}"
+  LOW_2_KL_LOSS="${LOW_A_KL_LOSS}"
+fi
+
+if awk "BEGIN{exit !(${HIGH_A_KL_LOSS} < ${HIGH_B_KL_LOSS})}"; then
+  HIGH_1_STEP="${HIGH_A_STEP}"
+  HIGH_1_KL_LOSS="${HIGH_A_KL_LOSS}"
+  HIGH_2_STEP="${HIGH_B_STEP}"
+  HIGH_2_KL_LOSS="${HIGH_B_KL_LOSS}"
+else
+  HIGH_1_STEP="${HIGH_B_STEP}"
+  HIGH_1_KL_LOSS="${HIGH_B_KL_LOSS}"
+  HIGH_2_STEP="${HIGH_A_STEP}"
+  HIGH_2_KL_LOSS="${HIGH_A_KL_LOSS}"
+fi
+
+echo "[kl_loss] low input:  A(step=${LOW_A_STEP}, kl_loss=${LOW_A_KL_LOSS})  B(step=${LOW_B_STEP}, kl_loss=${LOW_B_KL_LOSS})"
+echo "[kl_loss] high input: A(step=${HIGH_A_STEP}, kl_loss=${HIGH_A_KL_LOSS})  B(step=${HIGH_B_STEP}, kl_loss=${HIGH_B_KL_LOSS})"
+echo "[kl_loss] low ordered:  low_1(step=${LOW_1_STEP}, kl_loss=${LOW_1_KL_LOSS})  low_2(step=${LOW_2_STEP}, kl_loss=${LOW_2_KL_LOSS})"
+echo "[kl_loss] high ordered: high_1(step=${HIGH_1_STEP}, kl_loss=${HIGH_1_KL_LOSS})  high_2(step=${HIGH_2_STEP}, kl_loss=${HIGH_2_KL_LOSS})"
 
 # Per-experiment shared output root; each pair gets its own subfolder.
 XMIX_ROOT_DEFAULT="${EVAL_DIR}/xmix_runs"
@@ -134,16 +198,24 @@ base_run: "${BASE_RUN}"
 pairs:
   pair1:
     high_step: "${HIGH_1_STEP}"
+    high_kl_loss: ${HIGH_1_KL_LOSS}
     low_step: "${LOW_1_STEP}"
+    low_kl_loss: ${LOW_1_KL_LOSS}
   pair2:
     high_step: "${HIGH_2_STEP}"
+    high_kl_loss: ${HIGH_2_KL_LOSS}
     low_step: "${LOW_1_STEP}"
+    low_kl_loss: ${LOW_1_KL_LOSS}
   pair3:
     high_step: "${HIGH_1_STEP}"
+    high_kl_loss: ${HIGH_1_KL_LOSS}
     low_step: "${LOW_2_STEP}"
+    low_kl_loss: ${LOW_2_KL_LOSS}
   pair4:
     high_step: "${HIGH_2_STEP}"
+    high_kl_loss: ${HIGH_2_KL_LOSS}
     low_step: "${LOW_2_STEP}"
+    low_kl_loss: ${LOW_2_KL_LOSS}
 infer:
   mode: "${INFER_MODE}"
   prompt_type: "${PROMPT_TYPE}"
@@ -302,6 +374,8 @@ run_pair() {
   local pair_name="$1"
   local high_step="$2"
   local low_step="$3"
+  local high_kl_loss="$4"
+  local low_kl_loss="$5"
 
   local pair_root="${XMIX_ROOT}/${pair_name}"
   local high_hf="${CKPT_ROOT}/global_step_${high_step}/hf"
@@ -313,9 +387,13 @@ run_pair() {
   local MIX_OUT="${pair_root}/mix"
   LOG_DIR="${pair_root}/logs"
   local SUMMARY_PATH="${pair_root}/summary.json"
+  local EXPORT_DIR="${XMIX_ROOT}/per_example_metrics"
+  local MIX_METRICS_EXPORT="${EXPORT_DIR}/${pair_name}.json"
+  local MIX_REWARDS_EXPORT="${EXPORT_DIR}/${pair_name}_rewards.json"
   SEARCH_CACHE_FILE="${pair_root}/search_cache.db"
   URL_CACHE_FILE="${pair_root}/search_url_cache.db"
   mkdir -p "${HIGH_OUT}" "${LOW_OUT}" "${MIX_DATA}" "${MIX_OUT}" "${LOG_DIR}"
+  mkdir -p "${EXPORT_DIR}"
   chmod -R u+rw "${pair_root}" 2>/dev/null || true
 
   for hf_dir in "${high_hf}" "${low_hf}"; do
@@ -331,9 +409,11 @@ pair_name: "${pair_name}"
 base_run: "${BASE_RUN}"
 high:
   step: "${high_step}"
+  kl_loss: ${high_kl_loss}
   hf_path: "${high_hf}"
 low:
   step: "${low_step}"
+  kl_loss: ${low_kl_loss}
   hf_path: "${low_hf}"
 EOF
 
@@ -441,15 +521,22 @@ with open(out_path, "w") as f:
 print(f"Wrote summary: {out_path}")
 PY
 
+  cp "${MIX_OUT}/${DATASET_GROUP}/${DATASET_GROUP}_output_1_metrics.json" "${MIX_METRICS_EXPORT}"
+  cp "${MIX_OUT}/${DATASET_GROUP}/${DATASET_GROUP}_output_1_rewards.json" "${MIX_REWARDS_EXPORT}"
+  echo "[export] per-example metrics -> ${MIX_METRICS_EXPORT}"
+  echo "[export] per-example rewards -> ${MIX_REWARDS_EXPORT}"
+
   echo "================ [${pair_name}] Done. Artifacts under ${pair_root} ================"
 }
 
-PAIR_NAMES=("pair1_h1_l1" "pair2_h2_l1" "pair3_h1_l2" "pair4_h2_l2")
-PAIR_HIGH_STEPS=("${HIGH_1_STEP}" "${HIGH_2_STEP}" "${HIGH_1_STEP}" "${HIGH_2_STEP}")
-PAIR_LOW_STEPS=("${LOW_1_STEP}" "${LOW_1_STEP}" "${LOW_2_STEP}" "${LOW_2_STEP}")
+PAIR_NAMES=("HIGH_A_LOW_B" "HIGH_B_LOW_A" "HIGH_A_LOW_A" "HIGH_B_LOW_B")
+PAIR_HIGH_STEPS=("${HIGH_A_STEP}" "${HIGH_B_STEP}" "${HIGH_A_STEP}" "${HIGH_B_STEP}")
+PAIR_LOW_STEPS=("${LOW_B_STEP}" "${LOW_A_STEP}" "${LOW_A_STEP}" "${LOW_B_STEP}")
+PAIR_HIGH_KLS=("${HIGH_A_KL_LOSS}" "${HIGH_B_KL_LOSS}" "${HIGH_A_KL_LOSS}" "${HIGH_B_KL_LOSS}")
+PAIR_LOW_KLS=("${LOW_B_KL_LOSS}" "${LOW_A_KL_LOSS}" "${LOW_A_KL_LOSS}" "${LOW_B_KL_LOSS}")
 
 for i in "${!PAIR_NAMES[@]}"; do
-  run_pair "${PAIR_NAMES[$i]}" "${PAIR_HIGH_STEPS[$i]}" "${PAIR_LOW_STEPS[$i]}"
+  run_pair "${PAIR_NAMES[$i]}" "${PAIR_HIGH_STEPS[$i]}" "${PAIR_LOW_STEPS[$i]}" "${PAIR_HIGH_KLS[$i]}" "${PAIR_LOW_KLS[$i]}"
 done
 
 echo "================ Done. All pair artifacts under ${XMIX_ROOT} ================"

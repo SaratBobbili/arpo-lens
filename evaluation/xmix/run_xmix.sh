@@ -55,14 +55,13 @@ require_float() {
 TRAIN_CHECKPOINT_DIR="/scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ECHO/checkpoints/echo3B-rerun-entropy-hybrid-coeff-0-penalty-0.1"
 KL_PICK_JSON="${EVAL_DIR}/xmix_runs/${BASE_RUN}/kl_picker.json"
 mkdir -p "$(dirname "${KL_PICK_JSON}")"
+KL_PICK_KV="$(python -u "${SCRIPT_DIR}/select_checkpoints_by_kl.py" \
+  --ckpt_root "${CKPT_ROOT}" \
+  --train_checkpoint_dir "${TRAIN_CHECKPOINT_DIR}" \
+  --out_json "${KL_PICK_JSON}")"
 while IFS='=' read -r key value; do
   export "${key}=${value}"
-done < <(
-  python -u "${SCRIPT_DIR}/select_checkpoints_by_kl.py" \
-    --ckpt_root "${CKPT_ROOT}" \
-    --train_checkpoint_dir "${TRAIN_CHECKPOINT_DIR}" \
-    --out_json "${KL_PICK_JSON}"
-)
+done <<< "${KL_PICK_KV}"
 
 for required_var in LOW_A_STEP LOW_A_KL_LOSS LOW_B_STEP LOW_B_KL_LOSS HIGH_A_STEP HIGH_A_KL_LOSS HIGH_B_STEP HIGH_B_KL_LOSS; do
   require_set "${required_var}"

@@ -44,16 +44,17 @@ def main():
     parser.add_argument("--out_json", default="")
     args = parser.parse_args()
 
-    output_logs = sorted(
-        glob.glob(os.path.join(args.train_checkpoint_dir, "wandb", "run-*", "files", "output.log"))
-    )
+    output_logs = sorted(glob.glob(os.path.join(args.train_checkpoint_dir, "wandb", "run-*", "files", "output.log")))
     if not output_logs:
         raise ValueError(f"Missing wandb output.log under: {args.train_checkpoint_dir}/wandb/run-*/files/output.log")
-    output_log = output_logs[-1]
-    if not os.path.isfile(output_log):
-        raise ValueError(f"Missing wandb output.log: {output_log}")
-
-    high_kl_by_step, low_kl_by_step = _parse_wandb_output_log(output_log)
+    high_kl_by_step = {}
+    low_kl_by_step = {}
+    for output_log in output_logs:
+        high_part, low_part = _parse_wandb_output_log(output_log)
+        if len(high_part) > len(high_kl_by_step):
+            high_kl_by_step = high_part
+        if len(low_part) > len(low_kl_by_step):
+            low_kl_by_step = low_part
     steps = _snapshot_steps(args.ckpt_root)
     if len(steps) < 2:
         raise ValueError(f"Need at least 2 snapshot checkpoints in {args.ckpt_root}, found {len(steps)}")

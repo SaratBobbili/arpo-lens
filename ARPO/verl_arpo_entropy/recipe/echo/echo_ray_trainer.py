@@ -230,6 +230,34 @@ class RayECHOTrainer(RayPPOTrainer):
         reward_tensor[torch.arange(reward_tensor.size(0), device=reward_tensor.device), last_idx] = per_sample
         return reward_tensor, metrics
 
+    def _echo_rollout_tools_cfg(self):
+        return self.config.actor_rollout_ref.rollout.tools
+
+    def _apply_tool_failure_phase_masks(self, phase_batch: DataProto, phase_mask_key: str) -> None:
+        if not bool(self._echo_rollout_tools_cfg().get("skip_training_on_tool_failure", False)):
+            return
+        flags = phase_batch.non_tensor_batch.get("tool_rollout_failed")
+        if flags is None or not np.any(flags):
+            return
+        dev = phase_batch.batch[phase_mask_key].device
+        keep = (~torch.tensor(flags.astype(np.bool_), device=dev)).float().unsqueeze(-1)
+        phase_batch.batch[phase_mask_key] = phase_batch.batch[phase_mask_key] * keep
+
+    def _apply_tool_failure_before_grpo(self, phase_batch: DataProto) -> None:
+        if not bool(self._echo_rollout_tools_cfg().get("skip_training_on_tool_failure", False)):
+            return
+        flags = phase_batch.non_tensor_batch.get("tool_rollout_failed")
+        if flags is None or not np.any(flags):
+            return
+        dev = phase_batch.batch["token_level_rewards"].device
+        failed = torch.tensor(flags.astype(np.bool_), device=dev)
+        phase_batch.batch["token_level_rewards"][failed] = 0
+        phase_batch.batch["token_level_scores"][failed] = 0
+        uids = phase_batch.non_tensor_batch["uid"].copy()
+        for i in np.flatnonzero(flags):
+            uids[i] = str(uuid.uuid4())
+        phase_batch.non_tensor_batch["uid"] = uids
+
     def fit(self):
         """
         The training loop of PPO.
@@ -407,6 +435,8 @@ class RayECHOTrainer(RayPPOTrainer):
                             self._balance_batch(phase_batch, metrics=phase_balance_metrics)
                             metrics.update(self._prefix_metrics(phase_balance_metrics, phase_prefix))
 
+                        self._apply_tool_failure_phase_masks(phase_batch, phase_mask_key)
+
                         phase_batch.meta_info["global_token_num"] = torch.sum(phase_batch.batch["attention_mask"], dim=-1).tolist()
 
                         with _timer(f"{phase_name}_reward", timing_raw):
@@ -564,6 +594,8 @@ class RayECHOTrainer(RayPPOTrainer):
                                 metrics.update(self._prefix_metrics(kl_metrics, phase_prefix))
                             else:
                                 phase_batch.batch["token_level_rewards"] = phase_batch.batch["token_level_scores"]
+
+                            self._apply_tool_failure_before_grpo(phase_batch)
 
                             # Both strategies emit a sparse scalar at the last valid response
                             # token, so GRPO's sum(dim=-1) directly recovers the per-sample

@@ -105,6 +105,7 @@ class vLLMRolloutECHO(vLLMRollout):
         self.tool_timeout = tools_config.get("timeout", 120)
         self.tool_retry_count = tools_config.get("retry_count", 3)
         self.tool_verbose_logging = tools_config.get("verbose_logging", False)
+        self.skip_training_on_tool_failure = bool(tools_config.get("skip_training_on_tool_failure", False))
 
         mask_cat_cfg = OmegaConf.to_container(self.config.get("mask_categories", OmegaConf.create({})), resolve=True)
         self.mask_categories = {k: mask_cat_cfg.get(k, v) for k, v in _DEFAULT_MASK_CATEGORIES.items()}
@@ -364,6 +365,7 @@ class vLLMRolloutECHO(vLLMRollout):
             sample_to_indices = {
                 i: [i * num_samples + j for j in range(num_samples)] for i in range(batch_size)
             }
+            rollout_tool_failed = [False] * len(curr_inputs) if self.skip_training_on_tool_failure else None
 
             max_len = self.config.response_length
 
@@ -445,6 +447,8 @@ class vLLMRolloutECHO(vLLMRollout):
                                 success_per_tool[tag] += 1
                             else:
                                 tool_metrics["tools/failed_calls"] += 1
+                                if rollout_tool_failed is not None:
+                                    rollout_tool_failed[idx] = True
                                 result_text = f"Tool({tag}) returned empty output."
 
                             tool_metrics["tools/total_execution_time"] += execution_time
@@ -462,6 +466,8 @@ class vLLMRolloutECHO(vLLMRollout):
                             logger.error(f"Tool({tag}) execution failed for sample {idx}: {e}")
                             result_text = f"Error: Tool({tag}) execution failed with message: {e}"
                             tool_metrics["tools/failed_calls"] += 1
+                            if rollout_tool_failed is not None:
+                                rollout_tool_failed[idx] = True
 
                         formatted_result = f" <result>\n{result_text}\n</result>"
                         result_tokens = self.tokenizer.encode(formatted_result)
@@ -571,6 +577,12 @@ class vLLMRolloutECHO(vLLMRollout):
                             non_tensor_batch[key] = np.repeat(value, num_samples, axis=0)
                         elif isinstance(value, list):
                             non_tensor_batch[key] = [item for item in value for _ in range(num_samples)]
+
+            if rollout_tool_failed is not None:
+                non_tensor_batch["tool_rollout_failed"] = np.array(
+                    [rollout_tool_failed[idx] for i in range(batch_size) for idx in sample_to_indices[i]],
+                    dtype=np.bool_,
+                )
 
             final_batch_size = input_ids.size(0)
             seq = torch.cat([input_ids, response], dim=-1)

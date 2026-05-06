@@ -177,6 +177,10 @@ actor_rollout_ref:
       max_workers: 64       # thread pool size for concurrent tool execution
       timeout: 120          # per-call timeout in seconds
       retry_count: 3        # retries on tool failure
+      # Reduce live API failures (cache + timeouts): set tool_instances.search.params.cache_file,
+      # tool_instances.search.params.request_timeout, and override tools.retry_count / tools.timeout from the launch script as needed.
+      # When true, rollouts where any tool exhausted retries emit tool_rollout_failed; ECHO zeros phase masks/rewards and isolates uid so GRPO skips them.
+      skip_training_on_tool_failure: false
       verbose_logging: false
       fail_on_error: false
       tool_instances:

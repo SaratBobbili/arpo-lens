@@ -1,10 +1,9 @@
-"""Convergence comparison between ECHO and ARPO from local W&B `.wandb` files.
+"""Convergence comparison across algorithms from local W&B `.wandb` files.
 
 Reads the LevelDB log records inside each run directory's `run-*.wandb` (no W&B
-cloud needed), pulls a single scalar history (`val-aux/DR_grpo_mix/f1_score/mean@1`
-by default), merges resumed runs per experiment (last writer wins per step),
-truncates to the shorter run, and renders a paper-ready PNG/PDF showing ECHO
-reaching ARPO's final-band performance much earlier.
+cloud needed), pulls a single scalar history, merges resumed runs per experiment
+(last writer wins per step), truncates to the shortest run, and renders a
+paper-ready PNG/PDF/CSV.
 
 Edit the CONFIG block below and run:
     python -m recipe.echo.plot_convergence
@@ -26,44 +25,40 @@ from wandb.proto import wandb_internal_pb2 as pb
 from wandb.sdk.internal import datastore
 
 # =============================================================================
-# CONFIG
+# CONFIG — edit this block for each model-size run
 # =============================================================================
 
-RUNS = [
-    {
+MODEL_SIZE = "3B"
+
+# Per-algorithm config: wandb checkpoint dir + step-0 metric value (hardcoded).
+ALGORITHMS = {
+    "ECHO": {
         "label": "ECHO (ours)",
         "color": "#1f77b4",
         "wandb_dir": Path(
             "/scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ECHO/"
             "checkpoints/echo3B-rerun-entropy-coeff-0-penalty-0.1/wandb"
         ),
-        "step0_metrics": Path(
-            "/scratch/user/saratb_tamu.edu/research/arpo-lens/evaluation/outputs/"
-            "hf_math_4qa/LLM_as_judge/echo_search/Qwen2.5-3B-Instruct-maxentRL-r2/"
-            "global_step_80/grpo_mix_T0.6_K1_mt4096_to900/grpo_mix/"
-            "grpo_mix_output_1_metrics_overall.json"
-        ),
+        "step0_value": None,  # TODO: set float, e.g. 0.352
     },
-    {
+    "ARPO": {
         "label": "ARPO",
         "color": "#888888",
         "wandb_dir": Path(
             "/scratch/user/saratb_tamu.edu/research/arpo-lens/"
             "ARPO/checkpoints/arpo/wandb"
         ),
-        "step0_metrics": Path(
-            "/scratch/user/saratb_tamu.edu/research/arpo-lens/evaluation/outputs/"
-            "hf_math_4qa/LLM_as_judge/arpo/Qwen2.5-3B-ARPO/Qwen2.5-3B-ARPO/"
-            "grpo_mix_T0.6_K1_mt4096_to900/grpo_mix/"
-            "grpo_mix_output_1_metrics_overall.json"
-        ),
+        "step0_value": None,  # TODO: set float, e.g. 0.341
     },
-]
+}
+
+# Which algorithms to include in the plot (must be keys of ALGORITHMS above).
+ACTIVE_ALGORITHMS = ["ECHO", "ARPO"]
+
 METRIC = "val-aux/DR_grpo_mix/f1_score/mean@1"
 STEP_KEY = "training/global_step"
-STEP0_METRIC_KEY = "f1"
 OUTPUT_DIR = Path(__file__).resolve().parent / "convergence_plot"
-OUTPUT_STEM = "echo_vs_arpo_f1_convergence"
+OUTPUT_STEM = f"convergence_{MODEL_SIZE}_f1"
 
 # =============================================================================
 # Wandb DataStore loader (monkey-patched to open the .wandb file read-only)
@@ -126,9 +121,11 @@ def collect_experiment(wandb_dir: Path, metric: str, step_key: str) -> dict[int,
 
 def main() -> None:
     series = []
-    for cfg in RUNS:
+    for key in ACTIVE_ALGORITHMS:
+        cfg = ALGORITHMS[key]
         h = collect_experiment(cfg["wandb_dir"], METRIC, STEP_KEY)
-        h[0] = json.loads(cfg["step0_metrics"].read_text())[STEP0_METRIC_KEY]
+        if cfg["step0_value"] is not None:
+            h[0] = cfg["step0_value"]
         steps = np.array(sorted(h))
         values = np.array([h[s] for s in steps])
         series.append({**cfg, "steps": steps, "values": values})
@@ -164,8 +161,8 @@ def main() -> None:
         print(f"ECHO peaks at f1={echo_max:.3f}; ARPO first reaches 0.95 of peak at step {first_step_arpo} vs ECHO step {first_step_echo}")
 
     ax.set_xlabel("Training step")
-    ax.set_ylabel("f1-score (mean@1)")
-    ax.set_title("training convergence")
+    ax.set_ylabel("F1-score (mean@1)")
+    ax.set_title("Training convergence")
     ax.grid(True, alpha=0.3)
     ax.legend(loc="lower right", frameon=True)
     ax.set_xlim(left=0, right=cutoff + 1)

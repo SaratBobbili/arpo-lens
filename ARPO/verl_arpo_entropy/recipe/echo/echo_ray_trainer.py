@@ -138,6 +138,66 @@ class RayECHOTrainer(RayPPOTrainer):
 
         return metrics
 
+    @staticmethod
+    def _copy_tool_metrics_between_phases(metrics: dict, source_phase: str, target_phase: str) -> None:
+        source_prefix = f"{source_phase}/tools/"
+        target_prefix = f"{target_phase}/tools/"
+        for key, value in list(metrics.items()):
+            if key.startswith(source_prefix):
+                metrics[f"{target_prefix}{key[len(source_prefix):]}"] = value
+
+    def _collect_logging_only_phase_metrics(
+        self,
+        source_batch: DataProto,
+        target_phase_name: str,
+        target_phase_mask_key: str,
+    ) -> dict:
+        """Compute phase metrics without actor/critic updates or extra rollouts."""
+        phase_prefix = f"{target_phase_name}/"
+        phase_reward_cfg = self._phase_reward_cfg(target_phase_name)
+        phase_strategy = phase_reward_cfg.strategy
+        phase_metrics: dict = {}
+
+        phase_batch = deepcopy(source_batch)
+        if phase_batch.meta_info is None:
+            phase_batch.meta_info = {}
+        phase_batch.meta_info["phase"] = target_phase_name
+        phase_batch.batch["loss_mask"] = phase_batch.batch[target_phase_mask_key]
+        phase_batch.batch["response_mask"] = phase_batch.batch[target_phase_mask_key]
+
+        if phase_strategy in ("scorer", "maxentropy_rl"):
+            _, reward_extra_infos_dict = compute_reward(phase_batch, self.reward_fn)
+            phase_metrics.update(
+                self._prefix_metrics(
+                    self._build_scorer_metrics(reward_extra_infos_dict),
+                    phase_prefix,
+                )
+            )
+
+        if phase_strategy in ("entropy", "entropy-hybrid"):
+            phase_batch.meta_info["calculate_entropy"] = True
+            old_log_prob = self.actor_rollout_wg.compute_log_prob(phase_batch)
+            entropys = old_log_prob.batch.get("entropys")
+            if entropys is None:
+                raise RuntimeError(
+                    f"{target_phase_name} logging-only entropy metrics require entropys from compute_log_prob."
+                )
+            phase_mask_f = phase_batch.batch[target_phase_mask_key].to(torch.float32)
+            entropy_mask_f = phase_mask_f
+            if phase_strategy == "entropy-hybrid":
+                entropy_mask_f = entropy_mask_f * phase_batch.batch["select_loss_mask"].to(torch.float32)
+            entropy_mask_f = entropy_mask_f * phase_batch.batch["non_border_loss_mask"].to(torch.float32)
+            _, entropy_metrics = self._build_entropy_scalar_reward(
+                entropys=entropys,
+                phase_batch=phase_batch,
+                phase_mask_key=target_phase_mask_key,
+                entropy_cfg=phase_reward_cfg.entropy,
+                entropy_mask=entropy_mask_f,
+            )
+            phase_metrics.update(self._prefix_metrics(entropy_metrics, phase_prefix))
+
+        return phase_metrics
+
     def _build_entropy_scalar_reward(self, entropys: torch.Tensor, phase_batch: DataProto, phase_mask_key: str, entropy_cfg, entropy_mask: torch.Tensor):
         """Sparse entropy reward shaped like the scorer's output.
 
@@ -668,6 +728,28 @@ class RayECHOTrainer(RayPPOTrainer):
                         last_phase_batch = phase_batch
 
                     batch = last_phase_batch
+
+                    # When one phase consumes the whole rollout budget, keep logging
+                    # for the zero-budget phase by re-scoring the same rollouts
+                    # under that phase's reward semantics. No extra rollouts or
+                    # actor/critic updates are run for the zero-budget phase.
+                    if bool(self.config.trainer.get("log_zero_budget_phase_metrics", True)) and len(phase_specs) == 1:
+                        active_phase_name = phase_specs[0][0]
+                        for skipped_phase_name, (skipped_budget, skipped_mask_key) in phase_registry.items():
+                            if skipped_budget != 0:
+                                continue
+                            metrics.update(
+                                self._collect_logging_only_phase_metrics(
+                                    source_batch=last_phase_batch,
+                                    target_phase_name=skipped_phase_name,
+                                    target_phase_mask_key=skipped_mask_key,
+                                )
+                            )
+                            self._copy_tool_metrics_between_phases(
+                                metrics=metrics,
+                                source_phase=active_phase_name,
+                                target_phase=skipped_phase_name,
+                            )
 
                     # validate
                     if self.val_reward_fn is not None and self.config.trainer.test_freq > 0 and (is_last_step or self.global_steps % self.config.trainer.test_freq == 0):

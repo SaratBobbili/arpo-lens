@@ -201,3 +201,6 @@ actor_rollout_ref:
 trainer:
   # Group experiments under a recipe-specific default project.
   project_name: verl-echo
+  # If one phase budget is zero, still compute that phase's logging metrics
+  # from the other phase's rollouts (no extra rollout generation, no updates).
+  log_zero_budget_phase_metrics: true

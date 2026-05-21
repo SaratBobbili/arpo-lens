@@ -46,7 +46,7 @@ ARGS=(
     algorithm.norm_adv_by_std_in_grpo=False
     data.train_files="${TRAIN_FILES}"
     data.val_files="${VALID_FILES}"
-    data.prompt_key=prompt
+    data.prompt_key="${PROMPT_KEY}"
     data.train_batch_size="${TRAIN_BATCH_SIZE}"
     data.max_prompt_length="${MAX_PROMPT_LENGTH}"
     data.max_response_length="${MAX_RESPONSE_LENGTH}"
@@ -64,12 +64,13 @@ ARGS=(
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=False
     "actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=$((4*(MAX_PROMPT_LENGTH+MAX_RESPONSE_LENGTH)))"
     actor_rollout_ref.rollout.tensor_model_parallel_size="${TENSOR_MODEL_PARALLEL_SIZE}"
-    actor_rollout_ref.rollout.name=vllm
-    actor_rollout_ref.rollout.mode=sync_echo
+    actor_rollout_ref.rollout.name="${ROLLOUT_NAME}"
+    actor_rollout_ref.rollout.mode="${ROLLOUT_MODE}"
     actor_rollout_ref.rollout.gpu_memory_utilization="${GPU_MEMORY_UTILIZATION}"
     actor_rollout_ref.rollout.n="${ROLLOUT_N}"
     actor_rollout_ref.rollout.high_level_budget="${HIGH_LEVEL_BUDGET}"
     actor_rollout_ref.rollout.multi_turn.enable="${ENABLE_MULTI_TURN}"
+    actor_rollout_ref.rollout.tools.call_limit="${TOOL_CALL_LIMIT}"
     actor_rollout_ref.rollout.tools.tool_instances.python.params.conda_path="${CONDA_PATH}"
     actor_rollout_ref.rollout.tools.tool_instances.python.params.conda_env="${CONDA_ENV}"
     actor_rollout_ref.rollout.tools.tool_instances.search.params.cache_file="${SEARCH_CACHE_PATH}"
@@ -78,9 +79,24 @@ ARGS=(
     actor_rollout_ref.rollout.tools.tool_instances.search.params.location="${BRIGHTDATA_LOCATION}"
     actor_rollout_ref.rollout.tools.tool_instances.search.params.request_timeout="${BRIGHTDATA_TIMEOUT}"
     actor_rollout_ref.rollout.tools.tool_instances.search.class_path="${SEARCH_CLASS_PATH}"
+    actor_rollout_ref.rollout.mask_categories.first_select="${MASK_FIRST_SELECT}"
+    actor_rollout_ref.rollout.mask_categories.select="${MASK_SELECT}"
+    actor_rollout_ref.rollout.mask_categories.think="${MASK_THINK}"
+    actor_rollout_ref.rollout.mask_categories.answer="${MASK_ANSWER}"
+    actor_rollout_ref.rollout.mask_categories.search="${MASK_SEARCH}"
+    actor_rollout_ref.rollout.mask_categories.python="${MASK_PYTHON}"
     "actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=$((4*(MAX_PROMPT_LENGTH+MAX_RESPONSE_LENGTH)))"
     actor_rollout_ref.ref.fsdp_config.param_offload=True
-    reward_model.reward_manager=echo
+    reward_model.reward_manager="${REWARD_MANAGER}"
+    "reward_model.phase_order=${PHASE_ORDER}"
+    "reward_model.phase_rewards.high_level.strategy=${HIGH_LEVEL_REWARD_STRATEGY}"
+    "reward_model.phase_rewards.low_level.strategy=${LOW_LEVEL_REWARD_STRATEGY}"
+    "reward_model.phase_rewards.low_level.entropy.reg_coeff=${LL_ENTROPY_REG_COEFF}"
+    "reward_model.phase_rewards.low_level.entropy.reduction=${LL_ENTROPY_REDUCTION}"
+    "reward_model.phase_rewards.low_level.entropy.scale=${LL_ENTROPY_SCALE}"
+    "reward_model.phase_rewards.low_level.entropy.normalize=${LL_ENTROPY_NORMALIZE}"
+    "reward_model.phase_rewards.low_level.entropy.format_gate=${LL_FORMAT_GATE}"
+    "reward_model.phase_rewards.low_level.entropy.bad_format_penalty=${LL_BAD_FORMAT_PENALTY}"
     "custom_reward_function.path=${VERL_ROOT}/verl/utils/reward_score/deep_research_echo.py"
     custom_reward_function.name=compute_score
     trainer.critic_warmup=0
@@ -96,54 +112,8 @@ ARGS=(
     trainer.default_local_dir="${SAVE_PATH}"
     trainer.val_before_train=False
     trainer.rollout_data_dir="${ROLLOUT_SAVE_PATH}"
+    trainer.resume_mode="${RESUME_MODE}"
     "hydra.run.dir=${SAVE_PATH}/outputs"
-)
-
-[ "${USE_MASK_CATEGORIES}" = "true" ] && ARGS+=(
-    actor_rollout_ref.rollout.mask_categories.first_select="${MASK_FIRST_SELECT}"
-    actor_rollout_ref.rollout.mask_categories.select="${MASK_SELECT}"
-    actor_rollout_ref.rollout.mask_categories.think="${MASK_THINK}"
-    actor_rollout_ref.rollout.mask_categories.answer="${MASK_ANSWER}"
-    actor_rollout_ref.rollout.mask_categories.search="${MASK_SEARCH}"
-    actor_rollout_ref.rollout.mask_categories.python="${MASK_PYTHON}"
-)
-
-[ -n "${PHASE_ORDER}" ] && ARGS+=(
-    "reward_model.phase_order=${PHASE_ORDER}"
-    "reward_model.phase_rewards.high_level.strategy=${HIGH_LEVEL_REWARD_STRATEGY}"
-)
-
-[ "${USE_LL_REWARD}" = "true" ] && ARGS+=(
-    "reward_model.phase_rewards.low_level.strategy=${LOW_LEVEL_REWARD_STRATEGY}"
-)
-
-[ "${USE_HL_MAXENT}" = "true" ] && ARGS+=(
-    "reward_model.phase_rewards.high_level.max_entropy.alpha=${MAX_ENTROPY_ALPHA}"
-)
-
-[ "${USE_LL_ENTROPY_PARAMS}" = "true" ] && ARGS+=(
-    "reward_model.phase_rewards.low_level.entropy.reg_coeff=${LL_ENTROPY_REG_COEFF}"
-    "reward_model.phase_rewards.low_level.entropy.reduction=${LL_ENTROPY_REDUCTION}"
-    "reward_model.phase_rewards.low_level.entropy.scale=${LL_ENTROPY_SCALE}"
-    "reward_model.phase_rewards.low_level.entropy.normalize=${LL_ENTROPY_NORMALIZE}"
-    "reward_model.phase_rewards.low_level.entropy.format_gate=${LL_FORMAT_GATE}"
-    "reward_model.phase_rewards.low_level.entropy.bad_format_penalty=${LL_BAD_FORMAT_PENALTY}"
-)
-
-[ "${USE_RAG}" = "true" ] && ARGS+=(
-    "+actor_rollout_ref.rollout.tools.tool_instances.search.params.rag_server_url=${RAG_SERVER_URL}"
-    "+actor_rollout_ref.rollout.tools.tool_instances.search.params.similarity_threshold=${RAG_SIMILARITY_THRESHOLD}"
-    "+actor_rollout_ref.rollout.tools.tool_instances.search.params.topk=${RAG_TOPK}"
-    "+actor_rollout_ref.rollout.tools.tool_instances.search.params.soft_fallback=${RAG_SOFT_FALLBACK}"
-    "+actor_rollout_ref.rollout.tools.tool_instances.search.params.rag_request_timeout=${RAG_REQUEST_TIMEOUT}"
-)
-
-[ -n "${TOOL_CALL_LIMIT}" ] && ARGS+=(
-    "actor_rollout_ref.rollout.tools.call_limit=${TOOL_CALL_LIMIT}"
-)
-
-[ -n "${RESUME_MODE}" ] && ARGS+=(
-    "trainer.resume_mode=${RESUME_MODE}"
 )
 
 python3 -m recipe.echo.main_echo "${ARGS[@]}" 2>&1 | tee "${SAVE_PATH}/run.log"

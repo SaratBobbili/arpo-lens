@@ -9,3 +9,4 @@ LLaMA-Factory/LLaMA-Factory-backup
 *.sbatch
 __pycache__/
 *.py[cod]
+ARPO/verl_arpo_entropy/recipe/echo/secrets.sh

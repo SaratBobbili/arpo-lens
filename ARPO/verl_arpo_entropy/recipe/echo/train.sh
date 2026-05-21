@@ -1,0 +1,149 @@
+#!/bin/bash
+# Usage: bash train.sh training_config/<config>.yaml
+set -e
+
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+VERL_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+ARPO_ROOT="$(dirname "$VERL_ROOT")"
+REPO_ROOT="$(dirname "$ARPO_ROOT")"
+cd "$VERL_ROOT"
+
+export TMPDIR=/tmp/saratb_ray
+export RAY_TMPDIR=/tmp/saratb_ray
+mkdir -p "$TMPDIR"
+
+export VERL_LOGGING_LEVEL=WARN
+export RAY_BACKEND_LOG_LEVEL=warning
+export RAY_memory_usage_threshold=0.8
+export NCCL_DEBUG=WARN
+export VLLM_USE_V1=1
+export TORCHDYNAMO_DISABLE=1
+unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES
+export PYTHONPATH="${VERL_ROOT}:$PYTHONPATH"
+
+source "${SCRIPT_DIR}/secrets.sh"
+
+# Parse YAML config — all keys are uppercased and exported as shell variables
+eval "$(python3 -c 'import yaml,sys,shlex;cfg=yaml.safe_load(open(sys.argv[1]));[print(k.upper()+"="+shlex.quote("null" if v is None else "true" if isinstance(v,bool) and v else "false" if isinstance(v,bool) else str(v))) for k,v in cfg.items()]' "${SCRIPT_DIR}/$1")"
+
+# Construct full paths from roots (defined in secrets.sh) + relative paths from config
+TRAIN_FILES="${ARPO_ROOT}/${TRAIN_FILES}"
+VALID_FILES="${ARPO_ROOT}/${VALID_FILES}"
+ACTOR_MODEL_PATH="${SFT_ROOT}/${ACTOR_MODEL_SUBPATH}"
+SEARCH_CACHE_PATH="${ARPO_ROOT}/search_cache/${SEARCH_CACHE_FILE}"
+
+SAVE_PATH="${OUTPUT_ROOT}/checkpoints/${EXPERIMENT_NAME}"
+ROLLOUT_SAVE_PATH="${SAVE_PATH}/rollout"
+mkdir -p "${SAVE_PATH}" "${ROLLOUT_SAVE_PATH}"
+wandb login --relogin "${WANDB_API_KEY}"
+export WANDB_DIR="${SAVE_PATH}"
+
+ARGS=(
+    --config-path="${SCRIPT_DIR}/config"
+    --config-name=echo_trainer
+    algorithm.adv_estimator=grpo
+    algorithm.kl_ctrl.kl_coef=0.0
+    algorithm.norm_adv_by_std_in_grpo=False
+    data.train_files="${TRAIN_FILES}"
+    data.val_files="${VALID_FILES}"
+    data.prompt_key=prompt
+    data.train_batch_size="${TRAIN_BATCH_SIZE}"
+    data.max_prompt_length="${MAX_PROMPT_LENGTH}"
+    data.max_response_length="${MAX_RESPONSE_LENGTH}"
+    actor_rollout_ref.model.path="${ACTOR_MODEL_PATH}"
+    actor_rollout_ref.model.enable_gradient_checkpointing=True
+    actor_rollout_ref.model.use_remove_padding=True
+    actor_rollout_ref.actor.optim.lr=1e-6
+    actor_rollout_ref.actor.ppo_mini_batch_size="${PPO_MINI_BATCH_SIZE}"
+    actor_rollout_ref.actor.use_dynamic_bsz=True
+    "actor_rollout_ref.actor.ppo_max_token_len_per_gpu=$((2*(MAX_PROMPT_LENGTH+MAX_RESPONSE_LENGTH)))"
+    actor_rollout_ref.actor.use_kl_loss=True
+    actor_rollout_ref.actor.kl_loss_coef=0.0
+    actor_rollout_ref.actor.kl_loss_type=low_var_kl
+    actor_rollout_ref.actor.fsdp_config.param_offload=False
+    actor_rollout_ref.actor.fsdp_config.optimizer_offload=False
+    "actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=$((4*(MAX_PROMPT_LENGTH+MAX_RESPONSE_LENGTH)))"
+    actor_rollout_ref.rollout.tensor_model_parallel_size="${TENSOR_MODEL_PARALLEL_SIZE}"
+    actor_rollout_ref.rollout.name=vllm
+    actor_rollout_ref.rollout.mode=sync_echo
+    actor_rollout_ref.rollout.gpu_memory_utilization="${GPU_MEMORY_UTILIZATION}"
+    actor_rollout_ref.rollout.n="${ROLLOUT_N}"
+    actor_rollout_ref.rollout.high_level_budget="${HIGH_LEVEL_BUDGET}"
+    actor_rollout_ref.rollout.multi_turn.enable="${ENABLE_MULTI_TURN}"
+    actor_rollout_ref.rollout.tools.tool_instances.python.params.conda_path="${CONDA_PATH}"
+    actor_rollout_ref.rollout.tools.tool_instances.python.params.conda_env="${CONDA_ENV}"
+    actor_rollout_ref.rollout.tools.tool_instances.search.params.cache_file="${SEARCH_CACHE_PATH}"
+    actor_rollout_ref.rollout.tools.tool_instances.search.params.api_key="${BRIGHTDATA_API_KEY}"
+    actor_rollout_ref.rollout.tools.tool_instances.search.params.zone="${BRIGHTDATA_ZONE}"
+    actor_rollout_ref.rollout.tools.tool_instances.search.params.location="${BRIGHTDATA_LOCATION}"
+    actor_rollout_ref.rollout.tools.tool_instances.search.params.request_timeout="${BRIGHTDATA_TIMEOUT}"
+    actor_rollout_ref.rollout.tools.tool_instances.search.class_path="${SEARCH_CLASS_PATH}"
+    "actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=$((4*(MAX_PROMPT_LENGTH+MAX_RESPONSE_LENGTH)))"
+    actor_rollout_ref.ref.fsdp_config.param_offload=True
+    reward_model.reward_manager=echo
+    "custom_reward_function.path=${VERL_ROOT}/verl/utils/reward_score/deep_research_echo.py"
+    custom_reward_function.name=compute_score
+    trainer.critic_warmup=0
+    "trainer.logger=[console, wandb]"
+    trainer.project_name="${PROJECT_NAME}"
+    trainer.experiment_name="${EXPERIMENT_NAME}"
+    trainer.n_gpus_per_node="${N_GPUS_PER_NODE}"
+    trainer.nnodes="${NNODES}"
+    trainer.save_freq="${SAVE_FREQ}"
+    trainer.test_freq="${TEST_FREQ}"
+    trainer.max_actor_ckpt_to_keep="${MAX_ACTOR_CKPT_TO_KEEP}"
+    trainer.total_epochs="${TOTAL_EPOCHS}"
+    trainer.default_local_dir="${SAVE_PATH}"
+    trainer.val_before_train=False
+    trainer.rollout_data_dir="${ROLLOUT_SAVE_PATH}"
+    "hydra.run.dir=${SAVE_PATH}/outputs"
+)
+
+[ "${USE_MASK_CATEGORIES}" = "true" ] && ARGS+=(
+    actor_rollout_ref.rollout.mask_categories.first_select="${MASK_FIRST_SELECT}"
+    actor_rollout_ref.rollout.mask_categories.select="${MASK_SELECT}"
+    actor_rollout_ref.rollout.mask_categories.think="${MASK_THINK}"
+    actor_rollout_ref.rollout.mask_categories.answer="${MASK_ANSWER}"
+    actor_rollout_ref.rollout.mask_categories.search="${MASK_SEARCH}"
+    actor_rollout_ref.rollout.mask_categories.python="${MASK_PYTHON}"
+)
+
+[ -n "${PHASE_ORDER}" ] && ARGS+=(
+    "reward_model.phase_order=${PHASE_ORDER}"
+    "reward_model.phase_rewards.high_level.strategy=${HIGH_LEVEL_REWARD_STRATEGY}"
+)
+
+[ "${USE_LL_REWARD}" = "true" ] && ARGS+=(
+    "reward_model.phase_rewards.low_level.strategy=${LOW_LEVEL_REWARD_STRATEGY}"
+)
+
+[ "${USE_HL_MAXENT}" = "true" ] && ARGS+=(
+    "reward_model.phase_rewards.high_level.max_entropy.alpha=${MAX_ENTROPY_ALPHA}"
+)
+
+[ "${USE_LL_ENTROPY_PARAMS}" = "true" ] && ARGS+=(
+    "reward_model.phase_rewards.low_level.entropy.reg_coeff=${LL_ENTROPY_REG_COEFF}"
+    "reward_model.phase_rewards.low_level.entropy.reduction=${LL_ENTROPY_REDUCTION}"
+    "reward_model.phase_rewards.low_level.entropy.scale=${LL_ENTROPY_SCALE}"
+    "reward_model.phase_rewards.low_level.entropy.normalize=${LL_ENTROPY_NORMALIZE}"
+    "reward_model.phase_rewards.low_level.entropy.format_gate=${LL_FORMAT_GATE}"
+    "reward_model.phase_rewards.low_level.entropy.bad_format_penalty=${LL_BAD_FORMAT_PENALTY}"
+)
+
+[ "${USE_RAG}" = "true" ] && ARGS+=(
+    "+actor_rollout_ref.rollout.tools.tool_instances.search.params.rag_server_url=${RAG_SERVER_URL}"
+    "+actor_rollout_ref.rollout.tools.tool_instances.search.params.similarity_threshold=${RAG_SIMILARITY_THRESHOLD}"
+    "+actor_rollout_ref.rollout.tools.tool_instances.search.params.topk=${RAG_TOPK}"
+    "+actor_rollout_ref.rollout.tools.tool_instances.search.params.soft_fallback=${RAG_SOFT_FALLBACK}"
+    "+actor_rollout_ref.rollout.tools.tool_instances.search.params.rag_request_timeout=${RAG_REQUEST_TIMEOUT}"
+)
+
+[ -n "${TOOL_CALL_LIMIT}" ] && ARGS+=(
+    "actor_rollout_ref.rollout.tools.call_limit=${TOOL_CALL_LIMIT}"
+)
+
+[ -n "${RESUME_MODE}" ] && ARGS+=(
+    "trainer.resume_mode=${RESUME_MODE}"
+)
+
+python3 -m recipe.echo.main_echo "${ARGS[@]}" 2>&1 | tee "${SAVE_PATH}/run.log"

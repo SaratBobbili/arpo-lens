@@ -43,6 +43,15 @@ mask_answer: high
 mask_search: low
 mask_python: low
 
+use_sign_cond_clip: false
+clip_ratio_low: 0.2
+clip_ratio_high: 0.2
+clip_ratio_c: 3.0
+clip_ratio_low_pos: 0.2
+clip_ratio_high_pos: 0.2
+clip_ratio_low_neg: 0.2
+clip_ratio_high_neg: 0.2
+
 ll_entropy_reg_coeff: 0
 ll_entropy_reduction: mean
 ll_entropy_scale: 1.0

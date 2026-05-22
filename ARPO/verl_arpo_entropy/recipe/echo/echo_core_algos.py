@@ -464,7 +464,8 @@ def compute_policy_loss(
     loss_agg_mode: str = "token-mean",
     advantage_noise_sigma: float = 0.0,
 ):
-    """
+    """Dead code for ECHO: PG loss is verl.trainer.ppo.core_algos.compute_policy_loss (see dp_actor).
+
     Compute the clipped policy objective and related metrics for PPO.
 
     Adapted from
@@ -507,7 +508,7 @@ def compute_policy_loss(
         cliprange_low = cliprange
     if cliprange_high is None:
         cliprange_high = cliprange
-    pg_losses2 = -advantages * torch.clamp(ratio, 1 - cliprange_low, 1 + cliprange_high)  # - clip(ratio, 1-cliprange, 1+cliprange) * A
+    pg_losses2 = -advantages * torch.clamp(ratio, 1 - cliprange_low, 1 + cliprange_high)
     clip_pg_losses1 = torch.maximum(pg_losses1, pg_losses2)  # max(-ratio * A, -clip(ratio, 1-cliprange, 1+cliprange) * A)
     pg_clipfrac = verl_F.masked_mean(torch.gt(pg_losses2, pg_losses1).float(), response_mask)
 

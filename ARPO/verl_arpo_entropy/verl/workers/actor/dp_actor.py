@@ -397,6 +397,11 @@ class DataParallelPPOActor(BasePPOActor):
                     clip_ratio_low = self.config.clip_ratio_low if self.config.clip_ratio_low is not None else clip_ratio
                     clip_ratio_high = self.config.clip_ratio_high if self.config.clip_ratio_high is not None else clip_ratio
                     clip_ratio_c = self.config.get("clip_ratio_c", 3.0)
+                    use_sign_cond_clip = self.config.get("use_sign_cond_clip", False)
+                    clip_ratio_low_pos = self.config.get("clip_ratio_low_pos", 0.2)
+                    clip_ratio_high_pos = self.config.get("clip_ratio_high_pos", 0.2)
+                    clip_ratio_low_neg = self.config.get("clip_ratio_low_neg", 0.2)
+                    clip_ratio_high_neg = self.config.get("clip_ratio_high_neg", 0.2)
                     # Caller-provided coefficient (e.g. phase-specific beta from the trainer)
                     # overrides the global config knob; falling back keeps existing recipes
                     # unchanged when no override is set.
@@ -418,6 +423,11 @@ class DataParallelPPOActor(BasePPOActor):
                         cliprange_low=clip_ratio_low,
                         cliprange_high=clip_ratio_high,
                         clip_ratio_c=clip_ratio_c,
+                        use_sign_cond_clip=use_sign_cond_clip,
+                        cliprange_low_pos=clip_ratio_low_pos,
+                        cliprange_high_pos=clip_ratio_high_pos,
+                        cliprange_low_neg=clip_ratio_low_neg,
+                        cliprange_high_neg=clip_ratio_high_neg,
                         loss_agg_mode=loss_agg_mode,
                     )
 

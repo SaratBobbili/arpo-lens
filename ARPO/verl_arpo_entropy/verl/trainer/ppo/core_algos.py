@@ -461,6 +461,11 @@ def compute_policy_loss(
     cliprange_low=None,
     cliprange_high=None,
     clip_ratio_c=3.0,
+    use_sign_cond_clip: bool = False,
+    cliprange_low_pos: float = 0.2,
+    cliprange_high_pos: float = 0.2,
+    cliprange_low_neg: float = 0.2,
+    cliprange_high_neg: float = 0.2,
     loss_agg_mode: str = "token-mean",
     advantage_noise_sigma: float = 0.0,
 ):
@@ -489,6 +494,11 @@ def compute_policy_loss(
         clip_ratio_c (float, optional):
             Lower bound of the ratio for dual-clip PPO. See https://arxiv.org/pdf/1912.09729.
             Defaults to 3.0.
+        use_sign_cond_clip (bool, optional):
+            If True, clamp ratio with (low_pos, high_pos) when advantage >= 0 and
+            (low_neg, high_neg) when advantage < 0. If False, use cliprange_low/high globally.
+        cliprange_low_pos, cliprange_high_pos, cliprange_low_neg, cliprange_high_neg (float):
+            Sign-conditioned clip bounds (used only when use_sign_cond_clip is True).
         loss_agg_mode (str, optional):
             Aggregation mode for `agg_loss`. Defaults to "token-mean".
         advantage_noise_sigma (float, optional):  
@@ -514,7 +524,21 @@ def compute_policy_loss(
         cliprange_low = cliprange
     if cliprange_high is None:
         cliprange_high = cliprange
-    pg_losses2 = -advantages * torch.clamp(ratio, 1 - cliprange_low, 1 + cliprange_high)  # - clip(ratio, 1-cliprange, 1+cliprange) * A
+    if use_sign_cond_clip:
+        ratio_low = torch.where(
+            advantages >= 0,
+            1.0 - cliprange_low_pos,
+            1.0 - cliprange_low_neg,
+        )
+        ratio_high = torch.where(
+            advantages >= 0,
+            1.0 + cliprange_high_pos,
+            1.0 + cliprange_high_neg,
+        )
+        ratio_clipped = torch.clamp(ratio, ratio_low, ratio_high)
+    else:
+        ratio_clipped = torch.clamp(ratio, 1 - cliprange_low, 1 + cliprange_high)
+    pg_losses2 = -advantages * ratio_clipped
     clip_pg_losses1 = torch.maximum(pg_losses1, pg_losses2)  # max(-ratio * A, -clip(ratio, 1-cliprange, 1+cliprange) * A)
     pg_clipfrac = verl_F.masked_mean(torch.gt(pg_losses2, pg_losses1).float(), response_mask)
 

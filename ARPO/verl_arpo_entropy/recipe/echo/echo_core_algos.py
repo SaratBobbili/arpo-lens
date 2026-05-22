@@ -23,6 +23,10 @@ from collections import defaultdict
 import numpy as np
 import torch
 
+from verl import DataProto
+from verl.trainer.ppo.ray_trainer import AdvantageEstimator, compute_response_mask
+from verl.utils.torch_functional import masked_mean
+
 import verl.utils.torch_functional as verl_F
 
 
@@ -461,41 +465,16 @@ def compute_policy_loss(
     cliprange_low=None,
     cliprange_high=None,
     clip_ratio_c=3.0,
+    use_sign_cond_clip: bool = False,
+    cliprange_low_pos: float = 0.2,
+    cliprange_high_pos: float = 0.2,
+    cliprange_low_neg: float = 0.2,
+    cliprange_high_neg: float = 0.2,
     loss_agg_mode: str = "token-mean",
     advantage_noise_sigma: float = 0.0,
 ):
-    """Dead code for ECHO: PG loss is verl.trainer.ppo.core_algos.compute_policy_loss (see dp_actor).
+    """Canonical PG loss for ECHO via echo_dp_actor."""
 
-    Compute the clipped policy objective and related metrics for PPO.
-
-    Adapted from
-    https://github.com/huggingface/trl/blob/main/trl/trainer/ppo_trainer.py#L1122
-
-    Args:
-        old_log_prob (torch.Tensor):
-            Log-probabilities of actions under the old policy, shape (batch_size, response_length).
-        log_prob (torch.Tensor):
-            Log-probabilities of actions under the current policy, shape (batch_size, response_length).
-        advantages (torch.Tensor):
-            Advantage estimates for each action, shape (batch_size, response_length).
-        response_mask (torch.Tensor):
-            Mask indicating which tokens to include in the loss, shape (batch_size, response_length).
-        cliprange (float, optional):
-            Clipping parameter ε for standard PPO. See https://arxiv.org/abs/1707.06347.
-            Defaults to None (must be provided).
-        cliprange_low (float, optional):
-            Lower clip range for dual-clip PPO. Defaults to same as `cliprange`.
-        cliprange_high (float, optional):
-            Upper clip range for dual-clip PPO. Defaults to same as `cliprange`.
-        clip_ratio_c (float, optional):
-            Lower bound of the ratio for dual-clip PPO. See https://arxiv.org/pdf/1912.09729.
-            Defaults to 3.0.
-        loss_agg_mode (str, optional):
-            Aggregation mode for `agg_loss`. Defaults to "token-mean".
-        advantage_noise_sigma (float, optional):
-            Standard deviation for random noise applied to advantages.
-            Noise range will be [-sigma, +sigma]. Defaults to 0.0 (no noise).
-    """
     assert clip_ratio_c > 1.0, "The lower bound of the clip_ratio_c for dual-clip PPO should be greater than 1.0," + f" but get the value: {clip_ratio_c}."
 
     negative_approx_kl = log_prob - old_log_prob
@@ -508,8 +487,22 @@ def compute_policy_loss(
         cliprange_low = cliprange
     if cliprange_high is None:
         cliprange_high = cliprange
-    pg_losses2 = -advantages * torch.clamp(ratio, 1 - cliprange_low, 1 + cliprange_high)
-    clip_pg_losses1 = torch.maximum(pg_losses1, pg_losses2)  # max(-ratio * A, -clip(ratio, 1-cliprange, 1+cliprange) * A)
+    if use_sign_cond_clip:
+        ratio_low = torch.where(
+            advantages >= 0,
+            1.0 - cliprange_low_pos,
+            1.0 - cliprange_low_neg,
+        )
+        ratio_high = torch.where(
+            advantages >= 0,
+            1.0 + cliprange_high_pos,
+            1.0 + cliprange_high_neg,
+        )
+        ratio_clipped = torch.clamp(ratio, ratio_low, ratio_high)
+    else:
+        ratio_clipped = torch.clamp(ratio, 1 - cliprange_low, 1 + cliprange_high)
+    pg_losses2 = -advantages * ratio_clipped
+    clip_pg_losses1 = torch.maximum(pg_losses1, pg_losses2)
     pg_clipfrac = verl_F.masked_mean(torch.gt(pg_losses2, pg_losses1).float(), response_mask)
 
     pg_losses3 = -advantages * clip_ratio_c
@@ -610,6 +603,9 @@ def kl_penalty(logprob: torch.FloatTensor, ref_logprob: torch.FloatTensor, kl_pe
     raise NotImplementedError
 
 
+_kl_penalty_fn = kl_penalty
+
+
 def compute_pf_ppo_reweight_data(
     data,
     reweight_method: str = "pow",
@@ -674,3 +670,120 @@ def compute_pf_ppo_reweight_data(
     resampled_data.meta_info = resampled_meta_info
 
     return resampled_data
+
+
+def apply_kl_penalty(data: DataProto, kl_ctrl: AdaptiveKLController, kl_penalty="kl", multi_turn=False):
+    responses = data.batch["responses"]
+    response_length = responses.size(1)
+    token_level_scores = data.batch["token_level_scores"]
+    batch_size = data.batch.batch_size[0]
+
+    if multi_turn:
+        loss_mask = data.batch["loss_mask"]
+        response_mask = loss_mask[:, -response_length:]
+    else:
+        attention_mask = data.batch["attention_mask"]
+        response_mask = attention_mask[:, -response_length:]
+
+    kld = _kl_penalty_fn(data.batch["old_log_probs"], data.batch["ref_log_prob"], kl_penalty=kl_penalty)
+    kld = kld * response_mask
+    beta = kl_ctrl.value
+
+    token_level_rewards = token_level_scores - beta * kld
+
+    current_kl = masked_mean(kld, mask=response_mask, axis=-1)
+    current_kl = torch.mean(current_kl, dim=0).item()
+
+    kl_ctrl.update(current_kl=current_kl, n_steps=batch_size)
+    data.batch["token_level_rewards"] = token_level_rewards
+
+    metrics = {"actor/reward_kl_penalty": current_kl, "actor/reward_kl_penalty_coeff": beta}
+
+    return data, metrics
+
+
+def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_repeat=1, multi_turn=False, norm_adv_by_std_in_grpo=True, **kwargs):
+    if "response_mask" not in data.batch:
+        data.batch["response_mask"] = compute_response_mask(data)
+    if adv_estimator == AdvantageEstimator.GAE:
+        advantages, returns = compute_gae_advantage_return(
+            token_level_rewards=data.batch["token_level_rewards"],
+            values=data.batch["values"],
+            response_mask=data.batch["response_mask"],
+            gamma=gamma,
+            lam=lam,
+        )
+        data.batch["advantages"] = advantages
+        data.batch["returns"] = returns
+        if kwargs.get("use_pf_ppo", False):
+            data = compute_pf_ppo_reweight_data(
+                data,
+                kwargs.get("pf_ppo_reweight_method", "pow"),
+                kwargs.get("pf_ppo_weight_pow", 2.0),
+            )
+    elif adv_estimator == AdvantageEstimator.GRPO:
+        grpo_calculation_mask = data.batch["response_mask"]
+        if multi_turn:
+            response_length = grpo_calculation_mask.size(1)
+            grpo_calculation_mask = data.batch["loss_mask"][:, -response_length:]
+        advantages, returns = compute_grpo_outcome_advantage(
+            token_level_rewards=data.batch["token_level_rewards"],
+            response_mask=grpo_calculation_mask,
+            index=data.non_tensor_batch["uid"],
+            norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
+        )
+        data.batch["advantages"] = advantages
+        data.batch["returns"] = returns
+    elif adv_estimator == AdvantageEstimator.GRPO_PASSK:
+        advantages, returns = compute_grpo_passk_outcome_advantage(
+            token_level_rewards=data.batch["token_level_rewards"],
+            response_mask=data.batch["response_mask"],
+            index=data.non_tensor_batch["uid"],
+            norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
+        )
+        data.batch["advantages"] = advantages
+        data.batch["returns"] = returns
+    elif adv_estimator == AdvantageEstimator.REINFORCE_PLUS_PLUS_BASELINE:
+        advantages, returns = compute_reinforce_plus_plus_baseline_outcome_advantage(
+            token_level_rewards=data.batch["token_level_rewards"],
+            response_mask=data.batch["response_mask"],
+            index=data.non_tensor_batch["uid"],
+        )
+        data.batch["advantages"] = advantages
+        data.batch["returns"] = returns
+    elif adv_estimator == AdvantageEstimator.REINFORCE_PLUS_PLUS:
+        advantages, returns = compute_reinforce_plus_plus_outcome_advantage(
+            token_level_rewards=data.batch["token_level_rewards"],
+            response_mask=data.batch["response_mask"],
+            gamma=gamma,
+        )
+        data.batch["advantages"] = advantages
+        data.batch["returns"] = returns
+    elif adv_estimator == AdvantageEstimator.REMAX:
+        advantages, returns = compute_remax_outcome_advantage(
+            token_level_rewards=data.batch["token_level_rewards"],
+            reward_baselines=data.batch["reward_baselines"],
+            response_mask=data.batch["response_mask"],
+        )
+
+        data.batch["advantages"] = advantages
+        data.batch["returns"] = returns
+    elif adv_estimator == AdvantageEstimator.RLOO:
+        advantages, returns = compute_rloo_outcome_advantage(
+            token_level_rewards=data.batch["token_level_rewards"],
+            response_mask=data.batch["response_mask"],
+            index=data.non_tensor_batch["uid"],
+        )
+        data.batch["advantages"] = advantages
+        data.batch["returns"] = returns
+    elif adv_estimator == AdvantageEstimator.OPO:
+        advantages, returns = compute_opo_outcome_advantage(
+            token_level_rewards=data.batch["token_level_rewards"],
+            response_mask=data.batch["response_mask"],
+            index=data.non_tensor_batch["uid"],
+        )
+        data.batch["advantages"] = advantages
+        data.batch["returns"] = returns
+    else:
+        raise NotImplementedError
+    return data

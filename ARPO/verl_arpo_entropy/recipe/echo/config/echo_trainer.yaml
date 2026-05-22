@@ -146,6 +146,15 @@ reward_model:
         reg_coeff: 0.0
 
 actor_rollout_ref:
+  actor:
+    use_sign_cond_clip: false
+    clip_ratio_low: 0.2
+    clip_ratio_high: 0.2
+    clip_ratio_c: 3.0
+    clip_ratio_low_pos: 0.2
+    clip_ratio_high_pos: 0.2
+    clip_ratio_low_neg: 0.2
+    clip_ratio_high_neg: 0.2
   rollout:
     # Use ECHO rollout implementation that emits hierarchical masks.
     mode: sync_echo

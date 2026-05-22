@@ -29,13 +29,12 @@ from tensordict import TensorDict
 
 from verl import DataProto
 from verl.trainer.ppo.metric_utils import compute_data_metrics, compute_throughout_metrics, compute_timing_metrics
-from verl.trainer.ppo.ray_trainer import AdvantageEstimator, ResourcePoolManager, Role, RayPPOTrainer, _timer, apply_kl_penalty, compute_advantage
+from verl.trainer.ppo.ray_trainer import AdvantageEstimator, ResourcePoolManager, Role, RayPPOTrainer, _timer
+from .echo_core_algos import agg_loss, apply_kl_penalty, compute_advantage
 from verl.trainer.ppo.reward import compute_reward, compute_reward_async
 from verl.utils.metric import reduce_metrics
 
 from verl.utils.reward_score.deep_research_echo import resolve_validator_profile
-
-from .echo_core_algos import agg_loss
 
 
 class RayECHOTrainer(RayPPOTrainer):

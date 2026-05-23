@@ -35,6 +35,12 @@ resume_mode: auto
 phase_order: '["low_level", "high_level"]'
 high_level_reward_strategy: scorer
 low_level_reward_strategy: entropy
+high_level_algorithm: grpo
+low_level_algorithm: grpo
+high_level_filter_groups_enable: false
+low_level_filter_groups_enable: false
+high_level_filter_metric: seq_reward
+low_level_filter_metric: seq_reward
 
 mask_first_select: high
 mask_select: low

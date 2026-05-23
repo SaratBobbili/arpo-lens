@@ -14,6 +14,8 @@ defaults:
   - _self_
 
 data:
+  # Dataloader read size per fetch; set > train_batch_size when using per-phase DAPO dynamic sampling.
+  gen_batch_size: ${data.train_batch_size}
   # Which system prompt candidate to inject at runtime (via rl_dataset.py).
   # Set to the suffix number of the desired system_prompt_N key below, or null to skip.
   active_system_prompt: 1
@@ -82,6 +84,13 @@ reward_model:
   #                     high_level_budget = rollout.n).
   phase_rewards:
     high_level:
+      # grpo: single rollout pass per step (shared prompts with other GRPO phases).
+      # dapo: dynamic sampling — keep prompt groups only if filter metric std > 0.
+      algorithm: grpo
+      filter_groups:
+        enable: false
+        metric: seq_reward
+        max_num_gen_batches: 10
       strategy: scorer
       # `entropy` block below is consulted only when strategy in
       # {"entropy", "entropy-hybrid"}.
@@ -128,6 +137,11 @@ reward_model:
         reduction: mean           # Per-token entropy reduction: {sum, mean}. mean keeps alpha length-invariant.
         normalize: true           # If true, divide per-token entropy by log(vocab_size) before reduction so alpha is tokenizer-agnostic.
     low_level:
+      algorithm: grpo
+      filter_groups:
+        enable: false
+        metric: seq_reward
+        max_num_gen_batches: 10
       strategy: entropy
       entropy:
         # LL uses mean so per-sample advantage reflects average entropy per LL
@@ -188,7 +202,7 @@ actor_rollout_ref:
       retry_count: 3        # retries on tool failure
       # Reduce live API failures (cache + timeouts): set tool_instances.search.params.cache_file,
       # tool_instances.search.params.request_timeout, and override tools.retry_count / tools.timeout from the launch script as needed.
-      # When true, rollouts where any tool exhausted retries emit tool_rollout_failed; ECHO zeros phase masks/rewards and isolates uid so GRPO skips them.
+      # When true, rollouts where any tool exhausted retries emit tool_rollout_failed; ECHO zeros phase masks/rewards and isolates uid so GRPO skips them. When false (default), failed tool rollouts train normally.
       skip_training_on_tool_failure: false
       verbose_logging: false
       fail_on_error: false

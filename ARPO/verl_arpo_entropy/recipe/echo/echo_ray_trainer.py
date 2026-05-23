@@ -30,7 +30,7 @@ from tensordict import TensorDict
 from verl import DataProto
 from verl.trainer.ppo.metric_utils import compute_data_metrics, compute_throughout_metrics, compute_timing_metrics
 from verl.trainer.ppo.ray_trainer import AdvantageEstimator, ResourcePoolManager, Role, RayPPOTrainer, _timer
-from .echo_core_algos import agg_loss, apply_kl_penalty, compute_advantage
+from .echo_core_algos import agg_loss, apply_kl_penalty, compute_advantage, filter_informative_groups
 from verl.trainer.ppo.reward import compute_reward, compute_reward_async
 from verl.utils.metric import reduce_metrics
 
@@ -317,6 +317,284 @@ class RayECHOTrainer(RayPPOTrainer):
             uids[i] = str(uuid.uuid4())
         phase_batch.non_tensor_batch["uid"] = uids
 
+    def _validate_phase_reward_configs(self, phase_specs) -> None:
+        for phase_name, _, _ in phase_specs:
+            cfg = self._phase_reward_cfg(phase_name)
+            algo = cfg.get("algorithm", "grpo")
+            assert algo in ("grpo", "dapo"), f"{phase_name}.algorithm must be grpo or dapo, got {algo!r}"
+            if algo == "dapo":
+                assert bool(cfg.filter_groups.enable), f"{phase_name} algorithm=dapo requires filter_groups.enable=true"
+                assert cfg.filter_groups.metric, f"{phase_name} algorithm=dapo requires filter_groups.metric"
+
+    @staticmethod
+    def _phase_algorithm(phase_reward_cfg) -> str:
+        return phase_reward_cfg.get("algorithm", "grpo")
+
+    def _next_batch_dict(self, data_iter):
+        try:
+            return next(data_iter), data_iter
+        except StopIteration:
+            data_iter = iter(self.train_dataloader)
+            return next(data_iter), data_iter
+
+    @staticmethod
+    def _pop_gen_batch(batch: DataProto) -> DataProto:
+        batch_keys_to_pop = ["input_ids", "attention_mask", "position_ids"]
+        non_tensor_batch_keys_to_pop = ["raw_prompt_ids"]
+        if "multi_modal_data" in batch.non_tensor_batch:
+            non_tensor_batch_keys_to_pop.append("multi_modal_data")
+        if "raw_prompt" in batch.non_tensor_batch:
+            non_tensor_batch_keys_to_pop.append("raw_prompt")
+        if "tools_kwargs" in batch.non_tensor_batch:
+            non_tensor_batch_keys_to_pop.append("tools_kwargs")
+        return batch.pop(
+            batch_keys=batch_keys_to_pop,
+            non_tensor_batch_keys=non_tensor_batch_keys_to_pop,
+        )
+
+    def _phase_rollout_to_scored_batch(
+        self,
+        gen_batch: DataProto,
+        phase_name: str,
+        phase_rollout_n: int,
+        phase_mask_key: str,
+        timing_raw: dict,
+        metrics: dict,
+    ) -> tuple[DataProto, dict]:
+        from omegaconf import OmegaConf
+
+        phase_prefix = f"{phase_name}/"
+        phase_reward_cfg = self._phase_reward_cfg(phase_name)
+        phase_strategy = phase_reward_cfg.strategy
+        phase_reward_extra_infos_dict: dict = {}
+
+        phase_batch = DataProto(
+            batch=TensorDict({}, batch_size=gen_batch.batch.batch_size),
+            non_tensor_batch=deepcopy(gen_batch.non_tensor_batch),
+            meta_info=deepcopy(gen_batch.meta_info) if gen_batch.meta_info else {},
+        )
+        phase_batch.meta_info["phase"] = phase_name
+        phase_batch.meta_info["validator_profile"] = self._validator_profile
+
+        with _timer(f"{phase_name}_gen", timing_raw):
+            phase_gen_batch = deepcopy(gen_batch)
+            if phase_gen_batch.meta_info is None:
+                phase_gen_batch.meta_info = {}
+            phase_gen_batch.meta_info["rollout_n_override"] = phase_rollout_n
+            if not self.async_rollout_mode:
+                gen_batch_output = self.actor_rollout_wg.generate_sequences(phase_gen_batch)
+            else:
+                self.async_rollout_manager.wake_up()
+                gen_batch_output = self.async_rollout_manager.generate_sequences(phase_gen_batch)
+                self.async_rollout_manager.sleep()
+            if gen_batch_output.meta_info and "metrics" in gen_batch_output.meta_info:
+                metrics.update(self._prefix_metrics(gen_batch_output.meta_info["metrics"], phase_prefix))
+
+        if self.config.algorithm.adv_estimator == AdvantageEstimator.REMAX:
+            with _timer(f"{phase_name}_gen_max", timing_raw):
+                if phase_strategy == "scorer":
+                    gen_baseline_batch = deepcopy(phase_gen_batch)
+                    gen_baseline_batch.meta_info["do_sample"] = False
+                    gen_baseline_output = self.actor_rollout_wg.generate_sequences(gen_baseline_batch)
+                    phase_batch = phase_batch.union(gen_baseline_output)
+                    reward_baseline_tensor = self.reward_fn(phase_batch).sum(dim=-1)
+                    phase_batch.pop(batch_keys=list(gen_baseline_output.batch.keys()))
+                    phase_batch.batch["reward_baselines"] = reward_baseline_tensor
+                else:
+                    phase_batch.batch["reward_baselines"] = torch.zeros(
+                        phase_gen_batch.batch["input_ids"].size(0),
+                        dtype=torch.float32,
+                        device=phase_gen_batch.batch["input_ids"].device,
+                    )
+
+        phase_batch.non_tensor_batch["uid"] = np.array(
+            [str(uuid.uuid4()) for _ in range(len(phase_batch.batch))], dtype=object
+        )
+        phase_batch = phase_batch.repeat(repeat_times=phase_rollout_n, interleave=True)
+        phase_batch = phase_batch.union(gen_batch_output)
+        if phase_mask_key not in phase_batch.batch:
+            raise KeyError(f"Missing '{phase_mask_key}' in rollout batch; ensure rollout.mode=sync_echo.")
+        phase_batch.batch["loss_mask"] = phase_batch.batch[phase_mask_key]
+        phase_batch.batch["response_mask"] = phase_batch.batch[phase_mask_key]
+
+        if self.config.trainer.balance_batch:
+            phase_balance_metrics = {}
+            self._balance_batch(phase_batch, metrics=phase_balance_metrics)
+            metrics.update(self._prefix_metrics(phase_balance_metrics, phase_prefix))
+
+        self._apply_tool_failure_phase_masks(phase_batch, phase_mask_key)
+        phase_batch.meta_info["global_token_num"] = torch.sum(phase_batch.batch["attention_mask"], dim=-1).tolist()
+
+        reward_tensor = None
+        future_reward = None
+        entropy_reward_tensor = None
+        with _timer(f"{phase_name}_reward", timing_raw):
+            if phase_strategy in ("scorer", "maxentropy_rl"):
+                if self.use_rm:
+                    reward_tensor = self.rm_wg.compute_rm_score(phase_batch)
+                    phase_batch = phase_batch.union(reward_tensor)
+                if self.config.reward_model.launch_reward_fn_async:
+                    future_reward = compute_reward_async.remote(phase_batch, self.config, self.tokenizer)
+                else:
+                    reward_tensor, phase_reward_extra_infos_dict = compute_reward(phase_batch, self.reward_fn)
+
+        entropys = None
+        with _timer(f"{phase_name}_old_log_prob", timing_raw):
+            phase_batch.meta_info["calculate_entropy"] = phase_strategy in (
+                "entropy",
+                "entropy-hybrid",
+                "maxentropy_rl",
+            )
+            old_log_prob = self.actor_rollout_wg.compute_log_prob(phase_batch)
+            loss_agg_mode = self.config.actor_rollout_ref.actor.loss_agg_mode
+            entropys = old_log_prob.batch.pop("entropys", None)
+            if entropys is not None:
+                entropy_loss = agg_loss(
+                    loss_mat=entropys, loss_mask=phase_batch.batch["loss_mask"], loss_agg_mode=loss_agg_mode
+                )
+                metrics[f"{phase_prefix}actor/entropy_old_policy"] = entropy_loss.detach().item()
+            phase_batch = phase_batch.union(old_log_prob)
+
+            if "rollout_log_probs" in phase_batch.batch.keys():
+                rollout_old_log_probs = phase_batch.batch["rollout_log_probs"]
+                actor_old_log_probs = phase_batch.batch["old_log_probs"]
+                attention_mask = phase_batch.batch["attention_mask"]
+                responses = phase_batch.batch["responses"]
+                response_length = responses.size(1)
+                response_mask = attention_mask[:, -response_length:]
+                rollout_probs = torch.exp(rollout_old_log_probs)
+                actor_probs = torch.exp(actor_old_log_probs)
+                rollout_probs_diff = torch.abs(rollout_probs - actor_probs)
+                rollout_probs_diff = torch.masked_select(rollout_probs_diff, response_mask.bool())
+                metrics[f"{phase_prefix}training/rollout_probs_diff_max"] = torch.max(rollout_probs_diff).detach().item()
+                metrics[f"{phase_prefix}training/rollout_probs_diff_mean"] = torch.mean(rollout_probs_diff).detach().item()
+                metrics[f"{phase_prefix}training/rollout_probs_diff_std"] = torch.std(rollout_probs_diff).detach().item()
+
+        if phase_strategy in ("entropy", "entropy-hybrid"):
+            if entropys is None:
+                raise RuntimeError(f"{phase_name} phase uses entropy reward but compute_log_prob did not return entropys.")
+            phase_mask_f = phase_batch.batch[phase_mask_key].to(torch.float32)
+            entropy_mask_f = phase_mask_f
+            if phase_strategy == "entropy-hybrid":
+                entropy_mask_f = entropy_mask_f * phase_batch.batch["select_loss_mask"].to(torch.float32)
+            entropy_mask_f = entropy_mask_f * phase_batch.batch["non_border_loss_mask"].to(torch.float32)
+            phase_batch.batch[f"{phase_name}_token_entropy"] = entropys.to(torch.float32) * entropy_mask_f
+            phase_batch.batch["entropy_reg_loss_mask"] = entropy_mask_f
+            reward_tensor, entropy_metrics = self._build_entropy_scalar_reward(
+                entropys=entropys,
+                phase_batch=phase_batch,
+                phase_mask_key=phase_mask_key,
+                entropy_cfg=phase_reward_cfg.entropy,
+                entropy_mask=entropy_mask_f,
+            )
+            metrics.update(self._prefix_metrics(entropy_metrics, phase_prefix))
+        elif phase_strategy == "maxentropy_rl":
+            if entropys is None:
+                raise RuntimeError(f"{phase_name} phase uses maxentropy_rl reward but compute_log_prob did not return entropys.")
+            me_cfg = phase_reward_cfg.max_entropy
+            phase_mask_f = phase_batch.batch[phase_mask_key].to(torch.float32)
+            entropy_mask_f = phase_mask_f * phase_batch.batch[me_cfg.mask_key].to(torch.float32)
+            entropy_mask_f = entropy_mask_f * phase_batch.batch["non_border_loss_mask"].to(torch.float32)
+            phase_batch.batch[f"{phase_name}_token_entropy"] = entropys.to(torch.float32) * entropy_mask_f
+            me_entropy_cfg = OmegaConf.create({
+                "reduction": me_cfg.reduction,
+                "normalize": me_cfg.normalize,
+                "scale": me_cfg.alpha,
+                "clamp_min": None,
+                "clamp_max": None,
+                "format_gate": False,
+            })
+            entropy_reward_tensor, entropy_metrics = self._build_entropy_scalar_reward(
+                entropys=entropys,
+                phase_batch=phase_batch,
+                phase_mask_key=phase_mask_key,
+                entropy_cfg=me_entropy_cfg,
+                entropy_mask=entropy_mask_f,
+            )
+            metrics.update(self._prefix_metrics(entropy_metrics, phase_prefix))
+
+        if self.use_reference_policy:
+            with _timer(f"{phase_name}_ref", timing_raw):
+                if not self.ref_in_actor:
+                    ref_log_prob = self.ref_policy_wg.compute_ref_log_prob(phase_batch)
+                else:
+                    ref_log_prob = self.actor_rollout_wg.compute_ref_log_prob(phase_batch)
+                phase_batch = phase_batch.union(ref_log_prob)
+
+        if self.use_critic:
+            with _timer(f"{phase_name}_values", timing_raw):
+                values = self.critic_wg.compute_values(phase_batch)
+                phase_batch = phase_batch.union(values)
+
+        if phase_strategy in ("scorer", "maxentropy_rl") and self.config.reward_model.launch_reward_fn_async:
+            reward_tensor, phase_reward_extra_infos_dict = ray.get(future_reward)
+        if reward_tensor is None:
+            raise RuntimeError(f"{phase_name} reward_tensor was not initialized.")
+        if phase_strategy == "maxentropy_rl":
+            reward_tensor = reward_tensor + entropy_reward_tensor.to(reward_tensor.device)
+        phase_batch.batch["token_level_scores"] = reward_tensor
+        if phase_reward_extra_infos_dict:
+            phase_batch.non_tensor_batch.update({k: np.array(v) for k, v in phase_reward_extra_infos_dict.items()})
+            if phase_strategy in ("scorer", "maxentropy_rl"):
+                metrics.update(
+                    self._prefix_metrics(
+                        self._build_scorer_metrics(phase_reward_extra_infos_dict),
+                        phase_prefix,
+                    )
+                )
+
+        if self.config.algorithm.use_kl_in_reward:
+            phase_batch, kl_metrics = apply_kl_penalty(
+                phase_batch,
+                kl_ctrl=self.kl_ctrl_in_reward,
+                kl_penalty=self.config.algorithm.kl_penalty,
+            )
+            metrics.update(self._prefix_metrics(kl_metrics, phase_prefix))
+        else:
+            phase_batch.batch["token_level_rewards"] = phase_batch.batch["token_level_scores"]
+
+        return phase_batch, phase_reward_extra_infos_dict
+
+    def _collect_phase_batch_dapo(self, data_iter, phase_name, phase_rollout_n, phase_mask_key, timing_raw, metrics):
+        phase_prefix = f"{phase_name}/"
+        phase_reward_cfg = self._phase_reward_cfg(phase_name)
+        metric_name = phase_reward_cfg.filter_groups.metric
+        max_num_gen_batches = int(phase_reward_cfg.filter_groups.max_num_gen_batches)
+        prompt_bsz = self.config.data.train_batch_size
+
+        accumulator = None
+        num_prompt_in_batch = 0
+        num_gen_batches = 0
+        phase_reward_extra: dict = {}
+
+        while num_prompt_in_batch < prompt_bsz:
+            batch_dict, data_iter = self._next_batch_dict(data_iter)
+            batch = DataProto.from_single_dict(batch_dict)
+            gen_batch = self._pop_gen_batch(batch)
+            num_gen_batches += 1
+            new_batch, phase_reward_extra = self._phase_rollout_to_scored_batch(
+                gen_batch, phase_name, phase_rollout_n, phase_mask_key, timing_raw, metrics
+            )
+            new_batch, num_kept = filter_informative_groups(new_batch, metric_name)
+            num_prompt_in_batch += num_kept
+            accumulator = new_batch if accumulator is None else DataProto.concat([accumulator, new_batch])
+
+            if num_prompt_in_batch < prompt_bsz:
+                print(f"{phase_name} {num_prompt_in_batch=} < {prompt_bsz=}")
+                if max_num_gen_batches <= 0 or num_gen_batches < max_num_gen_batches:
+                    print(f"{phase_name} {num_gen_batches=}. Keep generating...")
+                    continue
+                raise ValueError(
+                    f"{phase_name} {num_gen_batches=} >= {max_num_gen_batches=}. Generated too many. "
+                    "Check data difficulty or set max_num_gen_batches=0 for no upper limit."
+                )
+
+        traj_bsz = prompt_bsz * phase_rollout_n
+        phase_batch = accumulator[:traj_bsz]
+        metrics[f"{phase_prefix}training/filter_groups_kept_prompts"] = num_prompt_in_batch
+        metrics[f"{phase_prefix}training/num_gen_batches"] = num_gen_batches
+        return phase_batch, phase_reward_extra, data_iter
+
     def fit(self):
         """
         The training loop of PPO.
@@ -367,25 +645,10 @@ class RayECHOTrainer(RayPPOTrainer):
         last_val_metrics = None
 
         for epoch in range(self.config.trainer.total_epochs):
-            for batch_dict in self.train_dataloader:
+            data_iter = iter(self.train_dataloader)
+            while self.global_steps <= self.total_training_steps:
                 metrics = {}
                 timing_raw = {}
-                batch: DataProto = DataProto.from_single_dict(batch_dict)
-
-                # pop those keys for generation
-                batch_keys_to_pop = ["input_ids", "attention_mask", "position_ids"]
-                non_tensor_batch_keys_to_pop = ["raw_prompt_ids"]
-                if "multi_modal_data" in batch.non_tensor_batch:
-                    non_tensor_batch_keys_to_pop.append("multi_modal_data")
-                if "raw_prompt" in batch.non_tensor_batch:
-                    non_tensor_batch_keys_to_pop.append("raw_prompt")
-                if "tools_kwargs" in batch.non_tensor_batch:
-                    non_tensor_batch_keys_to_pop.append("tools_kwargs")
-                gen_batch = batch.pop(
-                    batch_keys=batch_keys_to_pop,
-                    non_tensor_batch_keys=non_tensor_batch_keys_to_pop,
-                )
-
                 is_last_step = self.global_steps >= self.total_training_steps
 
                 with _timer("step", timing_raw):
@@ -417,6 +680,12 @@ class RayECHOTrainer(RayPPOTrainer):
                         if phase_registry[name][0] > 0
                     ]
                     assert phase_specs, "At least one hierarchical phase must have positive rollout budget."
+                    self._validate_phase_reward_configs(phase_specs)
+
+                    step_gen_batch = None
+                    if any(self._phase_algorithm(self._phase_reward_cfg(n)) == "grpo" for n, _, _ in phase_specs):
+                        batch_dict, data_iter = self._next_batch_dict(data_iter)
+                        step_gen_batch = self._pop_gen_batch(DataProto.from_single_dict(batch_dict))
 
                     norm_adv_by_std_in_grpo = self.config.algorithm.get("norm_adv_by_std_in_grpo", True)
                     last_phase_batch = None
@@ -425,240 +694,20 @@ class RayECHOTrainer(RayPPOTrainer):
                         phase_prefix = f"{phase_name}/"
                         phase_reward_cfg = self._phase_reward_cfg(phase_name)
                         phase_strategy = phase_reward_cfg.strategy
-                        # batch.batch is an empty TensorDict (all tensor keys were popped
-                        # into gen_batch). deepcopy would call consolidate() on that empty
-                        # TensorDict, which crashes. Build a fresh DataProto instead.
-                        phase_batch = DataProto(
-                            batch=TensorDict({}, batch_size=batch.batch.batch_size),
-                            non_tensor_batch=deepcopy(batch.non_tensor_batch),
-                            meta_info=deepcopy(batch.meta_info),
-                        )
-                        # Phase tag consumed by ECHORewardManager -> deep_research_echo.compute_score
-                        # to gate the -1 format verdict on the phase-local validator only.
-                        phase_batch.meta_info["phase"] = phase_name
-                        # Validator profile (derived from mask_categories at trainer init)
-                        # routes per-check HL/LL attribution inside compute_score.
-                        phase_batch.meta_info["validator_profile"] = self._validator_profile
-                        phase_reward_extra_infos_dict = {}
 
-                        with _timer(f"{phase_name}_gen", timing_raw):
-                            phase_gen_batch = deepcopy(gen_batch)
-                            if phase_gen_batch.meta_info is None:
-                                phase_gen_batch.meta_info = {}
-                            phase_gen_batch.meta_info["rollout_n_override"] = phase_rollout_n
-                            if not self.async_rollout_mode:
-                                gen_batch_output = self.actor_rollout_wg.generate_sequences(phase_gen_batch)
-                            else:
-                                self.async_rollout_manager.wake_up()
-                                gen_batch_output = self.async_rollout_manager.generate_sequences(phase_gen_batch)
-                                self.async_rollout_manager.sleep()
-
-                            if gen_batch_output.meta_info and "metrics" in gen_batch_output.meta_info:
-                                metrics.update(self._prefix_metrics(gen_batch_output.meta_info["metrics"], phase_prefix))
-
-                        if self.config.algorithm.adv_estimator == AdvantageEstimator.REMAX:
-                            with _timer(f"{phase_name}_gen_max", timing_raw):
-                                if phase_strategy == "scorer":
-                                    gen_baseline_batch = deepcopy(phase_gen_batch)
-                                    gen_baseline_batch.meta_info["do_sample"] = False
-                                    gen_baseline_output = self.actor_rollout_wg.generate_sequences(gen_baseline_batch)
-
-                                    phase_batch = phase_batch.union(gen_baseline_output)
-                                    reward_baseline_tensor = self.reward_fn(phase_batch).sum(dim=-1)
-                                    phase_batch.pop(batch_keys=list(gen_baseline_output.batch.keys()))
-                                    phase_batch.batch["reward_baselines"] = reward_baseline_tensor
-                                else:
-                                    # Entropy-strategy rewards do not use the scorer-based REMAX baseline.
-                                    phase_batch.batch["reward_baselines"] = torch.zeros(
-                                        phase_gen_batch.batch["input_ids"].size(0),
-                                        dtype=torch.float32,
-                                        device=phase_gen_batch.batch["input_ids"].device,
-                                    )
-
-                        phase_batch.non_tensor_batch["uid"] = np.array([str(uuid.uuid4()) for _ in range(len(phase_batch.batch))], dtype=object)
-                        phase_batch = phase_batch.repeat(repeat_times=phase_rollout_n, interleave=True)
-                        phase_batch = phase_batch.union(gen_batch_output)
-                        if phase_mask_key not in phase_batch.batch:
-                            raise KeyError(f"Missing '{phase_mask_key}' in rollout batch; ensure rollout.mode=sync_echo.")
-                        phase_batch.batch["loss_mask"] = phase_batch.batch[phase_mask_key]
-                        # Restrict response_mask to phase-local tokens. GRPO's
-                        # compute_advantage broadcasts scores.unsqueeze(-1) * response_mask,
-                        # so this isolates the non-zero advantage support to this phase's
-                        # tokens. Actor PPO aggregation is independently driven by
-                        # loss_mask (set above) which the dp_actor picks up whenever
-                        # loss_mask is present on the batch.
-                        phase_batch.batch["response_mask"] = phase_batch.batch[phase_mask_key]
-
-                        if self.config.trainer.balance_batch:
-                            phase_balance_metrics = {}
-                            self._balance_batch(phase_batch, metrics=phase_balance_metrics)
-                            metrics.update(self._prefix_metrics(phase_balance_metrics, phase_prefix))
-
-                        self._apply_tool_failure_phase_masks(phase_batch, phase_mask_key)
-
-                        phase_batch.meta_info["global_token_num"] = torch.sum(phase_batch.batch["attention_mask"], dim=-1).tolist()
-
-                        with _timer(f"{phase_name}_reward", timing_raw):
-                            reward_tensor = None
-                            future_reward = None
-                            entropy_reward_tensor = None
-                            if phase_strategy in ("scorer", "maxentropy_rl"):
-                                if self.use_rm:
-                                    reward_tensor = self.rm_wg.compute_rm_score(phase_batch)
-                                    phase_batch = phase_batch.union(reward_tensor)
-
-                                if self.config.reward_model.launch_reward_fn_async:
-                                    future_reward = compute_reward_async.remote(phase_batch, self.config, self.tokenizer)
-                                else:
-                                    reward_tensor, phase_reward_extra_infos_dict = compute_reward(phase_batch, self.reward_fn)
-
-                        with _timer(f"{phase_name}_old_log_prob", timing_raw):
-                            phase_batch.meta_info["calculate_entropy"] = phase_strategy in ("entropy", "entropy-hybrid", "maxentropy_rl")
-                            old_log_prob = self.actor_rollout_wg.compute_log_prob(phase_batch)
-                            loss_agg_mode = self.config.actor_rollout_ref.actor.loss_agg_mode
-                            entropys = old_log_prob.batch.pop("entropys", None)
-                            if entropys is not None:
-                                # Diagnostic: old-policy entropy aggregated over the GRPO loss
-                                # mask. Distinct from the differentiable `actor/entropy_reg_loss`
-                                # logged by `update_policy` (current-policy entropy reduced over
-                                # m^phase, the term that actually enters the gradient).
-                                entropy_loss = agg_loss(loss_mat=entropys, loss_mask=phase_batch.batch["loss_mask"], loss_agg_mode=loss_agg_mode)
-                                metrics[f"{phase_prefix}actor/entropy_old_policy"] = entropy_loss.detach().item()
-                            phase_batch = phase_batch.union(old_log_prob)
-
-                            if "rollout_log_probs" in phase_batch.batch.keys():
-                                rollout_old_log_probs = phase_batch.batch["rollout_log_probs"]
-                                actor_old_log_probs = phase_batch.batch["old_log_probs"]
-                                attention_mask = phase_batch.batch["attention_mask"]
-                                responses = phase_batch.batch["responses"]
-                                response_length = responses.size(1)
-                                response_mask = attention_mask[:, -response_length:]
-
-                                rollout_probs = torch.exp(rollout_old_log_probs)
-                                actor_probs = torch.exp(actor_old_log_probs)
-                                rollout_probs_diff = torch.abs(rollout_probs - actor_probs)
-                                rollout_probs_diff = torch.masked_select(rollout_probs_diff, response_mask.bool())
-                                metrics[f"{phase_prefix}training/rollout_probs_diff_max"] = torch.max(rollout_probs_diff).detach().item()
-                                metrics[f"{phase_prefix}training/rollout_probs_diff_mean"] = torch.mean(rollout_probs_diff).detach().item()
-                                metrics[f"{phase_prefix}training/rollout_probs_diff_std"] = torch.std(rollout_probs_diff).detach().item()
-
-                        if phase_strategy in ("entropy", "entropy-hybrid"):
-                            if entropys is None:
-                                raise RuntimeError(f"{phase_name} phase uses entropy reward but compute_log_prob did not return entropys.")
-                            # `entropy-hybrid` restricts entropy to tokens inside <select>...</select>
-                            # (emitted by rollout as `select_loss_mask`), intersected with the phase
-                            # mask. Users who want to exclude the initial <select> block from this
-                            # computation can move `first_select` to the other phase via
-                            # `mask_categories`; the intersection will drop it automatically.
-                            phase_mask_f = phase_batch.batch[phase_mask_key].to(torch.float32)
-                            entropy_mask_f = phase_mask_f
-                            if phase_strategy == "entropy-hybrid":
-                                entropy_mask_f = entropy_mask_f * phase_batch.batch["select_loss_mask"].to(torch.float32)
-                            # Always exclude open/close tag boundary tokens (any of <select>,
-                            # </select>, <think>, </think>, <answer>, </answer>, <search>,
-                            # </search>, <python>, </python>, <result>, </result>) from the
-                            # entropy reduction. This protects tool-call structure: the policy
-                            # gradient still credits these tokens through the GRPO `response_mask`,
-                            # but the entropy bonus and direct entropy regularizer skip them so
-                            # entropy maximization cannot push the model off the structural tags.
-                            entropy_mask_f = entropy_mask_f * phase_batch.batch["non_border_loss_mask"].to(torch.float32)
-                            # Diagnostic mirrors the mask actually used for the reduction.
-                            phase_batch.batch[f"{phase_name}_token_entropy"] = entropys.to(torch.float32) * entropy_mask_f
-                            # Persist the same m^phase used for the entropy *reward* as the mask
-                            # consumed by the entropy *regularizer* in update_policy. Identity
-                            # of masks across the two channels is intentional: both channels are
-                            # gated on the same scoring strategy, so they share m^phase.
-                            phase_batch.batch["entropy_reg_loss_mask"] = entropy_mask_f
-                            reward_tensor, entropy_metrics = self._build_entropy_scalar_reward(
-                                entropys=entropys,
-                                phase_batch=phase_batch,
-                                phase_mask_key=phase_mask_key,
-                                entropy_cfg=phase_reward_cfg.entropy,
-                                entropy_mask=entropy_mask_f,
+                        if self._phase_algorithm(phase_reward_cfg) == "dapo":
+                            phase_batch, phase_reward_extra_infos_dict, data_iter = self._collect_phase_batch_dapo(
+                                data_iter, phase_name, phase_rollout_n, phase_mask_key, timing_raw, metrics
                             )
-                            metrics.update(self._prefix_metrics(entropy_metrics, phase_prefix))
-                        elif phase_strategy == "maxentropy_rl":
-                            if entropys is None:
-                                raise RuntimeError(f"{phase_name} phase uses maxentropy_rl reward but compute_log_prob did not return entropys.")
-                            me_cfg = phase_reward_cfg.max_entropy
-                            # Reduction support set: phase mask intersected with the rollout-emitted
-                            # tool-portion mask (default `tool_loss_mask` -> first_select+select+search+python),
-                            # then border-excluded so entropy maximization on tag tokens can't
-                            # break tool-call structure (same rationale as the entropy strategies).
-                            phase_mask_f = phase_batch.batch[phase_mask_key].to(torch.float32)
-                            entropy_mask_f = phase_mask_f * phase_batch.batch[me_cfg.mask_key].to(torch.float32)
-                            entropy_mask_f = entropy_mask_f * phase_batch.batch["non_border_loss_mask"].to(torch.float32)
-                            phase_batch.batch[f"{phase_name}_token_entropy"] = entropys.to(torch.float32) * entropy_mask_f
-                            # Reuse `_build_entropy_scalar_reward` by mapping `alpha` -> `scale`
-                            # and disabling the format gate; the scorer's -1 on bad format is
-                            # preserved unchanged in `reward_tensor` (combined later in `_adv`),
-                            # so the entropy term is added unconditionally.
-                            me_entropy_cfg = OmegaConf.create({
-                                "reduction": me_cfg.reduction,
-                                "normalize": me_cfg.normalize,
-                                "scale": me_cfg.alpha,
-                                "clamp_min": None,
-                                "clamp_max": None,
-                                "format_gate": False,
-                            })
-                            entropy_reward_tensor, entropy_metrics = self._build_entropy_scalar_reward(
-                                entropys=entropys,
-                                phase_batch=phase_batch,
-                                phase_mask_key=phase_mask_key,
-                                entropy_cfg=me_entropy_cfg,
-                                entropy_mask=entropy_mask_f,
+                        else:
+                            phase_batch, phase_reward_extra_infos_dict = self._phase_rollout_to_scored_batch(
+                                step_gen_batch, phase_name, phase_rollout_n, phase_mask_key, timing_raw, metrics
                             )
-                            metrics.update(self._prefix_metrics(entropy_metrics, phase_prefix))
-
-                        if self.use_reference_policy:
-                            with _timer(f"{phase_name}_ref", timing_raw):
-                                if not self.ref_in_actor:
-                                    ref_log_prob = self.ref_policy_wg.compute_ref_log_prob(phase_batch)
-                                else:
-                                    ref_log_prob = self.actor_rollout_wg.compute_ref_log_prob(phase_batch)
-                                phase_batch = phase_batch.union(ref_log_prob)
-
-                        if self.use_critic:
-                            with _timer(f"{phase_name}_values", timing_raw):
-                                values = self.critic_wg.compute_values(phase_batch)
-                                phase_batch = phase_batch.union(values)
+                            metrics[f"{phase_prefix}training/num_gen_batches"] = 1
 
                         with _timer(f"{phase_name}_adv", timing_raw):
-                            if phase_strategy in ("scorer", "maxentropy_rl") and self.config.reward_model.launch_reward_fn_async:
-                                reward_tensor, phase_reward_extra_infos_dict = ray.get(future_reward)
-                            if reward_tensor is None:
-                                raise RuntimeError(f"{phase_name} reward_tensor was not initialized.")
-                            if phase_strategy == "maxentropy_rl":
-                                # r_i = scorer_i + alpha * ent_i; both terms are sparse scalars at
-                                # the last valid response token, so addition stays sparse and
-                                # GRPO's sum(dim=-1) recovers r_i directly.
-                                reward_tensor = reward_tensor + entropy_reward_tensor.to(reward_tensor.device)
-                            phase_batch.batch["token_level_scores"] = reward_tensor
-                            if phase_reward_extra_infos_dict:
-                                phase_batch.non_tensor_batch.update({k: np.array(v) for k, v in phase_reward_extra_infos_dict.items()})
-                                if phase_strategy in ("scorer", "maxentropy_rl"):
-                                    metrics.update(
-                                        self._prefix_metrics(
-                                            self._build_scorer_metrics(phase_reward_extra_infos_dict),
-                                            phase_prefix,
-                                        )
-                                    )
-
-                            if self.config.algorithm.use_kl_in_reward:
-                                phase_batch, kl_metrics = apply_kl_penalty(
-                                    phase_batch,
-                                    kl_ctrl=self.kl_ctrl_in_reward,
-                                    kl_penalty=self.config.algorithm.kl_penalty,
-                                )
-                                metrics.update(self._prefix_metrics(kl_metrics, phase_prefix))
-                            else:
-                                phase_batch.batch["token_level_rewards"] = phase_batch.batch["token_level_scores"]
-
                             self._apply_tool_failure_before_grpo(phase_batch)
 
-                            # Both strategies emit a sparse scalar at the last valid response
-                            # token, so GRPO's sum(dim=-1) directly recovers the per-sample
-                            # score with no further aggregation needed here.
                             phase_batch = compute_advantage(
                                 phase_batch,
                                 adv_estimator=self.config.algorithm.adv_estimator,

@@ -3,6 +3,8 @@
 set -e
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+SCRIPT_PATH="${SCRIPT_DIR}/$(basename "${BASH_SOURCE[0]}")"
+CONFIG_PATH="${SCRIPT_DIR}/config"
 VERL_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 ARPO_ROOT="$(dirname "$VERL_ROOT")"
 REPO_ROOT="$(dirname "$ARPO_ROOT")"
@@ -23,8 +25,9 @@ export PYTHONPATH="${VERL_ROOT}:$PYTHONPATH"
 
 source "${SCRIPT_DIR}/secrets.sh"
 
+LAUNCH_CONFIG_PATH="${SCRIPT_DIR}/$1"
 # Parse YAML config — all keys are uppercased and exported as shell variables
-eval "$(python3 -c 'import yaml,sys,shlex;cfg=yaml.safe_load(open(sys.argv[1]));[print(k.upper()+"="+shlex.quote("null" if v is None else "true" if isinstance(v,bool) and v else "false" if isinstance(v,bool) else str(v))) for k,v in cfg.items()]' "${SCRIPT_DIR}/$1")"
+eval "$(python3 -c 'import yaml,sys,shlex;cfg=yaml.safe_load(open(sys.argv[1]));[print(k.upper()+"="+shlex.quote("null" if v is None else "true" if isinstance(v,bool) and v else "false" if isinstance(v,bool) else str(v))) for k,v in cfg.items()]' "${LAUNCH_CONFIG_PATH}")"
 
 # Construct full paths from roots (defined in secrets.sh) + relative paths from config
 TRAIN_FILES="${ARPO_ROOT}/${TRAIN_FILES}"
@@ -39,7 +42,7 @@ wandb login --relogin "${WANDB_API_KEY}"
 export WANDB_DIR="${SAVE_PATH}"
 
 ARGS=(
-    --config-path="${SCRIPT_DIR}/config"
+    --config-path="${CONFIG_PATH}"
     --config-name=echo_trainer
     algorithm.adv_estimator=grpo
     algorithm.kl_ctrl.kl_coef=0.0
@@ -133,5 +136,14 @@ ARGS=(
     trainer.resume_mode="${RESUME_MODE}"
     "hydra.run.dir=${SAVE_PATH}/outputs"
 )
+
+# Snapshot launch artifacts into the checkpoint folder (self-describing runs).
+# Hydra also writes the resolved config under ${SAVE_PATH}/outputs/.hydra/.
+CONFIG_SNAPSHOT_DIR="${SAVE_PATH}/training_config"
+mkdir -p "${CONFIG_SNAPSHOT_DIR}"
+cp "${SCRIPT_PATH}" "${CONFIG_SNAPSHOT_DIR}/launch_script.sh"
+cp "${LAUNCH_CONFIG_PATH}" "${CONFIG_SNAPSHOT_DIR}/launch_config.yaml"
+cp -r "${CONFIG_PATH}" "${CONFIG_SNAPSHOT_DIR}/config"
+printf '%s\n' "${ARGS[@]:2}" > "${CONFIG_SNAPSHOT_DIR}/launch_hydra_overrides.txt"
 
 python3 -m recipe.echo.main_echo "${ARGS[@]}" 2>&1 | tee "${SAVE_PATH}/run.log"

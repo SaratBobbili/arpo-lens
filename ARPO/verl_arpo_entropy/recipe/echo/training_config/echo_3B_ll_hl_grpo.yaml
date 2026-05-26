@@ -1,5 +1,5 @@
 project_name: qwen3BInst
-experiment_name: echo3BInst_ll_hl_dapo_norm_on
+experiment_name: echo3BInst_ll_hl_grpo_norm_on
 nnodes: 1
 n_gpus_per_node: 8
 

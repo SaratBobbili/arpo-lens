@@ -178,12 +178,9 @@ Compared to ECHO:
   `reward/f1_mean` + `reward/bad_format_rate` (no
   `format_pass_rate`, `high_level_valid_rate`, `low_level_valid_rate`,
   `no_tool_rate`).
-- **Different scorer scale.** The ARPO scorer adds a **+0.1 multi-tool
-  bonus** when the answer is correct *and* both `</search>` and `</python>`
-  are present. So ARPO `score` can exceed `1.0` (up to `1.1`) per sample,
-  while ECHO `score` is bounded in `[-1, 1]`. Whenever you compare
-  `critic/score/mean` between the two trainers, remember ARPO's mean is
-  inflated by this bonus.
+- **Scorer scale.** Both ARPO and ECHO add a **+0.1 multi-tool bonus** when
+  the answer is correct and both `</search>` and `</python>` are present, so
+  `score` can exceed `1.0` (up to `1.1`) per sample.
 - **No entropy reward channel.** ARPO has no
   `reward/entropy_scalar_mean*`. There's only the standard
   `actor/entropy_loss` (the ECHO equivalent of which is renamed —
@@ -241,7 +238,7 @@ have no ARPO counterpart at all.
 | LL "valid format but no tool used" rate | — | `low_level/reward/no_tool_rate` (ECHO-only) |
 | LL entropy reward axis (clean, on good-format∧tool-using samples) | — | `low_level/reward/entropy_scalar_mean_good` (ECHO-only) |
 | Per-phase rollout budgets | — (single budget = `rollout.n`) | `training/{high_level,low_level}_rollout_budget` (ECHO-only) |
-| Multi-tool +0.1 bonus baked into score | yes (shifts `score` up to `1.1`) | no (`score` ∈ `[-1, 1]`) |
+| Multi-tool +0.1 bonus baked into score | yes (shifts `score` up to `1.1`) | yes (same rule as ARPO) |
 
 ## TL;DR — which metrics to watch
 

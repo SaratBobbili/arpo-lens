@@ -488,12 +488,15 @@ def compute_score(data_source, solution_str, ground_truth, extra_info=None):
     result["f1_score"] = f1_score
     print(f"f1_score: {f1_score}, answer: {answer}, ground_truth: {ground_truth}")
 
-    if f1_score > 0:
+    if f1_score > 0 and "</search>" in response and "</python>" in response:
+        result["score"] = f1_score + 0.1
+        result["reason"] = f"correct answer and calling search and python at the same time, get score: {f1_score + 0.1}"
+    elif f1_score > 0:
         result["score"] = f1_score
-        result["reason"] = f"correct, f1: {f1_score}"
+        result["reason"] = f"correct answer, get f1 score: {f1_score}"
     else:
         result["score"] = 0
-        result["reason"] = f"wrong answer, good format: {answer}"
+        result["reason"] = f"wrong answer but good format: {answer}"
 
     return result
 

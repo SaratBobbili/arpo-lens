@@ -1,5 +1,5 @@
 project_name: qwen3BInst
-experiment_name: echo3BInst_ll_hl_dapo_norm_on
+experiment_name: echo3BInst_ll_hl_multiple_updates_per_phase_norm_on
 nnodes: 1
 n_gpus_per_node: 8
 
@@ -29,17 +29,19 @@ tool_call_limit: 3
 total_epochs: 2
 save_freq: 5
 test_freq: 5
+save_best_checkpoint: true
+best_checkpoint_metric: val-core/reward
 max_actor_ckpt_to_keep: 1
 resume_mode: auto
 
 phase_order: '["low_level", "high_level"]'
-high_level_update_repeats: 1
-low_level_update_repeats: 1
+high_level_update_repeats: 10
+low_level_update_repeats: 10
 high_level_reward_strategy: scorer
 low_level_reward_strategy: entropy
 high_level_algorithm: grpo
 low_level_algorithm: grpo
-norm_adv_by_std_in_grpo: true
+norm_adv_by_std_in_grpo: True
 high_level_filter_groups_enable: True
 low_level_filter_groups_enable: True
 high_level_filter_metric: seq_reward

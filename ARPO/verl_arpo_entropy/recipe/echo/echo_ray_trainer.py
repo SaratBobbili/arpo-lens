@@ -15,6 +15,7 @@ trainer code that can diverge later.
 
 import json
 import os
+import shutil
 import uuid
 from copy import deepcopy
 import math
@@ -330,6 +331,40 @@ class RayECHOTrainer(RayPPOTrainer):
     def _phase_algorithm(phase_reward_cfg) -> str:
         return phase_reward_cfg.get("algorithm", "grpo")
 
+    @staticmethod
+    def _canonical_best_metric_selector(selector: str) -> str:
+        normalized = str(selector).strip().lower().replace("_", "-")
+        if normalized in ("val-core/reward", "reward", "val-core_reward"):
+            return "val-core/reward"
+        if normalized in ("val-aux/f1-score", "f1-score", "f1", "val-aux/f1_score"):
+            return "val-aux/f1-score"
+        raise ValueError(
+            "trainer.best_checkpoint_metric must be one of {'val-core/reward', 'val-aux/f1-score'}."
+        )
+
+    def _resolve_best_metric_from_val(self, val_metrics: dict) -> tuple[str, float]:
+        selector = self._canonical_best_metric_selector(self.config.trainer.best_checkpoint_metric)
+        if selector == "val-core/reward":
+            matched = [(k, v) for k, v in val_metrics.items() if k.startswith("val-core/") and "/reward/" in k]
+        else:
+            matched = [(k, v) for k, v in val_metrics.items() if k.startswith("val-aux/") and "/f1_score/" in k]
+        if not matched:
+            raise ValueError(
+                f"Could not resolve metric '{selector}' from validation metrics keys: {list(val_metrics.keys())[:20]}"
+            )
+        metric_key, metric_value = max(matched, key=lambda kv: float(kv[1]))
+        return metric_key, float(metric_value)
+
+    def _sync_best_checkpoint_dir(self) -> None:
+        src_dir = os.path.join(self.config.trainer.default_local_dir, f"global_step_{self.global_steps}")
+        dst_dir = os.path.join(self.config.trainer.default_local_dir, "best_checkpoint")
+        if os.path.lexists(dst_dir):
+            if os.path.islink(dst_dir) or os.path.isfile(dst_dir):
+                os.unlink(dst_dir)
+            else:
+                shutil.rmtree(dst_dir)
+        shutil.copytree(src_dir, dst_dir)
+
     def _phase_update_repeats(self) -> dict[str, int]:
         repeats_cfg = self.config.reward_model.get("phase_update_repeats", {})
         phase_names = ("high_level", "low_level")
@@ -634,6 +669,9 @@ class RayECHOTrainer(RayPPOTrainer):
         )
 
         self.global_steps = 0
+        self._best_metric_value = float("-inf")
+        self._best_metric_step = -1
+        self._best_metric_key = None
 
         # Resolve validator profile once from the rollout mask_categories so the
         # format validator's HL/LL routing matches the phase mask layout.
@@ -700,6 +738,7 @@ class RayECHOTrainer(RayPPOTrainer):
                     }
                     timing_raw = {}
                     is_last_step = self.global_steps >= self.total_training_steps
+                    saved_checkpoint_this_step = False
 
                     with _timer("step", timing_raw):
                         phase_prefix = f"{phase_name}/"
@@ -797,7 +836,39 @@ class RayECHOTrainer(RayPPOTrainer):
                                     last_val_metrics = val_metrics
                             metrics.update(val_metrics)
 
-                        if self.config.trainer.save_freq > 0 and (is_last_step or self.global_steps % self.config.trainer.save_freq == 0):
+                            if bool(self.config.trainer.get("save_best_checkpoint", False)):
+                                current_metric_key, current_metric_value = self._resolve_best_metric_from_val(val_metrics)
+                                selector = self._canonical_best_metric_selector(self.config.trainer.best_checkpoint_metric)
+                                metrics["training/best_checkpoint_metric_selector_id"] = (
+                                    0.0 if selector == "val-core/reward" else 1.0
+                                )
+                                metrics["training/best_checkpoint_metric_current"] = current_metric_value
+                                metrics["training/best_checkpoint_metric_best"] = self._best_metric_value
+                                metrics["training/best_checkpoint_metric_improved"] = float(
+                                    current_metric_value > self._best_metric_value
+                                )
+                                if current_metric_value > self._best_metric_value:
+                                    self._best_metric_value = current_metric_value
+                                    self._best_metric_step = self.global_steps
+                                    self._best_metric_key = current_metric_key
+                                    if not saved_checkpoint_this_step:
+                                        with _timer("save_checkpoint", timing_raw):
+                                            self._save_checkpoint()
+                                        saved_checkpoint_this_step = True
+                                    with _timer("save_best_checkpoint", timing_raw):
+                                        self._sync_best_checkpoint_dir()
+                                    print(
+                                        f"[best_checkpoint] updated: selector={selector}, "
+                                        f"resolved_key={current_metric_key}, value={current_metric_value}, step={self.global_steps}"
+                                    )
+                                metrics["training/best_checkpoint_metric_best"] = self._best_metric_value
+                                metrics["training/best_checkpoint_metric_best_step"] = float(self._best_metric_step)
+
+                        if (
+                            not saved_checkpoint_this_step
+                            and self.config.trainer.save_freq > 0
+                            and (is_last_step or self.global_steps % self.config.trainer.save_freq == 0)
+                        ):
                             with _timer("save_checkpoint", timing_raw):
                                 self._save_checkpoint()
 

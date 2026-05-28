@@ -33,6 +33,8 @@ max_actor_ckpt_to_keep: 1
 resume_mode: auto
 
 phase_order: '["low_level", "high_level"]'
+high_level_update_repeats: 1
+low_level_update_repeats: 1
 high_level_reward_strategy: scorer
 low_level_reward_strategy: entropy
 high_level_algorithm: grpo

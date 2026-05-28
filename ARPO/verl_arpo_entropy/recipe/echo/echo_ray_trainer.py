@@ -330,6 +330,24 @@ class RayECHOTrainer(RayPPOTrainer):
     def _phase_algorithm(phase_reward_cfg) -> str:
         return phase_reward_cfg.get("algorithm", "grpo")
 
+    def _phase_update_repeats(self) -> dict[str, int]:
+        repeats_cfg = self.config.reward_model.get("phase_update_repeats", {})
+        phase_names = ("high_level", "low_level")
+        assert set(repeats_cfg.keys()) == set(phase_names), (
+            f"reward_model.phase_update_repeats must have keys {phase_names}, got {list(repeats_cfg.keys())}."
+        )
+        repeats = {name: int(repeats_cfg[name]) for name in phase_names}
+        for name, repeat in repeats.items():
+            assert repeat > 0, f"reward_model.phase_update_repeats.{name} must be > 0, got {repeat}."
+        return repeats
+
+    def _expand_phase_specs_with_repeats(self, phase_specs) -> list[tuple[str, int, str]]:
+        repeats = self._phase_update_repeats()
+        expanded = []
+        for phase_name, phase_rollout_n, phase_mask_key in phase_specs:
+            expanded.extend([(phase_name, phase_rollout_n, phase_mask_key)] * repeats[phase_name])
+        return expanded
+
     def _next_batch_dict(self, data_iter):
         try:
             return next(data_iter), data_iter
@@ -338,7 +356,7 @@ class RayECHOTrainer(RayPPOTrainer):
             return next(data_iter), data_iter
 
     @staticmethod
-    def _pop_gen_batch(batch: DataProto) -> DataProto:
+    def _pop_gen_batch(batch: DataProto) -> tuple[DataProto, DataProto]:
         batch_keys_to_pop = ["input_ids", "attention_mask", "position_ids"]
         non_tensor_batch_keys_to_pop = ["raw_prompt_ids"]
         if "multi_modal_data" in batch.non_tensor_batch:
@@ -347,14 +365,16 @@ class RayECHOTrainer(RayPPOTrainer):
             non_tensor_batch_keys_to_pop.append("raw_prompt")
         if "tools_kwargs" in batch.non_tensor_batch:
             non_tensor_batch_keys_to_pop.append("tools_kwargs")
-        return batch.pop(
+        gen_batch = batch.pop(
             batch_keys=batch_keys_to_pop,
             non_tensor_batch_keys=non_tensor_batch_keys_to_pop,
         )
+        return gen_batch, batch
 
     def _phase_rollout_to_scored_batch(
         self,
         gen_batch: DataProto,
+        prompt_batch: DataProto,
         phase_name: str,
         phase_rollout_n: int,
         phase_mask_key: str,
@@ -370,8 +390,8 @@ class RayECHOTrainer(RayPPOTrainer):
 
         phase_batch = DataProto(
             batch=TensorDict({}, batch_size=gen_batch.batch.batch_size),
-            non_tensor_batch=deepcopy(gen_batch.non_tensor_batch),
-            meta_info=deepcopy(gen_batch.meta_info) if gen_batch.meta_info else {},
+            non_tensor_batch=deepcopy(prompt_batch.non_tensor_batch),
+            meta_info=deepcopy(prompt_batch.meta_info) if prompt_batch.meta_info else {},
         )
         phase_batch.meta_info["phase"] = phase_name
         phase_batch.meta_info["validator_profile"] = self._validator_profile
@@ -570,10 +590,10 @@ class RayECHOTrainer(RayPPOTrainer):
         while num_prompt_in_batch < prompt_bsz:
             batch_dict, data_iter = self._next_batch_dict(data_iter)
             batch = DataProto.from_single_dict(batch_dict)
-            gen_batch = self._pop_gen_batch(batch)
+            gen_batch, prompt_batch = self._pop_gen_batch(batch)
             num_gen_batches += 1
             new_batch, phase_reward_extra = self._phase_rollout_to_scored_batch(
-                gen_batch, phase_name, phase_rollout_n, phase_mask_key, timing_raw, metrics
+                gen_batch, prompt_batch, phase_name, phase_rollout_n, phase_mask_key, timing_raw, metrics
             )
             new_batch, num_kept = filter_informative_groups(new_batch, metric_name)
             num_prompt_in_batch += num_kept
@@ -647,50 +667,41 @@ class RayECHOTrainer(RayPPOTrainer):
         for epoch in range(self.config.trainer.total_epochs):
             data_iter = iter(self.train_dataloader)
             while self.global_steps <= self.total_training_steps:
-                metrics = {}
-                timing_raw = {}
-                is_last_step = self.global_steps >= self.total_training_steps
+                total_rollout_budget = int(self.config.actor_rollout_ref.rollout.n)
+                high_level_budget = int(self.config.actor_rollout_ref.rollout.get("high_level_budget", total_rollout_budget))
+                assert 0 <= high_level_budget <= total_rollout_budget, (
+                    f"Invalid high_level_budget={high_level_budget}. "
+                    f"Must satisfy 0 <= high_level_budget <= rollout.n({total_rollout_budget})."
+                )
+                low_level_budget = total_rollout_budget - high_level_budget
 
-                with _timer("step", timing_raw):
-                    total_rollout_budget = int(self.config.actor_rollout_ref.rollout.n)
-                    high_level_budget = int(self.config.actor_rollout_ref.rollout.get("high_level_budget", total_rollout_budget))
-                    assert 0 <= high_level_budget <= total_rollout_budget, (
-                        f"Invalid high_level_budget={high_level_budget}. "
-                        f"Must satisfy 0 <= high_level_budget <= rollout.n({total_rollout_budget})."
-                    )
-                    low_level_budget = total_rollout_budget - high_level_budget
-                    metrics["training/high_level_rollout_budget"] = high_level_budget
-                    metrics["training/low_level_rollout_budget"] = low_level_budget
+                phase_registry = {
+                    "high_level": (high_level_budget, "high_level_loss_mask"),
+                    "low_level": (low_level_budget, "low_level_loss_mask"),
+                }
+                phase_order = list(self.config.reward_model.phase_order)
+                assert set(phase_order) == set(phase_registry.keys()), (
+                    f"reward_model.phase_order must be a permutation of {sorted(phase_registry)}, got {phase_order}."
+                )
+                phase_specs = [
+                    (name, phase_registry[name][0], phase_registry[name][1])
+                    for name in phase_order
+                    if phase_registry[name][0] > 0
+                ]
+                assert phase_specs, "At least one hierarchical phase must have positive rollout budget."
+                self._validate_phase_reward_configs(phase_specs)
+                repeated_phase_specs = self._expand_phase_specs_with_repeats(phase_specs)
 
-                    # Phase metadata keyed by phase name so `phase_order` from config
-                    # selects which phase's GRPO pipeline runs first. Each entry is
-                    # (rollout_budget, loss_mask_key); phases with zero budget are
-                    # skipped while preserving the requested order.
-                    phase_registry = {
-                        "high_level": (high_level_budget, "high_level_loss_mask"),
-                        "low_level": (low_level_budget, "low_level_loss_mask"),
+                norm_adv_by_std_in_grpo = self.config.algorithm.get("norm_adv_by_std_in_grpo", True)
+                for phase_name, phase_rollout_n, phase_mask_key in repeated_phase_specs:
+                    metrics = {
+                        "training/high_level_rollout_budget": high_level_budget,
+                        "training/low_level_rollout_budget": low_level_budget,
                     }
-                    phase_order = list(self.config.reward_model.phase_order)
-                    assert set(phase_order) == set(phase_registry.keys()), (
-                        f"reward_model.phase_order must be a permutation of {sorted(phase_registry)}, got {phase_order}."
-                    )
-                    phase_specs = [
-                        (name, phase_registry[name][0], phase_registry[name][1])
-                        for name in phase_order
-                        if phase_registry[name][0] > 0
-                    ]
-                    assert phase_specs, "At least one hierarchical phase must have positive rollout budget."
-                    self._validate_phase_reward_configs(phase_specs)
+                    timing_raw = {}
+                    is_last_step = self.global_steps >= self.total_training_steps
 
-                    step_gen_batch = None
-                    if any(self._phase_algorithm(self._phase_reward_cfg(n)) == "grpo" for n, _, _ in phase_specs):
-                        batch_dict, data_iter = self._next_batch_dict(data_iter)
-                        step_gen_batch = self._pop_gen_batch(DataProto.from_single_dict(batch_dict))
-
-                    norm_adv_by_std_in_grpo = self.config.algorithm.get("norm_adv_by_std_in_grpo", True)
-                    last_phase_batch = None
-
-                    for phase_name, phase_rollout_n, phase_mask_key in phase_specs:
+                    with _timer("step", timing_raw):
                         phase_prefix = f"{phase_name}/"
                         phase_reward_cfg = self._phase_reward_cfg(phase_name)
                         phase_strategy = phase_reward_cfg.strategy
@@ -700,8 +711,10 @@ class RayECHOTrainer(RayPPOTrainer):
                                 data_iter, phase_name, phase_rollout_n, phase_mask_key, timing_raw, metrics
                             )
                         else:
+                            batch_dict, data_iter = self._next_batch_dict(data_iter)
+                            step_gen_batch, step_prompt_batch = self._pop_gen_batch(DataProto.from_single_dict(batch_dict))
                             phase_batch, phase_reward_extra_infos_dict = self._phase_rollout_to_scored_batch(
-                                step_gen_batch, phase_name, phase_rollout_n, phase_mask_key, timing_raw, metrics
+                                step_gen_batch, step_prompt_batch, phase_name, phase_rollout_n, phase_mask_key, timing_raw, metrics
                             )
                             metrics[f"{phase_prefix}training/num_gen_batches"] = 1
 
@@ -736,23 +749,9 @@ class RayECHOTrainer(RayPPOTrainer):
                         if self.config.trainer.critic_warmup <= self.global_steps:
                             with _timer(f"{phase_name}_update_actor", timing_raw):
                                 phase_batch.meta_info["multi_turn"] = self.config.actor_rollout_ref.rollout.multi_turn.enable
-                                # Direct entropy regularizer is gated on the phase's scoring
-                                # strategy: only enabled when the phase uses an entropy-based
-                                # reward (entropy / entropy-hybrid), so the regularizer auto-
-                                # disables for `scorer` and `maxentropy_rl` (where entropy
-                                # already enters via the reward channel). When enabled, the
-                                # mask m^phase is `entropy_reg_loss_mask`, populated above to
-                                # mirror the reward-side intersection (phase_mask, optionally
-                                # ∩ select_loss_mask for entropy-hybrid).
                                 if phase_strategy in ("entropy", "entropy-hybrid"):
                                     phase_batch.meta_info["entropy_coeff_override"] = float(phase_reward_cfg.entropy.get("reg_coeff", 0.0))
                                     phase_batch.meta_info["entropy_loss_mask_key"] = "entropy_reg_loss_mask"
-                                    # Mirror the reward-channel `normalize` flag onto the
-                                    # regularizer so a single yaml knob sets the units of H
-                                    # for both channels. When true, dp_actor divides per-token
-                                    # H by log(vocab_size) before agg_loss, so reg_coeff acts
-                                    # on H ∈ [0,1] (matching the reward path). When false, the
-                                    # regularizer keeps raw nats (~log(vocab_size) ≈ 12x scale).
                                     if bool(phase_reward_cfg.entropy.get("normalize", False)):
                                         phase_batch.meta_info["entropy_loss_normalizer"] = math.log(self.tokenizer.vocab_size)
                                 actor_output = self.actor_rollout_wg.update_actor(phase_batch)
@@ -773,63 +772,52 @@ class RayECHOTrainer(RayPPOTrainer):
                                     dump_path=rollout_data_dir,
                                 )
 
-                        last_phase_batch = phase_batch
-
-                    batch = last_phase_batch
-
-                    # When one phase consumes the whole rollout budget, keep logging
-                    # for the zero-budget phase by re-scoring the same rollouts
-                    # under that phase's reward semantics. No extra rollouts or
-                    # actor/critic updates are run for the zero-budget phase.
-                    if bool(self.config.trainer.get("log_zero_budget_phase_metrics", True)) and len(phase_specs) == 1:
-                        active_phase_name = phase_specs[0][0]
-                        for skipped_phase_name, (skipped_budget, skipped_mask_key) in phase_registry.items():
-                            if skipped_budget != 0:
-                                continue
-                            metrics.update(
-                                self._collect_logging_only_phase_metrics(
-                                    source_batch=last_phase_batch,
-                                    target_phase_name=skipped_phase_name,
-                                    target_phase_mask_key=skipped_mask_key,
+                        if bool(self.config.trainer.get("log_zero_budget_phase_metrics", True)) and len(phase_specs) == 1:
+                            active_phase_name = phase_specs[0][0]
+                            for skipped_phase_name, (skipped_budget, skipped_mask_key) in phase_registry.items():
+                                if skipped_budget != 0:
+                                    continue
+                                metrics.update(
+                                    self._collect_logging_only_phase_metrics(
+                                        source_batch=phase_batch,
+                                        target_phase_name=skipped_phase_name,
+                                        target_phase_mask_key=skipped_mask_key,
+                                    )
                                 )
-                            )
-                            self._copy_tool_metrics_between_phases(
-                                metrics=metrics,
-                                source_phase=active_phase_name,
-                                target_phase=skipped_phase_name,
-                            )
+                                self._copy_tool_metrics_between_phases(
+                                    metrics=metrics,
+                                    source_phase=active_phase_name,
+                                    target_phase=skipped_phase_name,
+                                )
 
-                    # validate
-                    if self.val_reward_fn is not None and self.config.trainer.test_freq > 0 and (is_last_step or self.global_steps % self.config.trainer.test_freq == 0):
-                        with _timer("testing", timing_raw):
-                            val_metrics: dict = self._validate()
-                            if is_last_step:
-                                last_val_metrics = val_metrics
-                        metrics.update(val_metrics)
+                        if self.val_reward_fn is not None and self.config.trainer.test_freq > 0 and (is_last_step or self.global_steps % self.config.trainer.test_freq == 0):
+                            with _timer("testing", timing_raw):
+                                val_metrics: dict = self._validate()
+                                if is_last_step:
+                                    last_val_metrics = val_metrics
+                            metrics.update(val_metrics)
 
-                    if self.config.trainer.save_freq > 0 and (is_last_step or self.global_steps % self.config.trainer.save_freq == 0):
-                        with _timer("save_checkpoint", timing_raw):
-                            self._save_checkpoint()
+                        if self.config.trainer.save_freq > 0 and (is_last_step or self.global_steps % self.config.trainer.save_freq == 0):
+                            with _timer("save_checkpoint", timing_raw):
+                                self._save_checkpoint()
 
-                # training metrics
-                metrics.update(
-                    {
-                        "training/global_step": self.global_steps,
-                        "training/epoch": epoch,
-                    }
-                )
-                # collect metrics
-                metrics.update(compute_timing_metrics(batch=batch, timing_raw=timing_raw))
-                n_gpus = self.resource_pool_manager.get_n_gpus()
-                metrics.update(compute_throughout_metrics(batch=batch, timing_raw=timing_raw, n_gpus=n_gpus))
+                    metrics.update(
+                        {
+                            "training/global_step": self.global_steps,
+                            "training/epoch": epoch,
+                        }
+                    )
+                    metrics.update(compute_timing_metrics(batch=phase_batch, timing_raw=timing_raw))
+                    n_gpus = self.resource_pool_manager.get_n_gpus()
+                    metrics.update(compute_throughout_metrics(batch=phase_batch, timing_raw=timing_raw, n_gpus=n_gpus))
 
-                logger.log(data=metrics, step=self.global_steps)
-                self._dump_logging_data(metrics)
+                    logger.log(data=metrics, step=self.global_steps)
+                    self._dump_logging_data(metrics)
 
-                progress_bar.update(1)
-                self.global_steps += 1
-                if is_last_step:
-                    pprint(f"Final validation metrics: {last_val_metrics}")
-                    progress_bar.close()
-                    return
+                    progress_bar.update(1)
+                    self.global_steps += 1
+                    if is_last_step:
+                        pprint(f"Final validation metrics: {last_val_metrics}")
+                        progress_bar.close()
+                        return
 

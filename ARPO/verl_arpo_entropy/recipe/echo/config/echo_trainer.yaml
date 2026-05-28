@@ -32,6 +32,11 @@ reward_model:
   # phase starts. Phases whose rollout budget is 0 are skipped regardless of
   # order. Must be a permutation of {"high_level", "low_level"}.
   phase_order: ["high_level", "low_level"]
+  # Number of full phase updates to run before switching to the next phase in
+  # phase_order. Each repeated phase update counts as one training/global step.
+  phase_update_repeats:
+    high_level: 1
+    low_level: 1
   # Per-phase reward strategy. Each hierarchical phase independently selects how
   # its token-level reward tensor is produced. Both strategies emit a sparse
   # scalar at the last valid response token so GRPO's sum(dim=-1) recovers the

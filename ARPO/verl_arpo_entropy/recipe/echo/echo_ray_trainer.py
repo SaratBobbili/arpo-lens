@@ -788,6 +788,12 @@ class RayECHOTrainer(RayPPOTrainer):
                         if self.config.trainer.critic_warmup <= self.global_steps:
                             with _timer(f"{phase_name}_update_actor", timing_raw):
                                 phase_batch.meta_info["multi_turn"] = self.config.actor_rollout_ref.rollout.multi_turn.enable
+                                phase_batch.meta_info["kl_loss_coef_override"] = float(
+                                    phase_reward_cfg.get(
+                                        "kl_loss_coef",
+                                        self.config.actor_rollout_ref.actor.kl_loss_coef,
+                                    )
+                                )
                                 if phase_strategy in ("entropy", "entropy-hybrid"):
                                     phase_batch.meta_info["entropy_coeff_override"] = float(phase_reward_cfg.entropy.get("reg_coeff", 0.0))
                                     phase_batch.meta_info["entropy_loss_mask_key"] = "entropy_reg_loss_mask"

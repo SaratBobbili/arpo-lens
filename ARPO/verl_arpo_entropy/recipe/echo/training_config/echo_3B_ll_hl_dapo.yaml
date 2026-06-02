@@ -1,5 +1,5 @@
 project_name: qwen3BInst
-experiment_name: echo3BInst_ll_hl_c1_entropy_hybrid_grpo_norm_off_entropy_reg_hl_2
+experiment_name: echo3BInst_ll_grpo_hl_dapo_norm_off
 nnodes: 1
 n_gpus_per_node: 8
 
@@ -35,11 +35,11 @@ max_actor_ckpt_to_keep: 1
 resume_mode: auto
 
 phase_order: '["low_level", "high_level"]'
-high_level_update_repeats: 2
+high_level_update_repeats: 1
 low_level_update_repeats: 1
 high_level_reward_strategy: scorer
 low_level_reward_strategy: entropy-hybrid
-high_level_algorithm: grpo
+high_level_algorithm: dapo
 low_level_algorithm: grpo
 norm_adv_by_std_in_grpo: False
 high_level_filter_groups_enable: True

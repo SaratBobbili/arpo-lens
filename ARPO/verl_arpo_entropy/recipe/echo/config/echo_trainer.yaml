@@ -92,6 +92,7 @@ reward_model:
       # grpo: single rollout pass per step (shared prompts with other GRPO phases).
       # dapo: dynamic sampling — keep prompt groups only if filter metric std > 0.
       algorithm: grpo
+      kl_loss_coef: 0.0
       filter_groups:
         enable: false
         metric: seq_reward
@@ -143,6 +144,7 @@ reward_model:
         normalize: true           # If true, divide per-token entropy by log(vocab_size) before reduction so alpha is tokenizer-agnostic.
     low_level:
       algorithm: grpo
+      kl_loss_coef: 0.0
       filter_groups:
         enable: false
         metric: seq_reward

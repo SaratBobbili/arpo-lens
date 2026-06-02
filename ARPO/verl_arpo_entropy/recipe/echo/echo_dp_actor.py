@@ -24,6 +24,7 @@ class DataParallelECHOActor(DataParallelPPOActor):
         entropy_coeff_override = data.meta_info.get("entropy_coeff_override", None)
         entropy_loss_mask_key = data.meta_info.get("entropy_loss_mask_key", None)
         entropy_loss_normalizer = data.meta_info.get("entropy_loss_normalizer", None)
+        kl_loss_coef_override = data.meta_info.get("kl_loss_coef_override", None)
 
         select_keys = ["responses", "input_ids", "attention_mask", "position_ids", "old_log_probs", "advantages"]
         if multi_turn or "loss_mask" in data.batch.keys():
@@ -126,13 +127,16 @@ class DataParallelECHOActor(DataParallelPPOActor):
                         policy_loss = pg_loss
 
                     if self.config.use_kl_loss:
+                        kl_loss_coef = (
+                            kl_loss_coef_override if kl_loss_coef_override is not None else self.config.kl_loss_coef
+                        )
                         ref_log_prob = data["ref_log_prob"]
                         kld = kl_penalty(logprob=log_prob, ref_logprob=ref_log_prob, kl_penalty=self.config.kl_loss_type)
                         kl_loss = agg_loss(loss_mat=kld, loss_mask=response_mask, loss_agg_mode=loss_agg_mode)
 
-                        policy_loss = policy_loss + kl_loss * self.config.kl_loss_coef
+                        policy_loss = policy_loss + kl_loss * kl_loss_coef
                         metrics["actor/kl_loss"] = kl_loss.detach().item()
-                        metrics["actor/kl_coef"] = self.config.kl_loss_coef
+                        metrics["actor/kl_coef"] = float(kl_loss_coef)
 
                     if self.config.use_dynamic_bsz:
                         loss = policy_loss * (len(data) / self.config.ppo_mini_batch_size)

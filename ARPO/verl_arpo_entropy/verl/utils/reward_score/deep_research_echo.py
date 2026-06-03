@@ -405,8 +405,7 @@ def compute_score(data_source, solution_str, ground_truth, extra_info=None):
         "high_level_valid": False,
         "low_level_valid": False,
         # True when the LL phase sees a format-valid rollout that invoked no
-        # tool. Consumed by _apply_format_gate to zero LL entropy reward
-        # without the terminal bad-format penalty (neutral soft-fail).
+        # tool. Consumed by entropy reward overrides on the LL phase.
         "no_tool_calls": False,
     }
 
@@ -439,10 +438,8 @@ def compute_score(data_source, solution_str, ground_truth, extra_info=None):
         result["reason"] = f"bad format: {phase_reason}"
         return result
 
-    # Strict phase isolation: the LL phase uses this scorer purely as a format
-    # gate (see echo_ray_trainer._apply_format_gate). Answer extraction and
-    # \boxed parsing below are HL concerns (answer tokens are masked HIGH), so
-    # short-circuit here to prevent those from emitting a -1 into LL.
+    # LL phase short-circuits before answer scoring; entropy overrides use the
+    # format verdict and no_tool_calls flag from above.
     if phase == "low_level":
         # A format-valid rollout that never invoked <search>/<python> is a soft
         # fail: non-initial <select> tokens would otherwise soak up LL entropy

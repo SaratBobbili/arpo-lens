@@ -58,12 +58,11 @@ reward_model:
   #                     tokens reduced to one per-sample scalar (sum or mean
   #                     per `entropy.reduction`), optionally normalized by
   #                     log(vocab_size) and scaled/clamped, written at the
-  #                     last valid response token. When `format_gate` is
-  #                     true, bad-format samples are overridden with
-  #                     `bad_format_penalty` and LL soft-fail samples (valid
-  #                     format but no <search>/<python>) are zeroed.
+  #                     last valid response token. Optional overrides via
+  #                     `bad_format_penalty` (0 = disabled) and
+  #                     `no_tool_penalty` (null = disabled; LL phase only).
   #   entropy-hybrid -> Identical to `entropy` (same `entropy:` config block,
-  #                     same format_gate semantics, same sparse write at the
+  #                     same override semantics, same sparse write at the
   #                     last valid response token) except the per-token
   #                     entropy reduction is restricted to tokens inside any
   #                     <select>...</select> block (`select_loss_mask` from
@@ -116,15 +115,10 @@ reward_model:
         normalize: false
         clamp_min: null   # Optional lower bound applied after scale/normalize.
         clamp_max: null   # Optional upper bound applied after scale/normalize.
-        # When true, samples whose decoded response fails the scorer's
-        # phase-local format/parse checks have their entropy scalar replaced
-        # with `bad_format_penalty`, and LL soft-fail samples (valid format,
-        # no tool invoked) are zeroed. Good-format samples keep their entropy
-        # scalar untouched.
-        format_gate: true
-        # Terminal scalar written on format-gate failure. Only consulted when
-        # format_gate is true. Matches the scorer strategy's hard-penalty value.
-        bad_format_penalty: -1.0
+        # Bad-format override: 0 keeps the entropy scalar; non-zero replaces it.
+        bad_format_penalty: 0.0
+        # LL no-tool override: null keeps the entropy scalar; any float replaces it.
+        no_tool_penalty: null
         # Direct entropy regularizer added to the actor loss as
         # L_actor = L_GRPO - reg_coeff * mean_{m^phase}(H(pi_theta(.|x))),
         # where the entropy is the full-vocab entropy of the *current* policy
@@ -159,8 +153,8 @@ reward_model:
         normalize: false
         clamp_min: null
         clamp_max: null
-        format_gate: true
-        bad_format_penalty: -1.0
+        bad_format_penalty: 0.0
+        no_tool_penalty: 0.0
         # See high_level.entropy.reg_coeff for full semantics. Setting this
         # to a positive value enables the direct entropy gradient on the LL
         # phase: L_actor += -reg_coeff * sum(m^LL * H(pi_theta)) / sum(m^LL).

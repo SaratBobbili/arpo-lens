@@ -204,10 +204,10 @@ class RayECHOTrainer(RayPPOTrainer):
         Reduces per-token entropy over `entropy_mask` tokens to one per-sample
         scalar (sum or mean per `entropy_cfg.reduction`), optionally
         normalized by log(vocab_size) and scaled/clamped, then writes that
-        scalar at the last valid response token. When `format_gate` is on,
-        calls the scorer and overrides bad-format samples with
-        `bad_format_penalty` and LL soft-fail samples (flagged via
-        `no_tool_calls`) with zero. GRPO's `sum(dim=-1)` recovers the same
+        scalar at the last valid response token. When `bad_format_penalty != 0`
+        or `no_tool_penalty` is set, calls the scorer and overrides matching
+        samples with those scalars; good rollouts keep their entropy reward.
+        GRPO's `sum(dim=-1)` recovers the same
         per-sample score as the scorer path, so no dense layout or post-hoc
         aggregation is needed.
 
@@ -240,10 +240,11 @@ class RayECHOTrainer(RayPPOTrainer):
             per_sample = torch.clamp(per_sample, min=entropy_cfg.clamp_min, max=entropy_cfg.clamp_max)
 
         metrics: dict = {}
-        if bool(entropy_cfg.get("format_gate", False)):
-            # Scorer emits -1 at the last valid response token iff the phase-local
-            # validator fails, and flags `no_tool_calls` via reward_extra_info for
-            # the LL soft-fail (valid format, no <search>/<python> invoked).
+        bad_format_penalty = float(entropy_cfg.get("bad_format_penalty", 0))
+        no_tool_penalty_cfg = entropy_cfg.get("no_tool_penalty", None)
+        no_tool_penalty_active = no_tool_penalty_cfg is not None
+        reward_override_active = bad_format_penalty != 0 or no_tool_penalty_active
+        if reward_override_active:
             scorer_tensor, reward_extra = compute_reward(phase_batch, self.reward_fn)
             scorer_per_sample = scorer_tensor.to(per_sample.device).sum(dim=-1)
             bad = scorer_per_sample < 0.0
@@ -251,17 +252,14 @@ class RayECHOTrainer(RayPPOTrainer):
             no_tool = torch.tensor(no_tool_flags, dtype=torch.bool, device=per_sample.device)
             metrics["reward/bad_format_rate"] = bad.float().mean().item()
             metrics["reward/no_tool_rate"] = no_tool.float().mean().item()
-            # Pre-gate mean over good-format ∧ has-tool samples only. Isolates the
-            # entropy-reward axis from the format-penalty / no-tool axes so the
-            # downstream JSONL trace has a clean per-step reward signal that
-            # doesn't drift just because the bad-format share moves.
-            keep = (~bad) & (~no_tool)
+            keep = torch.ones(per_sample.size(0), dtype=torch.bool, device=per_sample.device)
+            if bad_format_penalty != 0:
+                keep = keep & (~bad)
+            if no_tool_penalty_active:
+                keep = keep & (~no_tool)
             metrics["reward/entropy_scalar_mean_good"] = (
                 per_sample[keep].mean().detach().item() if keep.any() else 0.0
             )
-            # Hoist HL/LL validator pass rates from the same scorer extras so
-            # the entropy path exposes the same validity diagnostics that
-            # `_build_scorer_metrics` emits for scorer phases.
             if "high_level_valid" in reward_extra:
                 metrics["reward/high_level_valid_rate"] = (
                     torch.tensor(reward_extra["high_level_valid"], dtype=torch.float32).mean().item()
@@ -270,11 +268,15 @@ class RayECHOTrainer(RayPPOTrainer):
                 metrics["reward/low_level_valid_rate"] = (
                     torch.tensor(reward_extra["low_level_valid"], dtype=torch.float32).mean().item()
                 )
-            penalty = float(entropy_cfg.bad_format_penalty)
-            per_sample = torch.where(bad, torch.full_like(per_sample, penalty), per_sample)
-            # `no_tool_calls` is only set by the scorer when phase_valid is True,
-            # so it's already mutually exclusive with `bad`; the where is safe.
-            per_sample = torch.where(no_tool, torch.zeros_like(per_sample), per_sample)
+            if bad_format_penalty != 0:
+                per_sample = torch.where(
+                    bad, torch.full_like(per_sample, bad_format_penalty), per_sample
+                )
+            if no_tool_penalty_active:
+                no_tool_penalty = float(no_tool_penalty_cfg)
+                per_sample = torch.where(
+                    no_tool, torch.full_like(per_sample, no_tool_penalty), per_sample
+                )
 
         metrics["reward/entropy_scalar_mean"] = per_sample.mean().detach().item()
 
@@ -557,7 +559,8 @@ class RayECHOTrainer(RayPPOTrainer):
                 "scale": me_cfg.alpha,
                 "clamp_min": None,
                 "clamp_max": None,
-                "format_gate": False,
+                "bad_format_penalty": 0,
+                "no_tool_penalty": None,
             })
             entropy_reward_tensor, entropy_metrics = self._build_entropy_scalar_reward(
                 entropys=entropys,

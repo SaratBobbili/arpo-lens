@@ -70,5 +70,5 @@ ll_entropy_scale: 1.0
 ll_entropy_reduction: mean
 ll_entropy_scale: 1.0
 ll_entropy_normalize: true
-ll_format_gate: true
 ll_bad_format_penalty: -0.1
+ll_no_tool_penalty: 0.0

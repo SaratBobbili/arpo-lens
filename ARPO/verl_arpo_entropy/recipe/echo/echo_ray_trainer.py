@@ -421,6 +421,9 @@ class RayECHOTrainer(RayPPOTrainer):
             else:
                 shutil.rmtree(dst_dir)
         shutil.copytree(src_dir, dst_dir)
+        best_txt = os.path.join(self.config.trainer.default_local_dir, "best_checkpoint.txt")
+        with open(best_txt, "w") as f:
+            f.write(str(self.global_steps))
 
     def _phase_update_repeats(self) -> dict[str, int]:
         repeats_cfg = self.config.reward_model.get("phase_update_repeats", {})

@@ -153,6 +153,14 @@ reward_model:
         normalize: false
         clamp_min: null
         clamp_max: null
+        # Banded entropy reward: score is `scale` inside
+        # [(1-epsilon_low)*H_init, (1+epsilon_high)*H_init], ramps outside.
+        # H_init is mean H on the first <select> block only; H_bar uses entropy_mask.
+        band:
+          enable: false
+          epsilon_low: 0.2
+          epsilon_high: 0.2
+          h_floor: 1.0e-4
         bad_format_penalty: 0.0
         no_tool_penalty: 0.0
         # See high_level.entropy.reg_coeff for full semantics. Setting this

@@ -198,12 +198,49 @@ class RayECHOTrainer(RayPPOTrainer):
 
         return phase_metrics
 
+    def _reduce_masked_entropy(self, entropys: torch.Tensor, entropy_mask: torch.Tensor, entropy_cfg) -> torch.Tensor:
+        ent = entropys.to(torch.float32)
+        if bool(entropy_cfg.normalize):
+            ent = ent / math.log(self.tokenizer.vocab_size)
+        reduction = entropy_cfg.reduction
+        assert reduction in ("sum", "mean"), f"entropy.reduction must be 'sum' or 'mean', got {reduction!r}."
+        masked = ent * entropy_mask
+        if reduction == "sum":
+            return masked.sum(dim=-1)
+        denom = entropy_mask.sum(dim=-1).clamp_min(1.0)
+        return masked.sum(dim=-1) / denom
+
+    def _apply_entropy_band_score(
+        self,
+        h_bar: torch.Tensor,
+        h_init: torch.Tensor,
+        entropy_cfg,
+        scale: float,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        band_cfg = entropy_cfg.band
+        eps_fallback = float(band_cfg.get("epsilon", 0.2))
+        eps_low = float(band_cfg.get("epsilon_low", eps_fallback))
+        eps_high = float(band_cfg.get("epsilon_high", eps_fallback))
+        h_floor = float(band_cfg.get("h_floor", 1e-4))
+        h_init = h_init.clamp_min(h_floor)
+        h_low = (1.0 - eps_low) * h_init
+        h_high = (1.0 + eps_high) * h_init
+        score = torch.full_like(h_bar, scale)
+        below = h_bar < h_low
+        above = h_bar > h_high
+        score = torch.where(below, scale * (h_bar / h_low), score)
+        score = torch.where(above, scale * (h_high / h_bar.clamp_min(h_floor)), score)
+        return score, h_init, h_low, h_high
+
     def _build_entropy_scalar_reward(self, entropys: torch.Tensor, phase_batch: DataProto, phase_mask_key: str, entropy_cfg, entropy_mask: torch.Tensor):
         """Sparse entropy reward shaped like the scorer's output.
 
         Reduces per-token entropy over `entropy_mask` tokens to one per-sample
         scalar (sum or mean per `entropy_cfg.reduction`), optionally
-        normalized by log(vocab_size) and scaled/clamped, then writes that
+        normalized by log(vocab_size). With `entropy.band.enable`, the scalar
+        is `scale` inside [(1-eps_low)*H_init, (1+eps_high)*H_init] and ramps outside;
+        H_init is mean entropy on the first <select> block only. Otherwise uses
+        monotone `scale * H_bar` with optional clamp_min/max. Writes the
         scalar at the last valid response token. When `bad_format_penalty != 0`
         or `no_tool_penalty` is set, calls the scorer and overrides matching
         samples with those scalars; good rollouts keep their entropy reward.
@@ -223,23 +260,28 @@ class RayECHOTrainer(RayPPOTrainer):
         attention mask), not the last restricted token, so GRPO's
         `sum(dim=-1)` over the phase `response_mask` still sees the scalar.
         """
-        ent = entropys.to(torch.float32)
-        if bool(entropy_cfg.normalize):
-            ent = ent / math.log(self.tokenizer.vocab_size)
-        reduction = entropy_cfg.reduction
-        assert reduction in ("sum", "mean"), f"entropy.reduction must be 'sum' or 'mean', got {reduction!r}."
-        masked = ent * entropy_mask
-        if reduction == "sum":
-            per_sample = masked.sum(dim=-1)
+        h_bar = self._reduce_masked_entropy(entropys, entropy_mask, entropy_cfg)
+        scale = float(entropy_cfg.scale)
+        band_cfg = entropy_cfg.get("band")
+        band_enable = bool(band_cfg.get("enable", False)) if band_cfg is not None else False
+        if band_enable:
+            non_border = phase_batch.batch["non_border_loss_mask"].to(torch.float32)
+            h_init_mask = phase_batch.batch["first_select_loss_mask"].to(torch.float32) * non_border
+            h_init = self._reduce_masked_entropy(entropys, h_init_mask, entropy_cfg)
+            per_sample, h_init, h_low, h_high = self._apply_entropy_band_score(h_bar, h_init, entropy_cfg, scale)
         else:
-            # clamp_min(1.0) guards empty masks without affecting the ratio when denom >= 1.
-            denom = entropy_mask.sum(dim=-1).clamp_min(1.0)
-            per_sample = masked.sum(dim=-1) / denom
-        per_sample = per_sample * float(entropy_cfg.scale)
-        if entropy_cfg.clamp_min is not None or entropy_cfg.clamp_max is not None:
-            per_sample = torch.clamp(per_sample, min=entropy_cfg.clamp_min, max=entropy_cfg.clamp_max)
+            per_sample = h_bar * scale
+            if entropy_cfg.clamp_min is not None or entropy_cfg.clamp_max is not None:
+                per_sample = torch.clamp(per_sample, min=entropy_cfg.clamp_min, max=entropy_cfg.clamp_max)
 
         metrics: dict = {}
+        metrics["reward/entropy_h_bar_mean"] = h_bar.mean().detach().item()
+        if band_enable:
+            in_band = (h_bar >= h_low) & (h_bar <= h_high)
+            metrics["reward/entropy_h_init_mean"] = h_init.mean().detach().item()
+            metrics["reward/entropy_h_low_mean"] = h_low.mean().detach().item()
+            metrics["reward/entropy_h_high_mean"] = h_high.mean().detach().item()
+            metrics["reward/entropy_in_band_rate"] = in_band.float().mean().detach().item()
         bad_format_penalty = float(entropy_cfg.get("bad_format_penalty", 0))
         no_tool_penalty_cfg = entropy_cfg.get("no_tool_penalty", None)
         no_tool_penalty_active = no_tool_penalty_cfg is not None
@@ -252,11 +294,11 @@ class RayECHOTrainer(RayPPOTrainer):
             no_tool = torch.tensor(no_tool_flags, dtype=torch.bool, device=per_sample.device)
             metrics["reward/bad_format_rate"] = bad.float().mean().item()
             metrics["reward/no_tool_rate"] = no_tool.float().mean().item()
-            keep = torch.ones(per_sample.size(0), dtype=torch.bool, device=per_sample.device)
-            if bad_format_penalty != 0:
-                keep = keep & (~bad)
-            if no_tool_penalty_active:
-                keep = keep & (~no_tool)
+            # Pre-gate mean over good-format ∧ has-tool samples only. Isolates the
+            # entropy-reward axis from the format-penalty / no-tool axes so the
+            # downstream JSONL trace has a clean per-step reward signal that
+            # doesn't drift just because the bad-format share moves.
+            keep = (~bad) & (~no_tool)
             metrics["reward/entropy_scalar_mean_good"] = (
                 per_sample[keep].mean().detach().item() if keep.any() else 0.0
             )

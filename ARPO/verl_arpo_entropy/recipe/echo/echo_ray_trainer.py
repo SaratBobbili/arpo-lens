@@ -232,6 +232,20 @@ class RayECHOTrainer(RayPPOTrainer):
         score = torch.where(above, scale * (h_high / h_bar.clamp_min(h_floor)), score)
         return score, h_init, h_low, h_high
 
+    def _entropy_post_first_select(self, entropys: torch.Tensor, phase_batch: DataProto, entropy_cfg, band_cfg) -> torch.Tensor:
+        """H_init: Shannon entropy of pi(.|x, y_through_first_select) at the next token, / log|V| if normalize."""
+        post_idx = phase_batch.batch["first_select_post_idx"].long()
+        h_floor = float(band_cfg.get("h_floor", 1e-4))
+        h_init = torch.full((entropys.size(0),), h_floor, device=entropys.device, dtype=torch.float32)
+        valid = post_idx >= 0
+        if valid.any():
+            rows = torch.arange(entropys.size(0), device=entropys.device)[valid]
+            idx = post_idx[valid].clamp(max=entropys.size(1) - 1)
+            h_init[valid] = entropys[rows, idx].to(torch.float32)
+        if bool(entropy_cfg.normalize):
+            h_init = h_init / math.log(self.tokenizer.vocab_size)
+        return h_init
+
     def _build_entropy_scalar_reward(self, entropys: torch.Tensor, phase_batch: DataProto, phase_mask_key: str, entropy_cfg, entropy_mask: torch.Tensor):
         """Sparse entropy reward shaped like the scorer's output.
 
@@ -239,7 +253,8 @@ class RayECHOTrainer(RayPPOTrainer):
         scalar (sum or mean per `entropy_cfg.reduction`), optionally
         normalized by log(vocab_size). With `entropy.band.enable`, the scalar
         is `scale` inside [(1-eps_low)*H_init, (1+eps_high)*H_init] and ramps outside;
-        H_init is mean entropy on the first <select> block only. Otherwise uses
+        H_init is next-token policy entropy after the first </select> (/ log|V| if
+        normalize). Otherwise uses
         monotone `scale * H_bar` with optional clamp_min/max. Writes the
         scalar at the last valid response token. When `bad_format_penalty != 0`
         or `no_tool_penalty` is set, calls the scorer and overrides matching
@@ -265,9 +280,7 @@ class RayECHOTrainer(RayPPOTrainer):
         band_cfg = entropy_cfg.get("band")
         band_enable = bool(band_cfg.get("enable", False)) if band_cfg is not None else False
         if band_enable:
-            non_border = phase_batch.batch["non_border_loss_mask"].to(torch.float32)
-            h_init_mask = phase_batch.batch["first_select_loss_mask"].to(torch.float32) * non_border
-            h_init = self._reduce_masked_entropy(entropys, h_init_mask, entropy_cfg)
+            h_init = self._entropy_post_first_select(entropys, phase_batch, entropy_cfg, band_cfg)
             per_sample, h_init, h_low, h_high = self._apply_entropy_band_score(h_bar, h_init, entropy_cfg, scale)
         else:
             per_sample = h_bar * scale

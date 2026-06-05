@@ -125,8 +125,9 @@ reward_model:
         # (gradient flows through pi_theta), m^phase is the phase loss mask
         # for `strategy=entropy` and m^phase ∩ select_loss_mask for
         # `strategy=entropy-hybrid` (mirrors the reward path's restriction).
-        # Only consulted when strategy in {"entropy", "entropy-hybrid"};
-        # ignored for "scorer" / "maxentropy_rl". 0.0 disables the term.
+        # For `strategy=scorer`, only the regularizer channel is used (reward
+        # stays on the scorer); mask is m^phase ∩ non_border_loss_mask.
+        # Ignored for "maxentropy_rl". 0.0 disables the term.
         reg_coeff: 0.0
       # `max_entropy` block below is consulted only when strategy == "maxentropy_rl".
       # Implements r_i = scorer_i + alpha * ent_i with no extra format gating
@@ -164,9 +165,10 @@ reward_model:
           h_floor: 1.0e-4
         bad_format_penalty: 0.0
         no_tool_penalty: 0.0
-        # See high_level.entropy.reg_coeff for full semantics. Setting this
-        # to a positive value enables the direct entropy gradient on the LL
-        # phase: L_actor += -reg_coeff * sum(m^LL * H(pi_theta)) / sum(m^LL).
+        # See high_level.entropy.reg_coeff for full semantics. With
+        # strategy=entropy|entropy-hybrid, also drives the entropy reward.
+        # With strategy=scorer, only enables L_actor -= reg_coeff * H on
+        # m^LL ∩ non_border_loss_mask while GRPO uses the scorer reward.
         reg_coeff: 0.0
 
 actor_rollout_ref:

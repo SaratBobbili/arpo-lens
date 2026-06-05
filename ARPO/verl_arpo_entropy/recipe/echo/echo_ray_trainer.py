@@ -46,8 +46,8 @@ class RayECHOTrainer(RayPPOTrainer):
     # to look up in the per-step `metrics` dict). LL "reward" reads the pre-gate
     # entropy mean over good-format ∧ has-tool only (clean entropy axis); HL
     # "reward" reads f1_mean (clean task axis, ignores -1 by construction).
-    # `entropy_reg_loss` is only populated for entropy/entropy-hybrid phases, so
-    # it is intentionally absent from the high_level spec.
+    # `entropy_reg_loss` is populated for entropy/entropy-hybrid phases and for
+    # scorer phases with entropy.reg_coeff > 0; absent from high_level by default.
     _LOGGING_SPEC = {
         "low_level": [
             ("reward.jsonl", "reward/entropy_scalar_mean_good"),
@@ -81,6 +81,26 @@ class RayECHOTrainer(RayPPOTrainer):
     def _phase_reward_cfg(self, phase_name: str):
         # Per-phase reward config block (strategy + strategy-specific params).
         return self.config.reward_model.phase_rewards[phase_name]
+
+    @staticmethod
+    def _entropy_reg_coeff(phase_reward_cfg) -> float:
+        return float(phase_reward_cfg.entropy.get("reg_coeff", 0.0))
+
+    @staticmethod
+    def _uses_entropy_regularizer(phase_strategy: str, phase_reward_cfg) -> bool:
+        if phase_strategy in ("entropy", "entropy-hybrid"):
+            return True
+        if phase_strategy == "scorer":
+            return RayECHOTrainer._entropy_reg_coeff(phase_reward_cfg) > 0.0
+        return False
+
+    @staticmethod
+    def _needs_policy_entropy(phase_strategy: str, phase_reward_cfg) -> bool:
+        if phase_strategy in ("entropy", "entropy-hybrid", "maxentropy_rl"):
+            return True
+        if phase_strategy == "scorer":
+            return RayECHOTrainer._entropy_reg_coeff(phase_reward_cfg) > 0.0
+        return False
 
     def _init_logging_data(self) -> None:
         # One JSONL per (phase, metric) under {default_local_dir}/logging_data/.
@@ -555,10 +575,8 @@ class RayECHOTrainer(RayPPOTrainer):
 
         entropys = None
         with _timer(f"{phase_name}_old_log_prob", timing_raw):
-            phase_batch.meta_info["calculate_entropy"] = phase_strategy in (
-                "entropy",
-                "entropy-hybrid",
-                "maxentropy_rl",
+            phase_batch.meta_info["calculate_entropy"] = self._needs_policy_entropy(
+                phase_strategy, phase_reward_cfg
             )
             old_log_prob = self.actor_rollout_wg.compute_log_prob(phase_batch)
             loss_agg_mode = self.config.actor_rollout_ref.actor.loss_agg_mode
@@ -628,6 +646,14 @@ class RayECHOTrainer(RayPPOTrainer):
                 entropy_mask=entropy_mask_f,
             )
             metrics.update(self._prefix_metrics(entropy_metrics, phase_prefix))
+        elif phase_strategy == "scorer" and self._entropy_reg_coeff(phase_reward_cfg) > 0.0:
+            if entropys is None:
+                raise RuntimeError(
+                    f"{phase_name} phase uses scorer with entropy.reg_coeff > 0 but compute_log_prob did not return entropys."
+                )
+            phase_mask_f = phase_batch.batch[phase_mask_key].to(torch.float32)
+            entropy_mask_f = phase_mask_f * phase_batch.batch["non_border_loss_mask"].to(torch.float32)
+            phase_batch.batch["entropy_reg_loss_mask"] = entropy_mask_f
 
         if self.use_reference_policy:
             with _timer(f"{phase_name}_ref", timing_raw):
@@ -855,8 +881,8 @@ class RayECHOTrainer(RayPPOTrainer):
                                         self.config.actor_rollout_ref.actor.kl_loss_coef,
                                     )
                                 )
-                                if phase_strategy in ("entropy", "entropy-hybrid"):
-                                    phase_batch.meta_info["entropy_coeff_override"] = float(phase_reward_cfg.entropy.get("reg_coeff", 0.0))
+                                if self._uses_entropy_regularizer(phase_strategy, phase_reward_cfg):
+                                    phase_batch.meta_info["entropy_coeff_override"] = self._entropy_reg_coeff(phase_reward_cfg)
                                     phase_batch.meta_info["entropy_loss_mask_key"] = "entropy_reg_loss_mask"
                                     if bool(phase_reward_cfg.entropy.get("normalize", False)):
                                         phase_batch.meta_info["entropy_loss_normalizer"] = math.log(self.tokenizer.vocab_size)

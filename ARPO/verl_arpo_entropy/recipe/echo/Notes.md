@@ -1,173 +1,217 @@
 # ECHO 3B Training Notes
 
-Launch config template: `training_config/echo_3B_ll_hl.yaml`.
+Launch template: `training_config/echo_3B_ll_hl.yaml`.
 
----
+## Goal of this note
 
-## Shared hyperparameters
+Distill what each experiment actually taught us, so future runs change only the knobs that matter.
 
-Defaults in `echo_3B_ll_hl.yaml` (common to recent 3B Inst runs unless overridden per experiment):
+## Common setup
 
-| Key | Value |
-|---|---|
-| `project_name` | `qwen3BInst` |
-| `phase_order` | `["high_level", "low_level"]` |
-| `high_level_budget` / `rollout_n` | 8 / 16 |
-| `high_level_algorithm` / `low_level_algorithm` | `grpo` / `grpo` |
-| `high_level_reward_strategy` | `scorer` |
-| `high_level_update_repeats` / `low_level_update_repeats` | 1 / 1 |
-| `low_level_reward_strategy` | `scorer` |
-| `norm_adv_by_std_in_grpo` | `False` |
-| `high_level_filter_groups_enable` / `low_level_filter_groups_enable` | `True` / `True` |
-| `mask_*` | `first_select=low, select=low, think=high, answer=high, search=low, python=low` |
-| `hl_kl_loss_coef` / `ll_kl_loss_coef` | `0.001` / `0.0` |
-| `ll_entropy_reg_coeff` | `0.01` |
-| `ll_entropy_reduction` / `ll_entropy_normalize` | `mean` / `true` |
-| `ll_bad_format_penalty` / `ll_no_tool_penalty` | `-0.1` / `-0.05` |
-| `use_sign_cond_clip` | `True` (pos clip 0.2, neg clip 0.1) |
-| `save_best_checkpoint` | `true` (`best_checkpoint_metric: val-core/reward`) |
-
----
-
-## Experiment naming convention
-
-Suffixes in `experiment_name` map to overrides in the launch yaml:
-
-| Suffix | Hyperparameter |
-|---|---|
-| `hl_kl_true` | `hl_kl_loss_coef: 0.001` |
-| `ll_kl_false` | `ll_kl_loss_coef: 0.0` |
-| `reg_on` | `ll_entropy_reg_coeff: 0.01` |
-| `no_tool_neg` | `ll_no_tool_penalty: -0.05` |
-| `hl_2` | `high_level_update_repeats: 2` |
-| `ll_scorer` | `low_level_reward_strategy: scorer` |
-
----
-
-## Checkpoint storage
-
-Root (from `secrets.sh` `OUTPUT_ROOT`):
+- Optimizer family: GRPO for both phases unless stated otherwise.
+- Training order: `high_level -> low_level`.
+- Main model-selection metric: `val-core/DR_grpo_mix/reward/mean@1`.
+- Checkpoint root:
 
 ```
 /scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ECHO/checkpoints/<experiment_name>/
 ```
 
-Each run directory snapshots its launch config at `training_config/launch_config.yaml` (also `launch_script.sh`, `launch_hydra_overrides.txt`, resolved hydra config under `outputs/.hydra/`).
+## Lens for interpretation
+
+We can reason about updates with a simplified objective:
+
+\[
+\mathcal{J}_{HL} \approx \mathbb{E}[R_{\text{task}}] - \beta_{HL}\,\mathrm{KL}(\pi_{HL}\|\pi_{\text{ref}})
+\]
+
+\[
+\mathcal{J}_{LL}^{\text{scorer}} \approx \mathbb{E}[R_{\text{task}}] + \lambda_H H(\pi_{LL})
+\]
+
+\[
+\mathcal{J}_{LL}^{\text{entropy}} \approx \mathbb{E}[R_{\text{entropy}} + p_{\text{format}} + p_{\text{tool}}] + \lambda_H H(\pi_{LL})
+\]
+
+When LL uses `scorer`, both phases optimize task reward.  
+When LL uses `entropy` or `entropy-hybrid`, optimization pressure shifts toward distributional properties unless task reward is explicitly mixed in.
 
 ---
 
-## 1. `echo3BInst_hl_ll_entropy_grpo_hl_kl_true_ll_kl_false_reg_on_ll_scorer`
+## 1) `echo3BInst_hl_ll_entropy_grpo_hl_kl_true_ll_kl_false_reg_on_ll_scorer`
 
-### Configuration
+**Config delta**: `low_level_reward_strategy=scorer`, `high_level_update_repeats=1`.
 
-Overrides relative to shared defaults:
+**Behavior**:
+- Best checkpoint around step 25; later training is noisy but not catastrophic.
+- Reward dips recover instead of cascading.
 
-| Key | Value |
-|---|---|
-| `high_level_update_repeats` | 1 |
-| `low_level_reward_strategy` | `scorer` |
-
-All other knobs match `echo_3B_ll_hl.yaml`.
-
-### Checkpoint path
-
-```
-/scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ECHO/checkpoints/echo3BInst_hl_ll_entropy_grpo_hl_kl_true_ll_kl_false_reg_on_ll_scorer/
-```
-
-Best step (`best_checkpoint.txt`): **25**.
-
-### Observed curves
-
-Metric: `val-core/DR_grpo_mix/reward/mean@1`.
-
-| Step | val reward | F1 | HL format valid |
-|---|---|---|---|
-| 25 | 0.369 | 0.452 | — |
-| 50 | 0.231 | 0.369 | 0.861 |
-| 55 | 0.354 | 0.437 | 0.917 |
-| 60 | 0.250 | 0.405 | 0.844 |
-| 70 | 0.279 | 0.407 | 0.872 |
-
-Val reward is volatile (dips at steps 50 and 60) but recovers. HL `response_length/mean` stays roughly 900–1100. Search tool success rate is often low (0–13%) throughout training.
-
-### Diagnosis
-
-Both phases use `scorer` reward, so HL and LL updates both optimize task quality (F1 / format). Temporary val dips are not sustained: LL updates pull the policy back after HL-phase drift.
-
-`ll_entropy_reg_coeff: 0.01` adds an entropy regularizer on the actor loss without replacing the LL reward signal. `ll_no_tool_penalty` and `ll_bad_format_penalty` are present in the yaml but only affect LL training when `low_level_reward_strategy` is `entropy`; with `scorer` they are inactive.
-
-Best checkpoint at step 25; training continued to step 70 without catastrophic collapse.
+**Main insight**:
+- This remains the most stable baseline because HL and LL both optimize task quality.
 
 ---
 
-## 2. `echo3BInst_hl_ll_entropy_grpo_hl_kl_true_ll_kl_false_reg_on_no_tool_neg_hl_2`
+## 2) `echo3BInst_hl_ll_entropy_grpo_hl_kl_true_ll_kl_false_reg_on_no_tool_neg_hl_2`
 
-### Configuration
+**Config delta**: `high_level_update_repeats=2`, `low_level_reward_strategy=entropy`.
 
-Overrides relative to shared defaults:
+**Behavior**:
+- Peaks early, then degrades strongly with continued training.
+- HL lengths grow and clipping/instability increase.
 
-| Key | Value |
-|---|---|
-| `high_level_update_repeats` | **2** |
-| `low_level_reward_strategy` | **entropy** |
-
-All other knobs match `echo_3B_ll_hl.yaml` (including `ll_no_tool_penalty: -0.05`, `ll_bad_format_penalty: -0.1`, `ll_entropy_reg_coeff: 0.01`).
-
-### Checkpoint path
-
-```
-/scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ECHO/checkpoints/echo3BInst_hl_ll_entropy_grpo_hl_kl_true_ll_kl_false_reg_on_no_tool_neg_hl_2/
-```
-
-Best step (`best_checkpoint.txt`): **45**.
-
-### Observed curves
-
-Metric: `val-core/DR_grpo_mix/reward/mean@1`.
-
-| Step | val reward | F1 | HL valid | LL valid | HL resp len | HL clip ratio |
-|---|---|---|---|---|---|---|
-| 45 | 0.353 | 0.436 | 0.917 | 0.933 | — | — |
-| 50 | 0.340 | 0.451 | 0.894 | — | 1233 | 7.3% |
-| 55 | 0.273 | 0.417 | 0.856 | 0.883 | 1390 | 12.0% |
-| 60 | 0.157 | 0.363 | 0.794 | — | — | — |
-| 70 | 0.047 | 0.331 | 0.717 | — | 1450 | 8.9% |
-| 75 | -0.096 | 0.287 | 0.617 | 0.628 | — | — |
-
-Val reward peaks at step 45 then collapses monotonically. Inflection at step 55: reward drops 0.340 → 0.273 while HL response length jumps 1233 → 1390 and clip ratio 7% → 12%.
-
-Training-side signals during collapse:
-- HL `response_length/mean`: 1014 (step 40) → 1758 (step 74)
-- HL `response_length/clip_ratio`: up to 15% (responses hitting 4096-token cap)
-- HL `actor/pg_clipfrac`: 0.12–0.17 around steps 53–56
-- HL `actor/kl_loss`: spikes to 0.033 at steps 53, 71
-- LL `reward/entropy_scalar_mean_good` ≈ 0.004–0.005 (flat; core LL reward signal is tiny)
-- LL `reward/entropy_scalar_mean` ≈ -0.02 (pulled negative by format/no-tool overrides)
-- `val-aux/DR_grpo_mix/no_tool_calls/mean@1`: 0.0 throughout (not a no-tool degeneracy)
-
-### Diagnosis
-
-**LL entropy reward decoupled from task quality.** `low_level_reward_strategy: entropy` optimizes normalized entropy on tool tokens, not F1. Overrides (`bad_format: -0.1`, `no_tool: -0.05`) provide weak negative signal but the dominant LL gradient pushes entropy, not answer correctness. LL updates do not anchor task quality while HL drifts.
-
-**Double HL updates accelerate drift.** `high_level_update_repeats: 2` runs HL rollout + policy update twice per step before LL. HL response lengths grow, more rollouts hit the 4096 cap and truncate, and HL policy updates are larger (high `pg_clipfrac`, `kl_loss` spikes). HL still uses `scorer` reward, but twice the gradient per step outpaces what LL entropy regularization can correct.
-
-**Format validity collapse drives val reward down.** `high_level_valid` falls 0.917 → 0.617; `low_level_valid` falls 0.933 → 0.628. F1 also drops (0.451 → 0.287) but format breakage is the sharper signal. Longer truncated responses produce more format failures, which directly lowers val score.
-
-**Search failures add noise.** Search success rate is often 0–5% during LL steps. `BRIGHTDATA_API_KEY` is empty in `secrets.sh`, so live search mostly misses. With entropy LL reward there is no direct task penalty for failed tool calls, which amplifies instability but is secondary to the entropy + double-HL combination above.
-
-Best checkpoint at step 45 (val 0.353). Live policy at step 75 is -0.096.
+**Main insight**:
+- `HL x2` plus entropy-driven LL is an unstable combination: HL drifts faster than LL can correct.
 
 ---
 
-## Recommendations
+## 3) `echo3BInst_hl_ll_entropy_grpo_hl_kl_true_ll_kl_false_reg_on_band_first_select`
 
-| Setting | Suggested value | Reason |
-|---|---|---|
-| `low_level_reward_strategy` | `scorer` | Task reward on both phases; avoids entropy-only LL drift |
-| `high_level_update_repeats` | `1` | `×2` correlated with HL length blow-up and format collapse |
-| `ll_entropy_reg_coeff` | `0.01` (keep) | Safe alongside `scorer` LL reward; do not pair with `entropy` LL strategy |
-| Training duration | Stop at best checkpoint | Collapsing run peaked step 45; continued training degraded to -0.096 |
-| Search API | Restore `BRIGHTDATA_API_KEY` or expand cache | Chronic search failures add noise to tool-use training |
+**Observed config (from launch yaml)**:
+- `low_level_reward_strategy=entropy`
+- `hl_kl_loss_coef=0.0`, `ll_kl_loss_coef=0.0`
+- `ll_entropy_reg_coeff=0.001`
+- `ll_no_tool_penalty=-0.05`
 
-Current `echo_3B_ll_hl.yaml` matches the recommended settings (`ll_scorer`, `hl_repeats=1`).
+**Outcome**:
+- Best val reward: **0.427 @ step 15**
+- Final val reward: **0.318 @ step 115**
+
+**Trajectory summary**:
+- Fast early gain, then long noisy decay.
+- Search success drops heavily over training (LL search success from ~0.70 early to ~0.04 late).
+- Format-valid rates in training remain high, so the main issue is reward alignment, not pure formatting.
+
+**Main insight**:
+- Name says `hl_kl_true`, but run actually used `hl_kl_loss_coef=0.0`.  
+  This run should be treated as a **KL-off entropy LL** run, not as KL-on.
+
+---
+
+## 4) `echo3BInst_hl_ll_entropy_grpo_hl_kl_false_ll_kl_false_reg_on_no_tool_neg`
+
+**Observed config**:
+- `low_level_reward_strategy=entropy`
+- `hl_kl_loss_coef=0.0`, `ll_kl_loss_coef=0.0`
+- `ll_entropy_reg_coeff=0.001`
+- `ll_no_tool_penalty=-0.05`
+
+**Outcome**:
+- Best val reward: **0.465 @ step 60**
+- Final val reward: **0.254 @ step 120**
+
+**Trajectory summary**:
+- Good mid-training peak, then clear post-peak decay.
+- Search reliability falls sharply in later steps.
+- Training valid rates improve over time, but reward still declines.
+
+**Main insight**:
+- Negative no-tool penalty helps less than expected when LL objective is still entropy-dominant.
+
+---
+
+## 5) `echo3BInst_hl_ll_entropy_grpo_hl_kl_true_ll_kl_false_reg_on_no_tool_zero`
+
+**Observed config**:
+- `low_level_reward_strategy=entropy`
+- `hl_kl_loss_coef=0.001`, `ll_kl_loss_coef=0.0`
+- `ll_no_tool_penalty=0.0`
+- `ll_entropy_reg_coeff=0.001`
+
+**Outcome**:
+- Best val reward: **0.448 @ step 50**
+- Final val reward: **0.275 @ step 130**
+
+**Trajectory summary**:
+- Similar shape to `no_tool_neg`: rise, then prolonged decay.
+- Zeroing no-tool penalty does not prevent late instability.
+
+**Main insight**:
+- Moving `ll_no_tool_penalty` from `-0.05` to `0.0` changes behavior less than expected; LL reward type matters more than this penalty.
+
+---
+
+## 6) `echo3BInst_hl_ll_entropy_hybrid_grpo_norm_off_reg_on_kl_off`
+
+**Observed config**:
+- `low_level_reward_strategy=entropy-hybrid`
+- `hl_kl_loss_coef=0.0`, `ll_kl_loss_coef=0.0`
+- `ll_entropy_reg_coeff=0.01`
+
+**Outcome**:
+- Best val reward: **0.451 @ step 30**
+- Final val reward: **-0.859 @ step 135**
+
+**Trajectory summary**:
+- Catastrophic late collapse after an initially strong peak.
+- Search success trends to near zero in late training.
+
+**Main insight**:
+- **KL-off + entropy-hybrid + long training is unsafe** here; this is the clearest failure mode in the set.
+
+---
+
+## 7) `echo3BInst_hl_ll_entropy_hybrid_grpo_norm_off_reg_off_kl_true`
+
+**Observed config**:
+- `low_level_reward_strategy=entropy-hybrid`
+- `hl_kl_loss_coef=0.001`, `ll_kl_loss_coef=0.001`
+- `ll_entropy_reg_coeff=0.0`
+
+**Outcome**:
+- Best val reward: **0.482 @ step 115**
+- Final val reward: **0.449 @ step 130**
+
+**Trajectory summary**:
+- High and sustained reward in late training.
+- Much better post-peak retention than pure entropy runs.
+
+**Main insight**:
+- Turning KL on in both phases stabilizes entropy-hybrid behavior even without entropy regularization.
+
+---
+
+## 8) `echo3BInst_hl_ll_entropy_hybrid_grpo_norm_off_reg_on_kl_true`
+
+**Observed config**:
+- `low_level_reward_strategy=entropy-hybrid`
+- `hl_kl_loss_coef=0.001`, `ll_kl_loss_coef=0.001`
+- `ll_entropy_reg_coeff=0.01`
+
+**Outcome**:
+- Best val reward: **0.488 @ step 105** (best overall among listed runs)
+- Final val reward: **0.435 @ step 135**
+
+**Trajectory summary**:
+- Strong late-stage performance with moderate post-peak drop.
+- Significantly more stable than KL-off hybrid.
+
+**Main insight**:
+- This is currently the best tradeoff of peak quality + stability in the entropy-hybrid family.
+
+---
+
+## Cross-experiment takeaways
+
+1. **LL reward choice dominates small penalties**  
+   `scorer` or `entropy-hybrid + KL` is robust; pure `entropy` is prone to delayed drift.
+
+2. **KL-on is the key stabilizer in hybrid runs**  
+   Hybrid with KL off collapsed; hybrid with KL on delivered the top two final-quality trajectories.
+
+3. **Do not trust run names without launch yaml**  
+   At least one run (`band_first_select`) has suffix semantics that do not match realized config.
+
+4. **Late training can destroy good checkpoints**  
+   Multiple runs peak around steps 30-60 and degrade afterward; early stopping by val reward is mandatory.
+
+5. **Search reliability is a recurring bottleneck**  
+   Many runs show search success decaying toward zero in later phases, adding noise to tool-centric learning.
+
+---
+
+## Recommended next-run priorities
+
+- Keep a **stable baseline** with `low_level_reward_strategy=scorer`.
+- For entropy-hybrid experiments, keep **both KL terms on** (`hl_kl_loss_coef=0.001`, `ll_kl_loss_coef=0.001`).
+- Avoid long training without aggressive model selection; checkpoint quality often peaks early.
+- Enforce config-name consistency checks at launch so run names always reflect actual overrides.

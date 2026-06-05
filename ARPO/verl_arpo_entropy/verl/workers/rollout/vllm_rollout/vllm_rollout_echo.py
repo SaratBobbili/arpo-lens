@@ -106,6 +106,9 @@ class vLLMRolloutECHO(vLLMRollout):
         self.tool_retry_count = tools_config.get("retry_count", 3)
         self.tool_verbose_logging = tools_config.get("verbose_logging", False)
         self.skip_training_on_tool_failure = bool(tools_config.get("skip_training_on_tool_failure", False))
+        self.exclude_tag_tokens_from_phase_masks = bool(
+            self.config.get("exclude_tag_tokens_from_phase_masks", True)
+        )
 
         mask_cat_cfg = OmegaConf.to_container(self.config.get("mask_categories", OmegaConf.create({})), resolve=True)
         self.mask_categories = {k: mask_cat_cfg.get(k, v) for k, v in _DEFAULT_MASK_CATEGORIES.items()}
@@ -244,12 +247,21 @@ class vLLMRolloutECHO(vLLMRollout):
             token_first_select = int(any(char_first_select[cursor:next_cursor])) if next_cursor > cursor else 0
             token_tool = int(any(char_tool[cursor:next_cursor])) if next_cursor > cursor else 0
             token_border = int(any(char_border[cursor:next_cursor])) if next_cursor > cursor else 0
-            high_level_mask.append(int(bool(keep_token) and token_high))
-            low_level_mask.append(int(bool(keep_token) and token_low))
-            select_mask.append(int(bool(keep_token) and token_select))
-            first_select_mask.append(int(bool(keep_token) and token_first_select))
-            tool_mask.append(int(bool(keep_token) and token_tool))
-            non_border_mask.append(int(bool(keep_token) and not token_border))
+            phase_active_token = int(
+                bool(keep_token)
+                and (
+                    (not token_border)
+                    if self.exclude_tag_tokens_from_phase_masks
+                    else True
+                )
+            )
+            non_border_active_token = int(bool(keep_token) and not token_border)
+            high_level_mask.append(int(phase_active_token and token_high))
+            low_level_mask.append(int(phase_active_token and token_low))
+            select_mask.append(int(phase_active_token and token_select))
+            first_select_mask.append(int(phase_active_token and token_first_select))
+            tool_mask.append(int(phase_active_token and token_tool))
+            non_border_mask.append(non_border_active_token)
             cursor = next_cursor
 
         first_select_post_idx = -1

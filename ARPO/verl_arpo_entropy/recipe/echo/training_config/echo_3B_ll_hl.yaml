@@ -1,5 +1,5 @@
 project_name: qwen3BInst
-experiment_name: echo3BInst_hl_ll_entropy_grpo_hl_kl_false_ll_kl_false_reg_on_band_first_select
+experiment_name: echo3BInst_hl_ll_entropy_grpo_hl_kl_true_ll_kl_false_reg_on
 nnodes: 1
 n_gpus_per_node: 8
 
@@ -21,6 +21,7 @@ tensor_model_parallel_size: 1
 gpu_memory_utilization: 0.7
 rollout_name: vllm
 rollout_mode: sync_echo
+exclude_tag_tokens_from_phase_masks: true
 search_cache_file: search_cache_echo_3B.json
 search_class_path: verl.workers.agent.tools.search_tool.BingSearchTool
 brightdata_timeout: 90
@@ -35,7 +36,7 @@ max_actor_ckpt_to_keep: 1
 resume_mode: auto
 
 phase_order: '["low_level", "high_level"]'
-high_level_update_repeats: 1
+high_level_update_repeats: 2
 low_level_update_repeats: 1
 high_level_reward_strategy: scorer
 low_level_reward_strategy: entropy
@@ -63,15 +64,15 @@ clip_ratio_high_pos: 0.3
 clip_ratio_low_neg: 0.1
 clip_ratio_high_neg: 0.1
 
-hl_kl_loss_coef: 0.0
+hl_kl_loss_coef: 0.001
 ll_kl_loss_coef: 0.0
 ll_entropy_reg_coeff: 0.001
 ll_entropy_scale: 1.0
 ll_entropy_reduction: mean
 ll_entropy_scale: 1.0
 ll_entropy_normalize: true
-ll_entropy_band_enable: true
+ll_entropy_band_enable: false
 ll_entropy_band_epsilon_low: 0.2
-ll_entropy_band_epsilon_high: 0.2
+ll_entropy_band_epsilon_high: 0.4
 ll_bad_format_penalty: -0.1
 ll_no_tool_penalty: -0.05

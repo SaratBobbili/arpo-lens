@@ -21,17 +21,17 @@ Distill what each experiment actually taught us, so future runs change only the 
 
 We can reason about updates with a simplified objective:
 
-\[
-\mathcal{J}_{HL} \approx \mathbb{E}[R_{\text{task}}] - \beta_{HL}\,\mathrm{KL}(\pi_{HL}\|\pi_{\text{ref}})
-\]
+```math
+\mathcal{J}_{HL} \approx \mathbb{E}[R_{\mathrm{task}}] - \beta_{HL}\,\mathrm{KL}(\pi_{HL}\|\pi_{\mathrm{ref}})
+```
 
-\[
-\mathcal{J}_{LL}^{\text{scorer}} \approx \mathbb{E}[R_{\text{task}}] + \lambda_H H(\pi_{LL})
-\]
+```math
+\mathcal{J}_{LL}^{\mathrm{scorer}} \approx \mathbb{E}[R_{\mathrm{task}}] + \lambda_H H(\pi_{LL})
+```
 
-\[
-\mathcal{J}_{LL}^{\text{entropy}} \approx \mathbb{E}[R_{\text{entropy}} + p_{\text{format}} + p_{\text{tool}}] + \lambda_H H(\pi_{LL})
-\]
+```math
+\mathcal{J}_{LL}^{\mathrm{entropy}} \approx \mathbb{E}[R_{\mathrm{entropy}} + p_{\mathrm{format}} + p_{\mathrm{tool}}] + \lambda_H H(\pi_{LL})
+```
 
 When LL uses `scorer`, both phases optimize task reward.  
 When LL uses `entropy` or `entropy-hybrid`, optimization pressure shifts toward distributional properties unless task reward is explicitly mixed in.

@@ -10,7 +10,8 @@ mkdir -p logs
 
 # -------------------- Editable Run Config --------------------
 # Bing search key used by tool-enabled inference.
-BING_API_KEY="9c221824-9a57-4261-b1b7-979959492235"
+#BING_API_KEY="9c221824-9a57-4261-b1b7-979959492235"
+BING_API_KEY="f75663d4-caf9-432a-baf1-dec27a13625a"
 # Bright Data proxy zone for Bing search requests.
 BING_ZONE="serp_api1"
 # Bright Data proxy country code for Bing search (cc URL parameter).
@@ -27,9 +28,9 @@ BING_LOCATION="us"
 # REASON_MODEL_PATH="${ACTOR_MODEL_PATH}"
 REASON_MODEL_PATH="dongguanting/Qwen2.5-3B-ARPO"
 # Served model alias for reasoning endpoints; must match infer DEFAULT_MODEL.
-REASON_MODEL_NAME="Qwen2.5-3B-Instruct"
+REASON_MODEL_NAME="Qwen2.5-3B-ARPO"
 # Served model alias for reasoning endpoints; must match infer DEFAULT_MODEL.
-REASON_MODEL_NAME="Qwen2.5-3B-Instruct"
+REASON_MODEL_NAME="Qwen2.5-3B-ARPO"
 
 # Summarization helper checkpoint/HF id served on configurable summarization ports.
 SUMM_MODEL_PATH="Qwen/Qwen2.5-7B-Instruct"
@@ -52,8 +53,8 @@ PROMPT_TYPE="code_search"
 # When PROMPT_TYPE=echo these are overridden below to the combined ECHO budget so
 # the combined-budget gate in SampleProcessorCompletion fires before the per-tool
 # gate (which would inject an OOD "limit exceeded" feedback message ECHO never saw).
-MAX_PYTHON_TIMES="5"
-MAX_SEARCH_TIMES="5"
+MAX_PYTHON_TIMES="3"
+MAX_SEARCH_TIMES="0"
 
 # ---- ECHO-only config (consumed only when PROMPT_TYPE=echo) ----
 # Single source of truth for the ECHO system prompt: shared with the trainer at
@@ -79,7 +80,7 @@ NLTK_DATA_DIR="$CONDA_PATH/envs/$CONDA_ENV/nltk_data"
 COUNTS="1000000"
 
 # Restrict this launcher to math benchmarks only (aime24/aime25/math500/gsm8k/math).
-DATASET_GROUP="gsm8k"
+DATASET_GROUP="math_all"
 
 # Pass@k turns (one output file per turn); space separated list.
 TURNS="1"
@@ -87,8 +88,11 @@ TURNS="1"
 # Sampling temperature (0.0 => greedy decoding).
 TEMPERATURE="0.6"
 
-# Max new tokens per model call; raise for long reasoning traces.
+# Max new tokens per model call, or total trajectory budget when GLOBAL_TRAJECTORY_CAP=true.
 MAX_TOKENS="4096"
+
+# true => cap total trajectory tokens (model + tool results) to MAX_TOKENS (matches training).
+GLOBAL_TRAJECTORY_CAP="false"
 
 # End-to-end timeout for a single sample, in seconds.
 SAMPLE_TIMEOUT="900"
@@ -96,9 +100,13 @@ SAMPLE_TIMEOUT="900"
 # Short tag appended to OUTPUT_PATH and log filenames so different configs land in
 # different folders. Auto-composed from the decoding/runtime knobs above; set to ""
 # to reuse a plain baseline folder.
-RUN_TAG="T${TEMPERATURE}_K${TURNS// /-}_mt${MAX_TOKENS}_to${SAMPLE_TIMEOUT}"
+GTC_TAG=""
+if [[ "$GLOBAL_TRAJECTORY_CAP" == "true" ]]; then
+  GTC_TAG="_gtc"
+fi
+RUN_TAG="T${TEMPERATURE}_K${TURNS// /-}_mt${MAX_TOKENS}${GTC_TAG}_to${SAMPLE_TIMEOUT}"
 # Checkpoint folder (e.g., global_step_40) inferred from ACTOR_MODEL_PATH.
-CUSTOM_RUN_TAG="LLM_as_judge/arpo/${REASON_MODEL_NAME}"
+CUSTOM_RUN_TAG="LLM_as_judge/arpo_search/${REASON_MODEL_NAME}"
 
 # Model-tagged output directory; "/" -> "__" keeps the model name in one path segment.
 MODEL_OUTPUT_TAG="${REASON_MODEL_NAME//\//__}"
@@ -139,7 +147,7 @@ SERVER_TEARDOWN_WAIT_SECONDS="20"
 # under OUTPUT_PATH and only the judge/eval stage needs to be re-run -- e.g. to isolate
 # the JUDGE_MODEL_PATH switch from GPTQ-Int4 to the unquantized Qwen2.5-72B-Instruct on
 # existing rollouts. Iterate DATASET_GROUP (math/math500/gsm8k/aime) per launch.
-RESUME_FROM_EVAL="true"
+RESUME_FROM_EVAL="false"
 # -------------------------------------------------------------
 
 # When PROMPT_TYPE=echo: export ECHO env vars for prompt_manager.PromptManager
@@ -258,6 +266,7 @@ if [[ "$RESUME_FROM_EVAL" != "true" ]]; then
   TURNS="$TURNS" \
   TEMPERATURE="$TEMPERATURE" \
   MAX_TOKENS="$MAX_TOKENS" \
+  GLOBAL_TRAJECTORY_CAP="$GLOBAL_TRAJECTORY_CAP" \
   SAMPLE_TIMEOUT="$SAMPLE_TIMEOUT" \
   bash echo_infer_math_4qa_hf.sh | tee "logs/run_infer_math_4qa_hf${RUN_TAG:+_$RUN_TAG}.log"
 

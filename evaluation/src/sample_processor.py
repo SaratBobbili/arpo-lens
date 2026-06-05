@@ -1,6 +1,22 @@
 import time
 import hashlib
+from vllm import SamplingParams
+
 from .utils import extract_answer
+
+
+def _clone_sampling_params(base: SamplingParams, max_tokens: int) -> SamplingParams:
+    return SamplingParams(
+        temperature=base.temperature,
+        max_tokens=max_tokens,
+        top_p=base.top_p,
+        top_k=base.top_k,
+        min_p=base.min_p,
+        repetition_penalty=base.repetition_penalty,
+        n=base.n,
+        include_stop_str_in_output=base.include_stop_str_in_output,
+        stop=base.stop,
+    )
 
 
 class SampleProcessor:
@@ -36,41 +52,66 @@ class SampleProcessor:
         self.python_rounds = 0
         self.search_rounds = 0
         self.in_context = ""
+        self.trajectory_cap_enabled = getattr(args, "global_trajectory_cap", False)
+        self.trajectory_tokens = 0
         self.messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": question},
         ]
 
+    def _remaining_budget(self) -> int:
+        return max(0, self.args.max_tokens - self.trajectory_tokens)
+
+    def _budget_exhausted(self) -> bool:
+        return self.trajectory_cap_enabled and self._remaining_budget() <= 0
+
     def log_output(self, role: str, content: str):
         self.sample_stat["output"] += content
         self.sample_stat["logs"].append(content)
         self.in_context += content
+        if self.trajectory_cap_enabled:
+            self.trajectory_tokens += len(
+                self.tokenizer.encode(content, add_special_tokens=False)
+            )
 
     def process_input(self):
         self.in_context = self.tokenizer.apply_chat_template(
             self.messages, tokenize=False, add_generation_prompt=True
         )
+        self.trajectory_tokens = 0
+
+    def _sampling_params(self, stop: bool):
+        base = (
+            self.args.sampling_params
+            if stop
+            else self.args.sampling_params_nostop
+        )
+        max_tokens = base.max_tokens
+        if self.trajectory_cap_enabled:
+            max_tokens = max(1, self._remaining_budget())
+        return _clone_sampling_params(base, max_tokens)
 
     async def call_local_llm(self, stop) -> str:
+        if self._budget_exhausted():
+            return ""
         in_context = self.in_context
         all_output = ""
+        max_tries = 1 if self.trajectory_cap_enabled else 4
         try_time = 0
-        while try_time < 4:
+        while try_time < max_tries:
             try_time += 1
+            if self._budget_exhausted():
+                break
             llm_start = time.time()
             result = await self.vllm_pool.generate(
                 in_context,
-                (
-                    self.args.sampling_params
-                    if stop is True
-                    else self.args.sampling_params_nostop
-                ),
+                self._sampling_params(stop),
                 session_id=self.session_id,
             )
             self.llm_time += time.time() - llm_start
             if not result:
                 print("The LLM fails to generate output!\n")
-                return 'None' if not all_output else all_output
+                return "None" if not all_output else all_output
             output = result.choices[0].text
             output = output.split("<result>")[0]
             if "</search>" in output:
@@ -85,6 +126,8 @@ class SampleProcessor:
                 and "</python>" not in all_output
                 and "</answer>" not in all_output
             ):
+                if self.trajectory_cap_enabled or try_time >= max_tries:
+                    break
                 print("Continue generating...")
                 in_context += output
             else:
@@ -134,6 +177,8 @@ class SampleProcessor:
         self.sample_start_time = time.time()
         self.process_input()
         while True:
+            if self._budget_exhausted():
+                break
             print(f"current_prompt:\n{self.in_context}")
             output = await self.call_llm()
             if not output:
@@ -148,7 +193,10 @@ class SampleProcessor:
                 search_query = self.tool_executor.extract_content(output, "search")
                 await self.call_search(search_query)
             else:
-                if not output.strip().endswith("</answer>"):
+                if (
+                    not output.strip().endswith("</answer>")
+                    and not self.trajectory_cap_enabled
+                ):
                     output = await self.call_llm(stop=False)
                 break
 
@@ -167,6 +215,8 @@ class SampleProcessor:
             "search_time": self.search_time,
             "total_time": self.total_time,
         }
+        if self.trajectory_cap_enabled:
+            self.sample_stat["timing"]["trajectory_tokens"] = self.trajectory_tokens
 
 
 class SampleProcessorCompletion(SampleProcessor):
@@ -194,6 +244,8 @@ class SampleProcessorCompletion(SampleProcessor):
         self.process_input()
         combined_limit = self.prompt_manager.get_tool_call_limit()
         while True:
+            if self._budget_exhausted():
+                break
             output = await self.call_llm()
             if not output:
                 print("[Warning] LLM inference failed!!!")
@@ -201,11 +253,6 @@ class SampleProcessorCompletion(SampleProcessor):
             tool_tag = self.tool_executor.identify_tool(output)
             if combined_limit is not None and tool_tag in ("python", "search") \
                     and self.python_rounds + self.search_rounds >= combined_limit:
-                # vLLMRolloutECHO appends EOS and ends the rollout when tool_call_limit
-                # is hit (vllm_rollout_echo.py L397-L401); mirror that here instead of
-                # injecting a "<result>...limit is exceeded</result>" feedback message
-                # the trainer never emitted -- otherwise the model would condition on
-                # an OOD continuation context.
                 print(
                     f"[Warning] ECHO tool_call_limit ({combined_limit}) reached for sample: ",
                     self.sample_stat["input"],
@@ -228,11 +275,6 @@ class SampleProcessorCompletion(SampleProcessor):
                 else:
                     self.call_search_max_limit()
             else:
-                # call_local_llm has already hard-truncated this chunk at </answer> when
-                # the model emitted one; a missing </answer> here means the model never
-                # committed an answer, and a 4096-token continuation would only inject
-                # fresh tokens (often a new \boxed{}) that extract_answer would prefer
-                # over the model's actual answer. Match upstream and just stop.
                 if "</answer>" not in output:
                     print(
                         "[Warning] LLM fails to generate final answers, sample is: ",

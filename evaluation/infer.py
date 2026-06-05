@@ -42,7 +42,9 @@ def parse_arguments():
     generation_group.add_argument("--temperature", type=float, default=0,
                                   help="Temperature for generation")
     generation_group.add_argument("--max_tokens", type=int, default=4096,
-                                  help="Maximum number of new tokens to generate")
+                                  help="Per-call max new tokens, or total trajectory budget when --global_trajectory_cap is set")
+    generation_group.add_argument("--global_trajectory_cap", action="store_true",
+                                  help="Cap total trajectory tokens (model output + tool results) to max_tokens")
     generation_group.add_argument("--top_p", type=float, default=0.8,
                                   help="Top-p sampling cutoff")
     generation_group.add_argument("--top_k", type=int, default=20,

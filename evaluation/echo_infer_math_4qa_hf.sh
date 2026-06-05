@@ -103,6 +103,9 @@ TEMPERATURE="${TEMPERATURE:-0.6}"
 # Max new tokens per model call; raise for long reasoning traces (AIME, MATH).
 MAX_TOKENS="${MAX_TOKENS:-4096}"
 
+# When true, max_tokens is a global trajectory budget (model + tool results), matching training rollout.
+GLOBAL_TRAJECTORY_CAP="${GLOBAL_TRAJECTORY_CAP:-false}"
+
 # Sampling distribution shape; defaults preserve the original Qwen-Instruct-style
 # eval profile (top_p=0.95, top_k=20, rep_penalty=1.1). RL-trained rollouts (ECHO,
 # ARPO) typically train at top_p=1.0, top_k=-1, repetition_penalty=1.0 -- override
@@ -159,6 +162,9 @@ CMD+=(--max_search_times "$MAX_SEARCH_TIMES")
 CMD+=(--sample_timeout "$SAMPLE_TIMEOUT")
 CMD+=(--temperature "$TEMPERATURE")
 CMD+=(--max_tokens "$MAX_TOKENS")
+if [[ "$GLOBAL_TRAJECTORY_CAP" == "true" ]]; then
+  CMD+=(--global_trajectory_cap)
+fi
 CMD+=(--top_p "$TOP_P")
 CMD+=(--top_k "$TOP_K")
 CMD+=(--min_p "$MIN_P")

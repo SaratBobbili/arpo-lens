@@ -438,14 +438,8 @@ def compute_score(data_source, solution_str, ground_truth, extra_info=None):
         result["reason"] = f"bad format: {phase_reason}"
         return result
 
-    # LL phase short-circuits before answer scoring; entropy overrides use the
-    # format verdict and no_tool_calls flag from above.
+    # LL-specific no-tool signal is still used by phase penalties.
     if phase == "low_level":
-        # A format-valid rollout that never invoked <search>/<python> is a soft
-        # fail: non-initial <select> tokens would otherwise soak up LL entropy
-        # reward and reinforce the no-tool degenerate strategy. Flag the sample
-        # so the format gate zeros its dense reward; score stays >= 0 so the
-        # hard penalty path is not triggered.
         has_tool_call = any(
             end != -1
             for tag in ("search", "python")
@@ -454,9 +448,6 @@ def compute_score(data_source, solution_str, ground_truth, extra_info=None):
         if not has_tool_call:
             result["no_tool_calls"] = True
             result["reason"] = "low-level: no tool call invoked"
-        else:
-            result["reason"] = "low-level format is correct"
-        return result
 
     # Strip EOS token if present
     if extra_info and "tokenizer" in extra_info and extra_info["tokenizer"].eos_token and response.endswith(extra_info["tokenizer"].eos_token):
@@ -494,6 +485,9 @@ def compute_score(data_source, solution_str, ground_truth, extra_info=None):
     else:
         result["score"] = 0
         result["reason"] = f"wrong answer but good format: {answer}"
+
+    if phase == "low_level" and result["no_tool_calls"]:
+        result["reason"] = f"{result['reason']} (no tool call invoked)"
 
     return result
 

@@ -41,16 +41,10 @@ from verl.utils.reward_score.deep_research_echo import resolve_validator_profile
 class RayECHOTrainer(RayPPOTrainer):
     """ECHO trainer with ARPO-identical PPO training loop."""
 
-    # Per-phase JSONL dump spec consumed by `_dump_logging_data`. Each entry is
-    # (filename_under_logging_data/<phase>/, metric_suffix appended to "<phase>/"
-    # to look up in the per-step `metrics` dict). LL "reward" reads the pre-gate
-    # entropy mean over good-format ∧ has-tool only (clean entropy axis); HL
-    # "reward" reads f1_mean (clean task axis, ignores -1 by construction).
-    # `entropy_reg_loss` is populated for entropy/entropy-hybrid phases and for
-    # scorer phases with entropy.reg_coeff > 0; absent from high_level by default.
+    # Per-phase JSONL dump spec consumed by `_dump_logging_data`.
     _LOGGING_SPEC = {
         "low_level": [
-            ("reward.jsonl", "reward/entropy_scalar_mean_good"),
+            ("reward.jsonl", "reward/effective_reward_mean"),
             ("format_penalty.jsonl", "reward/bad_format_rate"),
             ("pg_loss.jsonl", "actor/pg_loss"),
             ("entropy_reg_loss.jsonl", "actor/entropy_reg_loss"),
@@ -62,9 +56,10 @@ class RayECHOTrainer(RayPPOTrainer):
             ("tools_successful_calls.jsonl", "tools/successful_calls"),
         ],
         "high_level": [
-            ("reward.jsonl", "reward/f1_mean"),
+            ("reward.jsonl", "reward/effective_reward_mean"),
             ("format_penalty.jsonl", "reward/bad_format_rate"),
             ("pg_loss.jsonl", "actor/pg_loss"),
+            ("entropy_reg_loss.jsonl", "actor/entropy_reg_loss"),
             ("grad_norm.jsonl", "actor/grad_norm"),
             ("entropy_old_policy.jsonl", "actor/entropy_old_policy"),
             ("high_level_valid_rate.jsonl", "reward/high_level_valid_rate"),
@@ -137,6 +132,7 @@ class RayECHOTrainer(RayPPOTrainer):
         if "score" in reward_extra_info:
             scores = torch.tensor(reward_extra_info["score"], dtype=torch.float32)
             metrics["reward/score_mean"] = scores.mean().item()
+            metrics["reward/effective_reward_mean"] = scores.mean().item()
             metrics["reward/bad_format_rate"] = (scores < 0.0).to(torch.float32).mean().item()
             metrics["reward/format_pass_rate"] = (scores >= 0.0).to(torch.float32).mean().item()
 
@@ -185,7 +181,7 @@ class RayECHOTrainer(RayPPOTrainer):
         phase_batch.batch["loss_mask"] = phase_batch.batch[target_phase_mask_key]
         phase_batch.batch["response_mask"] = phase_batch.batch[target_phase_mask_key]
 
-        if phase_strategy in ("scorer", "maxentropy_rl"):
+        if phase_strategy == "scorer":
             _, reward_extra_infos_dict = compute_reward(phase_batch, self.reward_fn)
             phase_metrics.update(
                 self._prefix_metrics(
@@ -193,8 +189,51 @@ class RayECHOTrainer(RayPPOTrainer):
                     phase_prefix,
                 )
             )
+        elif phase_strategy == "maxentropy_rl":
+            from omegaconf import OmegaConf
 
-        if phase_strategy in ("entropy", "entropy-hybrid"):
+            scorer_tensor, reward_extra_infos_dict = compute_reward(phase_batch, self.reward_fn)
+            phase_metrics.update(
+                self._prefix_metrics(
+                    self._build_scorer_metrics(reward_extra_infos_dict),
+                    phase_prefix,
+                )
+            )
+            phase_batch.meta_info["calculate_entropy"] = True
+            old_log_prob = self.actor_rollout_wg.compute_log_prob(phase_batch)
+            entropys = old_log_prob.batch.get("entropys")
+            if entropys is None:
+                raise RuntimeError(
+                    f"{target_phase_name} logging-only maxentropy_rl metrics require entropys from compute_log_prob."
+                )
+            me_cfg = phase_reward_cfg.max_entropy
+            phase_mask_f = phase_batch.batch[target_phase_mask_key].to(torch.float32)
+            entropy_mask_f = phase_mask_f * phase_batch.batch[me_cfg.mask_key].to(torch.float32)
+            entropy_mask_f = entropy_mask_f * phase_batch.batch["non_border_loss_mask"].to(torch.float32)
+            me_entropy_cfg = OmegaConf.create(
+                {
+                    "reduction": me_cfg.reduction,
+                    "normalize": me_cfg.normalize,
+                    "scale": me_cfg.alpha,
+                    "clamp_min": None,
+                    "clamp_max": None,
+                    "bad_format_penalty": 0,
+                    "no_tool_penalty": None,
+                }
+            )
+            entropy_reward_tensor, entropy_metrics = self._build_entropy_scalar_reward(
+                entropys=entropys,
+                phase_batch=phase_batch,
+                phase_mask_key=target_phase_mask_key,
+                entropy_cfg=me_entropy_cfg,
+                entropy_mask=entropy_mask_f,
+            )
+            phase_metrics.update(self._prefix_metrics(entropy_metrics, phase_prefix))
+            combined_tensor = scorer_tensor + entropy_reward_tensor.to(scorer_tensor.device)
+            phase_metrics[f"{phase_prefix}reward/effective_reward_mean"] = (
+                combined_tensor.to(torch.float32).sum(dim=-1).mean().detach().item()
+            )
+        elif phase_strategy in ("entropy", "entropy-hybrid"):
             phase_batch.meta_info["calculate_entropy"] = True
             old_log_prob = self.actor_rollout_wg.compute_log_prob(phase_batch)
             entropys = old_log_prob.batch.get("entropys")
@@ -319,6 +358,7 @@ class RayECHOTrainer(RayPPOTrainer):
         no_tool_penalty_cfg = entropy_cfg.get("no_tool_penalty", None)
         no_tool_penalty_active = no_tool_penalty_cfg is not None
         reward_override_active = bad_format_penalty != 0 or no_tool_penalty_active
+        entropy_scalar_mean_good = per_sample.mean().detach().item()
         if reward_override_active:
             scorer_tensor, reward_extra = compute_reward(phase_batch, self.reward_fn)
             scorer_per_sample = scorer_tensor.to(per_sample.device).sum(dim=-1)
@@ -332,9 +372,7 @@ class RayECHOTrainer(RayPPOTrainer):
             # downstream JSONL trace has a clean per-step reward signal that
             # doesn't drift just because the bad-format share moves.
             keep = (~bad) & (~no_tool)
-            metrics["reward/entropy_scalar_mean_good"] = (
-                per_sample[keep].mean().detach().item() if keep.any() else 0.0
-            )
+            entropy_scalar_mean_good = per_sample[keep].mean().detach().item() if keep.any() else 0.0
             if "high_level_valid" in reward_extra:
                 metrics["reward/high_level_valid_rate"] = (
                     torch.tensor(reward_extra["high_level_valid"], dtype=torch.float32).mean().item()
@@ -353,7 +391,9 @@ class RayECHOTrainer(RayPPOTrainer):
                     no_tool, torch.full_like(per_sample, no_tool_penalty), per_sample
                 )
 
+        metrics["reward/entropy_scalar_mean_good"] = entropy_scalar_mean_good
         metrics["reward/entropy_scalar_mean"] = per_sample.mean().detach().item()
+        metrics["reward/effective_reward_mean"] = per_sample.mean().detach().item()
 
         # Sparse write at the last valid response token, matching ECHORewardManager's placement.
         # Use the *phase* mask (not entropy_mask) for the write template so the scalar
@@ -674,6 +714,9 @@ class RayECHOTrainer(RayPPOTrainer):
             raise RuntimeError(f"{phase_name} reward_tensor was not initialized.")
         if phase_strategy == "maxentropy_rl":
             reward_tensor = reward_tensor + entropy_reward_tensor.to(reward_tensor.device)
+        metrics[f"{phase_prefix}reward/effective_reward_mean"] = (
+            reward_tensor.to(torch.float32).sum(dim=-1).mean().detach().item()
+        )
         phase_batch.batch["token_level_scores"] = reward_tensor
         if phase_reward_extra_infos_dict:
             phase_batch.non_tensor_batch.update({k: np.array(v) for k, v in phase_reward_extra_infos_dict.items()})

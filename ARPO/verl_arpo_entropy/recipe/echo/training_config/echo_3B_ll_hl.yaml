@@ -1,5 +1,5 @@
 project_name: qwen3BInst
-experiment_name: echo3BInst_hl_ll_entropy_grpo_hl_kl_true_ll_kl_false_reg_on
+experiment_name: echo3BInst_hl_ll_scorer_grpo_hl_kl_true_ll_kl_false_reg_on_ll
 nnodes: 1
 n_gpus_per_node: 8
 
@@ -35,11 +35,11 @@ best_checkpoint_metric: val-core/reward
 max_actor_ckpt_to_keep: 1
 resume_mode: auto
 
-phase_order: '["low_level", "high_level"]'
-high_level_update_repeats: 2
+phase_order: '["high_level", "low_level"]'
+high_level_update_repeats: 1
 low_level_update_repeats: 1
 high_level_reward_strategy: scorer
-low_level_reward_strategy: entropy
+low_level_reward_strategy: scorer
 high_level_algorithm: grpo
 low_level_algorithm: grpo
 norm_adv_by_std_in_grpo: False
@@ -59,20 +59,47 @@ use_sign_cond_clip: True
 clip_ratio_low: 0.2
 clip_ratio_high: 0.2
 clip_ratio_c: 3.0
-clip_ratio_low_pos: 0.1
-clip_ratio_high_pos: 0.3
-clip_ratio_low_neg: 0.1
+clip_ratio_low_pos: 0.0
+clip_ratio_high_pos: 0.2
+clip_ratio_low_neg: 0.0
 clip_ratio_high_neg: 0.1
 
 hl_kl_loss_coef: 0.001
 ll_kl_loss_coef: 0.0
-ll_entropy_reg_coeff: 0.001
-ll_entropy_scale: 1.0
+
+hl_entropy_reg_coeff: 0.0
+ll_entropy_reg_coeff: 0.01
+hl_entropy_reduction: sum
 ll_entropy_reduction: mean
+hl_entropy_scale: 1.0
 ll_entropy_scale: 1.0
+hl_entropy_normalize: false
 ll_entropy_normalize: true
-ll_entropy_band_enable: false
-ll_entropy_band_epsilon_low: 0.2
-ll_entropy_band_epsilon_high: 0.4
+
+hl_entropy_clamp_min: null
+ll_entropy_clamp_min: null
+hl_entropy_clamp_max: null
+ll_entropy_clamp_max: null
+
+hl_bad_format_penalty: 0.0
 ll_bad_format_penalty: -0.1
+hl_no_tool_penalty: null
 ll_no_tool_penalty: -0.05
+
+hl_entropy_band_enable: false
+ll_entropy_band_enable: false
+hl_entropy_band_epsilon_low: 0.2
+ll_entropy_band_epsilon_low: 0.2
+hl_entropy_band_epsilon_high: 0.2
+ll_entropy_band_epsilon_high: 0.4
+hl_entropy_band_h_floor: 1.0e-4
+ll_entropy_band_h_floor: 1.0e-4
+
+hl_max_entropy_alpha: 0.1
+ll_max_entropy_alpha: 0.1
+hl_max_entropy_mask_key: tool_loss_mask
+ll_max_entropy_mask_key: tool_loss_mask
+hl_max_entropy_reduction: mean
+ll_max_entropy_reduction: mean
+hl_max_entropy_normalize: true
+ll_max_entropy_normalize: true

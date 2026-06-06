@@ -58,13 +58,14 @@ will do at eval time.
 
 | Metric | What it means |
 |---|---|
-| `high_level/reward/score_mean` | Average HL phase reward across all rollouts (F1 on good answers, `-1` on format failures). The number that GRPO is optimizing on the HL update. |
-| `high_level/reward/f1_mean` | Same as above but with `-1`s replaced by 0 — answers F1 averaged over **all** HL rollouts including format failures. Pulls down vs. validation because of T=1 sampling noise. |
+| `<phase>/reward/effective_reward_mean` | Mean per-sample reward actually used by GRPO for that phase/strategy. This is the source for `<save_path>/logging_data/<phase>/reward.jsonl`. |
+| `<phase>/reward/score_mean` | Mean scorer output for scorer-based paths (`scorer`, scorer leg of `maxentropy_rl`). |
+| `<phase>/reward/f1_mean` | Mean F1 component from scorer output (zeros on non-matching answers). |
 | `high_level/reward/format_pass_rate` | Fraction of HL rollouts that passed all format checks. Want this climbing toward 1.0. |
 | `high_level/reward/bad_format_rate` | `1 − format_pass_rate`. |
 | `high_level/reward/no_tool_rate` | Fraction of HL rollouts that produced a valid answer without ever calling a tool. |
-| `low_level/reward/entropy_scalar_mean_good` | Average per-sample entropy reward on **good-format, tool-using** LL rollouts. The clean "how diverse is the LL policy on the samples that count?" signal. |
-| `low_level/reward/entropy_scalar_mean` | Same but over all LL rollouts (includes the `bad_format_penalty` and the zeros from no-tool soft-fails). Use this if you want the raw mean reward GRPO sees; use the `_mean_good` variant to track entropy in isolation. |
+| `<phase>/reward/entropy_scalar_mean_good` | Entropy reward mean over good-format and tool-using samples when entropy overrides are active; otherwise equals `entropy_scalar_mean`. |
+| `<phase>/reward/entropy_scalar_mean` | Entropy-channel reward mean over all samples (for `entropy`, `entropy-hybrid`, and entropy leg of `maxentropy_rl`). |
 | `low_level/reward/bad_format_rate` | LL-side format failure rate (defined by the LL validator). |
 | `low_level/reward/no_tool_rate` | Fraction of valid LL rollouts that never invoked a tool. Should drift toward 0 as training pushes the model to actually use tools. |
 
@@ -90,7 +91,7 @@ ARPO doesn't log these because its scorer applies one combined format check
 | `<phase>/actor/kl_loss` / `<phase>/actor/ppo_kl` | KL between the current policy and either the reference (`kl_loss`, gated on `kl_loss_coef`) or the old policy used for the rollout (`ppo_kl`). If KL blows up the policy is moving too fast per step. |
 | `<phase>/actor/pg_clipfrac` | Share of tokens where the PPO ratio hit the clip range. Healthy is small but non-zero; near 1.0 means the trust region is too tight. |
 | `<phase>/actor/lr` | Current learning rate (after warmup / schedule). |
-| `low_level/actor/entropy_reg_loss` | **ECHO only.** The entropy term added to the LL actor loss when the entropy regularizer is on. Compare its magnitude to `pg_loss` — if `entropy_reg_loss` × `reg_coeff` dominates, the regularizer is driving everything. |
+| `<phase>/actor/entropy_reg_loss` | **ECHO only.** The entropy term added to actor loss when the entropy regularizer is on for that phase. Compare `entropy_reg_loss × reg_coeff` to `pg_loss`. |
 | `<phase>/training/rollout_probs_diff_mean` | How much the rollout engine (vLLM) and the actor disagree per token, on average. Should stay small; if it grows, rollouts and training are drifting apart. |
 | `<phase>/training/rollout_probs_diff_max` | Worst-case version of the above. Useful for catching tokenizer / templating bugs. |
 
@@ -203,8 +204,8 @@ split: ARPO writes one set of files at the top level (`reward.jsonl`,
 `grad_norm.jsonl`, `entropy_old_policy.jsonl`, `entropy_reg_loss.jsonl`,
 `tools_total_calls.jsonl`, `tools_successful_calls.jsonl`); ECHO writes the
 same set under `logging_data/high_level/` *and* `logging_data/low_level/`,
-where `reward.jsonl` reads `f1_mean` for HL but `entropy_scalar_mean_good`
-for LL (cleanest per-phase reward proxy).
+where `reward.jsonl` reads `<phase>/reward/effective_reward_mean` so files stay
+valid across scorer, entropy, entropy-hybrid, and maxentropy_rl.
 
 ## 6. ECHO ↔ ARPO term map
 

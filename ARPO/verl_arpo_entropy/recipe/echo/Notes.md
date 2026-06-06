@@ -196,6 +196,32 @@ When LL uses `entropy` or `entropy-hybrid`, optimization pressure shifts toward 
 
 ---
 
+## 9) `echo3BInst_hl_scorer_ll_hybrid_band_frozen_hinit_kl_on`
+
+**Config delta** (launch: `training_config/echo_3B_ll_hl_dispo_band.yaml`):
+- `high_level_reward_strategy=scorer`, `low_level_reward_strategy=entropy-hybrid`
+- `ll_entropy_band_enable=true`, `ll_entropy_band_warmup_steps=1`
+- `ll_entropy_band_epsilon_low=0.2`, `ll_entropy_band_epsilon_high=0.4`
+- `hl_kl_loss_coef=0.001`, `ll_kl_loss_coef=0.001`, `ll_entropy_reg_coeff=0.01`
+- Frozen `H_init` = mean phase policy entropy captured on global step 1 (not post-`</select>` token)
+
+**Hypothesis**:
+- Step 1 warmup + frozen phase entropy anchor fixes broken band (`entropy_in_band_rate` ~1% on old `post_first_select` anchor).
+- Band on select `H_bar` with fixed center should yield DISPO-like diversity without CISPO collapse or val peak-then-decay.
+
+**W&B watch list**:
+- Step 1: `low_level/reward/entropy_h_phase_mean` (reference level)
+- Step 2+: `low_level/reward/entropy_in_band_rate` (target 30–70%)
+- Step 2+: `low_level/reward/entropy_h_bar_mean` stable above ~0.08 normalized
+- `val-core/DR_grpo_mix/reward/mean@1` ≥ 0.43 sustained
+- Compare vs `ll_scorer`, `hybrid_kl_on` (#8), old `band_first_select`
+
+**Note**: frozen ref is not persisted across checkpoint resume.
+
+**Outcome**: *(pending run)*
+
+---
+
 ## Cross-experiment takeaways
 
 1. **LL reward choice dominates small penalties**  

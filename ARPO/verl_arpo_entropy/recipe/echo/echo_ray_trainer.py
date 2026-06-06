@@ -291,29 +291,14 @@ class RayECHOTrainer(RayPPOTrainer):
         score = torch.where(above, scale * (h_high / h_bar.clamp_min(h_floor)), score)
         return score, h_init, h_low, h_high
 
-    def _entropy_post_first_select(self, entropys: torch.Tensor, phase_batch: DataProto, entropy_cfg, band_cfg) -> torch.Tensor:
-        """H_init: Shannon entropy of pi(.|x, y_through_first_select) at the next token, / log|V| if normalize."""
-        post_idx = phase_batch.batch["first_select_post_idx"].long()
-        h_floor = float(band_cfg.get("h_floor", 1e-4))
-        h_init = torch.full((entropys.size(0),), h_floor, device=entropys.device, dtype=torch.float32)
-        valid = post_idx >= 0
-        if valid.any():
-            rows = torch.arange(entropys.size(0), device=entropys.device)[valid]
-            idx = post_idx[valid].clamp(max=entropys.size(1) - 1)
-            h_init[valid] = entropys[rows, idx].to(torch.float32)
-        if bool(entropy_cfg.normalize):
-            h_init = h_init / math.log(self.tokenizer.vocab_size)
-        return h_init
-
     def _build_entropy_scalar_reward(self, entropys: torch.Tensor, phase_batch: DataProto, phase_mask_key: str, entropy_cfg, entropy_mask: torch.Tensor):
         """Sparse entropy reward shaped like the scorer's output.
 
         Reduces per-token entropy over `entropy_mask` tokens to one per-sample
         scalar (sum or mean per `entropy_cfg.reduction`), optionally
-        normalized by log(vocab_size). With `entropy.band.enable`, the scalar
-        is `scale` inside [(1-eps_low)*H_init, (1+eps_high)*H_init] and ramps outside;
-        H_init is next-token policy entropy after the first </select> (/ log|V| if
-        normalize). Otherwise uses
+        normalized by log(vocab_size). With `entropy.band.enable`, global steps
+        1..warmup_steps use scale*H_bar (no band) and capture mean phase entropy
+        as frozen H_init; later steps band against that frozen anchor. Otherwise uses
         monotone `scale * H_bar` with optional clamp_min/max. Writes the
         scalar at the last valid response token. When `bad_format_penalty != 0`
         or `no_tool_penalty` is set, calls the scorer and overrides matching
@@ -338,9 +323,26 @@ class RayECHOTrainer(RayPPOTrainer):
         scale = float(entropy_cfg.scale)
         band_cfg = entropy_cfg.get("band")
         band_enable = bool(band_cfg.get("enable", False)) if band_cfg is not None else False
+        band_warmup_active = False
+        h_phase = None
         if band_enable:
-            h_init = self._entropy_post_first_select(entropys, phase_batch, entropy_cfg, band_cfg)
-            per_sample, h_init, h_low, h_high = self._apply_entropy_band_score(h_bar, h_init, entropy_cfg, scale)
+            phase_mask = phase_batch.batch[phase_mask_key].to(torch.float32)
+            phase_entropy_mask = phase_mask * phase_batch.batch["non_border_loss_mask"].to(torch.float32)
+            h_phase = self._reduce_masked_entropy(entropys, phase_entropy_mask, entropy_cfg)
+            warmup_steps = int(band_cfg.get("warmup_steps", 1))
+            if self.global_steps <= warmup_steps:
+                per_sample = h_bar * scale
+                band_warmup_active = True
+                self._frozen_h_init_ref[phase_mask_key] = h_phase.mean().item()
+            else:
+                frozen = self._frozen_h_init_ref[phase_mask_key]
+                assert frozen is not None, (
+                    f"entropy.band missing frozen H_init for {phase_mask_key} at global_step={self.global_steps}"
+                )
+                h_init = torch.full_like(h_bar, frozen)
+                per_sample, h_init, h_low, h_high = self._apply_entropy_band_score(
+                    h_bar, h_init, entropy_cfg, scale
+                )
         else:
             per_sample = h_bar * scale
             if entropy_cfg.clamp_min is not None or entropy_cfg.clamp_max is not None:
@@ -349,11 +351,15 @@ class RayECHOTrainer(RayPPOTrainer):
         metrics: dict = {}
         metrics["reward/entropy_h_bar_mean"] = h_bar.mean().detach().item()
         if band_enable:
-            in_band = (h_bar >= h_low) & (h_bar <= h_high)
-            metrics["reward/entropy_h_init_mean"] = h_init.mean().detach().item()
-            metrics["reward/entropy_h_low_mean"] = h_low.mean().detach().item()
-            metrics["reward/entropy_h_high_mean"] = h_high.mean().detach().item()
-            metrics["reward/entropy_in_band_rate"] = in_band.float().mean().detach().item()
+            metrics["reward/entropy_h_phase_mean"] = h_phase.mean().detach().item()
+            metrics["reward/entropy_h_init_frozen_mean"] = self._frozen_h_init_ref[phase_mask_key]
+            metrics["reward/entropy_band_warmup_active"] = float(band_warmup_active)
+            if not band_warmup_active:
+                in_band = (h_bar >= h_low) & (h_bar <= h_high)
+                metrics["reward/entropy_h_init_mean"] = h_init.mean().detach().item()
+                metrics["reward/entropy_h_low_mean"] = h_low.mean().detach().item()
+                metrics["reward/entropy_h_high_mean"] = h_high.mean().detach().item()
+                metrics["reward/entropy_in_band_rate"] = in_band.float().mean().detach().item()
         bad_format_penalty = float(entropy_cfg.get("bad_format_penalty", 0))
         no_tool_penalty_cfg = entropy_cfg.get("no_tool_penalty", None)
         no_tool_penalty_active = no_tool_penalty_cfg is not None
@@ -443,6 +449,12 @@ class RayECHOTrainer(RayPPOTrainer):
             if algo == "dapo":
                 assert bool(cfg.filter_groups.enable), f"{phase_name} algorithm=dapo requires filter_groups.enable=true"
                 assert cfg.filter_groups.metric, f"{phase_name} algorithm=dapo requires filter_groups.metric"
+            band = cfg.entropy.get("band")
+            if band is not None and bool(band.get("enable", False)):
+                warmup_steps = int(band.get("warmup_steps", 1))
+                assert warmup_steps >= 1, (
+                    f"{phase_name} entropy.band.enable requires warmup_steps >= 1, got {warmup_steps}"
+                )
 
     @staticmethod
     def _phase_algorithm(phase_reward_cfg) -> str:
@@ -799,6 +811,7 @@ class RayECHOTrainer(RayPPOTrainer):
         )
 
         self.global_steps = 0
+        self._frozen_h_init_ref: dict[str, float] = {}
         self._best_metric_value = float("-inf")
         self._best_metric_step = -1
         self._best_metric_key = None

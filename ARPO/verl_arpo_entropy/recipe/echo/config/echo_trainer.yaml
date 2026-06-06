@@ -117,6 +117,7 @@ reward_model:
           epsilon_low: 0.2
           epsilon_high: 0.2
           h_floor: 1.0e-4
+          warmup_steps: 1
         # Bad-format override: 0 keeps the entropy scalar; non-zero replaces it.
         bad_format_penalty: 0.0
         # No-tool override: null keeps the entropy scalar; any float replaces it.
@@ -158,13 +159,14 @@ reward_model:
         clamp_max: null
         # Banded entropy reward: score is `scale` inside
         # [(1-epsilon_low)*H_init, (1+epsilon_high)*H_init], ramps outside.
-        # H_init is H(pi(.|x,y_through_first_select)) at the next token / log|V|
-        # when normalize=true (rollout emits first_select_post_idx); H_bar uses entropy_mask.
+        # Steps 1..warmup_steps: no band, capture mean phase entropy as frozen H_init.
+        # After warmup: H_init is that frozen ref; H_bar uses entropy_mask.
         band:
           enable: false
           epsilon_low: 0.2
           epsilon_high: 0.2
           h_floor: 1.0e-4
+          warmup_steps: 1
         bad_format_penalty: 0.0
         no_tool_penalty: 0.0
         # See high_level.entropy.reg_coeff for full semantics. With

@@ -16,6 +16,8 @@ trainer code that can diverge later.
 import json
 import os
 import shutil
+import subprocess
+import sys
 import uuid
 from copy import deepcopy
 import math
@@ -36,6 +38,9 @@ from verl.trainer.ppo.reward import compute_reward, compute_reward_async
 from verl.utils.metric import reduce_metrics
 
 from verl.utils.reward_score.deep_research_echo import resolve_validator_profile
+
+_ARPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+_VERL_TO_HF_SCRIPT = os.path.join(_ARPO_ROOT, "merge_ckpt", "convert_checkpoint_from_verl_to_hf.py")
 
 
 class RayECHOTrainer(RayPPOTrainer):
@@ -474,15 +479,38 @@ class RayECHOTrainer(RayPPOTrainer):
         return metric_key, float(metric_value)
 
     def _sync_best_checkpoint_dir(self) -> None:
-        src_dir = os.path.join(self.config.trainer.default_local_dir, f"global_step_{self.global_steps}")
-        dst_dir = os.path.join(self.config.trainer.default_local_dir, "best_checkpoint")
-        if os.path.lexists(dst_dir):
-            if os.path.islink(dst_dir) or os.path.isfile(dst_dir):
-                os.unlink(dst_dir)
-            else:
-                shutil.rmtree(dst_dir)
-        shutil.copytree(src_dir, dst_dir)
-        best_txt = os.path.join(self.config.trainer.default_local_dir, "best_checkpoint.txt")
+        run_dir = self.config.trainer.default_local_dir
+        src_actor = os.path.join(run_dir, f"global_step_{self.global_steps}", "actor")
+        best_dir = os.path.join(run_dir, "best_checkpoint")
+        dst_hf = os.path.join(best_dir, "hf")
+
+        legacy_actor = os.path.join(best_dir, "actor")
+        if os.path.isdir(legacy_actor):
+            shutil.rmtree(legacy_actor)
+        legacy_data = os.path.join(best_dir, "data.pt")
+        if os.path.isfile(legacy_data):
+            os.remove(legacy_data)
+        if os.path.isdir(dst_hf):
+            shutil.rmtree(dst_hf)
+        os.makedirs(best_dir, exist_ok=True)
+
+        print(f"[best_checkpoint] merging FSDP actor to HF: {src_actor} -> {dst_hf}")
+        subprocess.run(
+            [
+                sys.executable,
+                _VERL_TO_HF_SCRIPT,
+                "merge",
+                "--backend",
+                "fsdp",
+                "--local_dir",
+                src_actor,
+                "--target_dir",
+                dst_hf,
+            ],
+            check=True,
+        )
+
+        best_txt = os.path.join(run_dir, "best_checkpoint.txt")
         with open(best_txt, "w") as f:
             f.write(str(self.global_steps))
 

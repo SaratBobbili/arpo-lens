@@ -248,6 +248,7 @@ trainer:
   # Group experiments under a recipe-specific default project.
   project_name: verl-echo
   # Enable best-checkpoint tracking based on validation metrics.
+  # When true, writes best_checkpoint/hf/ (~6GB) from the current global_step actor.
   save_best_checkpoint: false
   # Metric family to track for best checkpoint.
   # Supported: {val-core/reward, val-aux/f1-score}

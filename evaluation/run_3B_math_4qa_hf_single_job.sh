@@ -19,22 +19,19 @@ BING_LOCATION="us"
 
 # Main reasoning model checkpoint/HF id served on ports 8002/8003.
 CHECKPOINT_DIR="/scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ECHO"
-# Raw VERL actor checkpoint directory to convert before serving.
-# Layout expected by run_layout.sh: <root>/<experiment>/<step>/actor, so the
-# two parents define TRAINING_EXPERIMENT (echo3BInstruct) and CHECKPOINT_STEP
-# (global_step_40) used in OUTPUT_PATH and run_config.yaml.
-RAW_ACTOR_CHECKPOINT_PATH="${CHECKPOINT_DIR}/checkpoints/echo3BInstruct/global_step_40/actor"
-# Base HF model used as the config/template during VERL->HF merge.
-REASON_BASE_MODEL_PATH="Qwen/Qwen2.5-3B-Instruct"
-# Converted HF model directory served by vLLM.
-ACTOR_MODEL_PATH="${CHECKPOINT_DIR}/checkpoints/echo3BInstruct/global_step_40/hf"
+TRAINING_RUN_DIR="${CHECKPOINT_DIR}/checkpoints/echo3BInst_hl_ll_entropy_grpo_hl_kl_true_ll_kl_false_reg_on_band_first_select"
+# HF best checkpoint written by ECHO training (best_checkpoint/hf).
+ACTOR_MODEL_PATH="${TRAINING_RUN_DIR}/best_checkpoint/hf"
 REASON_MODEL_PATH="${ACTOR_MODEL_PATH}"
+# run_layout.sh: parent of ACTOR_MODEL_PATH is best_checkpoint -> CHECKPOINT_STEP.
+RAW_ACTOR_CHECKPOINT_PATH="${ACTOR_MODEL_PATH}"
 # Served model alias for reasoning endpoints; must match infer DEFAULT_MODEL.
 REASON_MODEL_NAME="Qwen2.5-3B-Instruct"
 # Optional pointer to the training recipe .sh that produced the checkpoint
 # above. Recorded verbatim into run_config.yaml so eval folders stay traceable
 # back to the exact training config; leave empty to skip.
-TRAINING_RECIPE_PATH="${SCRIPT_DIR}/../ARPO/verl_arpo_entropy/recipe/echo/ECHO_2.5_3B_Reasoning_1node_v1_ll_hl.sh"
+#TRAINING_RECIPE_PATH="${SCRIPT_DIR}/../ARPO/verl_arpo_entropy/recipe/echo/ECHO_2.5_3B_Reasoning_1node_v1_ll_hl.sh"
+TRAINING_RECIPE_PATH=""
 
 # Summarization helper checkpoint/HF id served on ports 8004/8005.
 SUMM_MODEL_PATH="Qwen/Qwen2.5-7B-Instruct"
@@ -42,7 +39,7 @@ SUMM_MODEL_PATH="Qwen/Qwen2.5-7B-Instruct"
 SUMM_MODEL_NAME="Qwen2.5-7B-Instruct"
 
 # completion_sds enables SDS with summarization; completion/default skips summarization.
-INFER_MODE="completion_sds"
+INFER_MODE="completion"
 
 # System prompt schema:
 #   base        -> no tools (pure CoT, table row "Qwen2.5-3B-Instruct")
@@ -88,7 +85,7 @@ COUNTS="1000000"
 #   qa_all       -> hotpotqa/2wiki/musique/bamboogle (qa benchmarks)
 #   math_qa_all  -> math_all + qa_all (separate per-dataset folders)
 #   grpo_mix     -> mirror of the ECHO RL validation set (mixed math+qa, single jsonl)
-DATASET_GROUP="math_qa_all"
+DATASET_GROUP="math_all"
 
 # Pass@k turns (one output file per turn); space separated list.
 TURNS="1"
@@ -180,18 +177,26 @@ fi
 source "${SCRIPT_DIR}/run_layout.sh"
 init_run_layout
 
-# Convert VERL/FSDP actor shards into a vLLM-loadable HF directory once.
-if [[ -d "$RAW_ACTOR_CHECKPOINT_PATH" ]]; then
-  if [[ ! -f "${ACTOR_MODEL_PATH}/config.json" ]]; then
-    echo "[0/5] Converting VERL actor checkpoint to HF format..."
+# Fallback for legacy runs that still have FSDP under best_checkpoint/actor.
+if [[ ! -f "${ACTOR_MODEL_PATH}/config.json" ]]; then
+  src_actor=""
+  if [[ -d "${TRAINING_RUN_DIR}/best_checkpoint/actor" ]]; then
+    src_actor="${TRAINING_RUN_DIR}/best_checkpoint/actor"
+  elif [[ -f "${TRAINING_RUN_DIR}/best_checkpoint.txt" ]]; then
+    best_step="$(cat "${TRAINING_RUN_DIR}/best_checkpoint.txt")"
+    candidate="${TRAINING_RUN_DIR}/global_step_${best_step}/actor"
+    [[ -d "$candidate" ]] && src_actor="$candidate"
+  fi
+  if [[ -n "$src_actor" ]]; then
+    echo "[0/5] Converting best VERL actor checkpoint to HF format..."
     python ../ARPO/merge_ckpt/convert_checkpoint_from_verl_to_hf.py merge \
       --backend fsdp \
-      --hf_model_path "$REASON_BASE_MODEL_PATH" \
-      --local_dir "$RAW_ACTOR_CHECKPOINT_PATH" \
+      --local_dir "$src_actor" \
       --target_dir "$ACTOR_MODEL_PATH"
-  else
-    echo "[0/5] Found converted HF checkpoint, skipping merge: $ACTOR_MODEL_PATH"
   fi
+fi
+if [[ -f "${ACTOR_MODEL_PATH}/config.json" ]]; then
+  echo "[0/5] Using HF best checkpoint: $ACTOR_MODEL_PATH"
 fi
 
 # Hard fail early when the reasoning model is not loadable by vLLM.

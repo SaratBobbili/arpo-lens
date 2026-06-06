@@ -66,8 +66,8 @@ will do at eval time.
 | `high_level/reward/no_tool_rate` | Fraction of HL rollouts that produced a valid answer without ever calling a tool. |
 | `<phase>/reward/entropy_scalar_mean_good` | Entropy reward mean over good-format and tool-using samples when entropy overrides are active; otherwise equals `entropy_scalar_mean`. |
 | `<phase>/reward/entropy_scalar_mean` | Entropy-channel reward mean over all samples (for `entropy`, `entropy-hybrid`, and entropy leg of `maxentropy_rl`). |
-| `<phase>/reward/entropy_h_bar_mean` | Mean `H_bar` over the strategy entropy mask (select-only for `entropy-hybrid`). |
-| `<phase>/reward/entropy_h_phase_mean` | Mean phase policy entropy used to set frozen `H_init` during band warmup. |
+| `<phase>/reward/entropy_h_bar_mean` | Mean `H_bar` over the phase mask (`m^phase ∩ non_border_loss_mask`); same span as frozen `H_init`. |
+| `<phase>/reward/entropy_h_phase_mean` | Alias of `entropy_h_bar_mean` when band is enabled (kept for W&B continuity). |
 | `<phase>/reward/entropy_h_init_frozen_mean` | Frozen band anchor captured during warmup (flat after step 1). |
 | `<phase>/reward/entropy_in_band_rate` | Fraction of samples with `H_bar` inside the band (logged after warmup only). Target 30–70%. |
 | `<phase>/reward/entropy_band_warmup_active` | 1 on warmup steps (band off, ref captured); 0 once band scoring is on. |

@@ -206,13 +206,13 @@ When LL uses `entropy` or `entropy-hybrid`, optimization pressure shifts toward 
 - Frozen `H_init` = mean phase policy entropy captured on global step 1 (not post-`</select>` token)
 
 **Hypothesis**:
-- Step 1 warmup + frozen phase entropy anchor fixes broken band (`entropy_in_band_rate` ~1% on old `post_first_select` anchor).
-- Band on select `H_bar` with fixed center should yield DISPO-like diversity without CISPO collapse or val peak-then-decay.
+- Step 1 warmup + frozen phase entropy anchor fixes broken band (`entropy_in_band_rate` ~1% on old mismatched-mask anchor).
+- Band on phase-level `H_bar` (same mask as `H_init`); actor reg stays on select mask for hybrid.
 
 **W&B watch list**:
-- Step 1: `low_level/reward/entropy_h_phase_mean` (reference level)
-- Step 2+: `low_level/reward/entropy_in_band_rate` (target 30–70%)
-- Step 2+: `low_level/reward/entropy_h_bar_mean` stable above ~0.08 normalized
+- End of warmup: `entropy_h_bar_mean` ≈ `entropy_h_init_frozen_mean`
+- Step 2+: `entropy_in_band_rate` near 1.0 initially, then target 30–70% as policy moves
+- `low_level/actor/entropy_reg_loss` still reflects select-only entropy (unchanged actor geometry)
 - `val-core/DR_grpo_mix/reward/mean@1` ≥ 0.43 sustained
 - Compare vs `ll_scorer`, `hybrid_kl_on` (#8), old `band_first_select`
 

@@ -226,7 +226,7 @@ class RayECHOTrainer(RayPPOTrainer):
                 phase_batch=phase_batch,
                 phase_mask_key=target_phase_mask_key,
                 entropy_cfg=me_entropy_cfg,
-                entropy_mask=entropy_mask_f,
+                reward_entropy_mask=entropy_mask_f,
             )
             phase_metrics.update(self._prefix_metrics(entropy_metrics, phase_prefix))
             combined_tensor = scorer_tensor + entropy_reward_tensor.to(scorer_tensor.device)
@@ -241,17 +241,11 @@ class RayECHOTrainer(RayPPOTrainer):
                 raise RuntimeError(
                     f"{target_phase_name} logging-only entropy metrics require entropys from compute_log_prob."
                 )
-            phase_mask_f = phase_batch.batch[target_phase_mask_key].to(torch.float32)
-            entropy_mask_f = phase_mask_f
-            if phase_strategy == "entropy-hybrid":
-                entropy_mask_f = entropy_mask_f * phase_batch.batch["select_loss_mask"].to(torch.float32)
-            entropy_mask_f = entropy_mask_f * phase_batch.batch["non_border_loss_mask"].to(torch.float32)
             _, entropy_metrics = self._build_entropy_scalar_reward(
                 entropys=entropys,
                 phase_batch=phase_batch,
                 phase_mask_key=target_phase_mask_key,
                 entropy_cfg=phase_reward_cfg.entropy,
-                entropy_mask=entropy_mask_f,
             )
             phase_metrics.update(self._prefix_metrics(entropy_metrics, phase_prefix))
 
@@ -291,49 +285,44 @@ class RayECHOTrainer(RayPPOTrainer):
         score = torch.where(above, scale * (h_high / h_bar.clamp_min(h_floor)), score)
         return score, h_init, h_low, h_high
 
-    def _build_entropy_scalar_reward(self, entropys: torch.Tensor, phase_batch: DataProto, phase_mask_key: str, entropy_cfg, entropy_mask: torch.Tensor):
+    def _build_entropy_scalar_reward(
+        self,
+        entropys: torch.Tensor,
+        phase_batch: DataProto,
+        phase_mask_key: str,
+        entropy_cfg,
+        reward_entropy_mask: torch.Tensor | None = None,
+    ):
         """Sparse entropy reward shaped like the scorer's output.
 
-        Reduces per-token entropy over `entropy_mask` tokens to one per-sample
-        scalar (sum or mean per `entropy_cfg.reduction`), optionally
-        normalized by log(vocab_size). With `entropy.band.enable`, global steps
-        1..warmup_steps use scale*H_bar (no band) and capture mean phase entropy
-        as frozen H_init; later steps band against that frozen anchor. Otherwise uses
-        monotone `scale * H_bar` with optional clamp_min/max. Writes the
-        scalar at the last valid response token. When `bad_format_penalty != 0`
-        or `no_tool_penalty` is set, calls the scorer and overrides matching
-        samples with those scalars; good rollouts keep their entropy reward.
-        GRPO's `sum(dim=-1)` recovers the same
-        per-sample score as the scorer path, so no dense layout or post-hoc
-        aggregation is needed.
-
-        `entropy_mask` is precomputed by the caller (trainer) and is the
-        single source of truth for which tokens enter the reduction. The
-        caller is responsible for intersecting the phase mask with any
-        strategy-specific masks (`select_loss_mask` for entropy-hybrid,
-        `tool_loss_mask` for maxentropy_rl) and the global tag-border
-        exclusion (`non_border_loss_mask`). The mean-reduction denominator
-        uses `entropy_mask.sum(dim=-1)` so the per-sample scalar is the
-        average entropy over exactly the restricted span. The sparse write
-        position is the last valid response token (from `phase_mask_key`'s
-        attention mask), not the last restricted token, so GRPO's
-        `sum(dim=-1)` over the phase `response_mask` still sees the scalar.
+        Reduces per-token entropy to one per-sample scalar (sum or mean per
+        `entropy_cfg.reduction`), optionally normalized by log(vocab_size).
+        For `entropy` / `entropy-hybrid`, H_bar and H_init always use
+        m^phase ∩ non_border_loss_mask (strategy masks apply only to the actor
+        regularizer). `maxentropy_rl` may pass `reward_entropy_mask` for its
+        additive entropy leg. With `entropy.band.enable`, global steps
+        1..warmup_steps use scale*H_bar (no band) and capture mean phase
+        entropy as frozen H_init; later steps band against that frozen anchor.
         """
-        h_bar = self._reduce_masked_entropy(entropys, entropy_mask, entropy_cfg)
+        phase_entropy_mask = (
+            phase_batch.batch[phase_mask_key].to(torch.float32)
+            * phase_batch.batch["non_border_loss_mask"].to(torch.float32)
+        )
+        if reward_entropy_mask is not None:
+            h_bar = self._reduce_masked_entropy(entropys, reward_entropy_mask, entropy_cfg)
+        else:
+            h_bar = self._reduce_masked_entropy(entropys, phase_entropy_mask, entropy_cfg)
         scale = float(entropy_cfg.scale)
         band_cfg = entropy_cfg.get("band")
         band_enable = bool(band_cfg.get("enable", False)) if band_cfg is not None else False
         band_warmup_active = False
-        h_phase = None
         if band_enable:
-            phase_mask = phase_batch.batch[phase_mask_key].to(torch.float32)
-            phase_entropy_mask = phase_mask * phase_batch.batch["non_border_loss_mask"].to(torch.float32)
-            h_phase = self._reduce_masked_entropy(entropys, phase_entropy_mask, entropy_cfg)
+            assert reward_entropy_mask is None, "entropy.band uses phase-level H_bar only"
             warmup_steps = int(band_cfg.get("warmup_steps", 1))
             if self.global_steps <= warmup_steps:
                 per_sample = h_bar * scale
                 band_warmup_active = True
-                self._frozen_h_init_ref[phase_mask_key] = h_phase.mean().item()
+                self._frozen_h_init_ref[phase_mask_key] = h_bar.mean().item()
             else:
                 frozen = self._frozen_h_init_ref[phase_mask_key]
                 assert frozen is not None, (
@@ -351,7 +340,7 @@ class RayECHOTrainer(RayPPOTrainer):
         metrics: dict = {}
         metrics["reward/entropy_h_bar_mean"] = h_bar.mean().detach().item()
         if band_enable:
-            metrics["reward/entropy_h_phase_mean"] = h_phase.mean().detach().item()
+            metrics["reward/entropy_h_phase_mean"] = h_bar.mean().detach().item()
             metrics["reward/entropy_h_init_frozen_mean"] = self._frozen_h_init_ref[phase_mask_key]
             metrics["reward/entropy_band_warmup_active"] = float(band_warmup_active)
             if not band_warmup_active:
@@ -659,18 +648,16 @@ class RayECHOTrainer(RayPPOTrainer):
             if entropys is None:
                 raise RuntimeError(f"{phase_name} phase uses entropy reward but compute_log_prob did not return entropys.")
             phase_mask_f = phase_batch.batch[phase_mask_key].to(torch.float32)
-            entropy_mask_f = phase_mask_f
+            reg_entropy_mask_f = phase_mask_f * phase_batch.batch["non_border_loss_mask"].to(torch.float32)
             if phase_strategy == "entropy-hybrid":
-                entropy_mask_f = entropy_mask_f * phase_batch.batch["select_loss_mask"].to(torch.float32)
-            entropy_mask_f = entropy_mask_f * phase_batch.batch["non_border_loss_mask"].to(torch.float32)
-            phase_batch.batch[f"{phase_name}_token_entropy"] = entropys.to(torch.float32) * entropy_mask_f
-            phase_batch.batch["entropy_reg_loss_mask"] = entropy_mask_f
+                reg_entropy_mask_f = reg_entropy_mask_f * phase_batch.batch["select_loss_mask"].to(torch.float32)
+            phase_batch.batch[f"{phase_name}_token_entropy"] = entropys.to(torch.float32) * reg_entropy_mask_f
+            phase_batch.batch["entropy_reg_loss_mask"] = reg_entropy_mask_f
             reward_tensor, entropy_metrics = self._build_entropy_scalar_reward(
                 entropys=entropys,
                 phase_batch=phase_batch,
                 phase_mask_key=phase_mask_key,
                 entropy_cfg=phase_reward_cfg.entropy,
-                entropy_mask=entropy_mask_f,
             )
             metrics.update(self._prefix_metrics(entropy_metrics, phase_prefix))
         elif phase_strategy == "maxentropy_rl":
@@ -695,7 +682,7 @@ class RayECHOTrainer(RayPPOTrainer):
                 phase_batch=phase_batch,
                 phase_mask_key=phase_mask_key,
                 entropy_cfg=me_entropy_cfg,
-                entropy_mask=entropy_mask_f,
+                reward_entropy_mask=entropy_mask_f,
             )
             metrics.update(self._prefix_metrics(entropy_metrics, phase_prefix))
         elif phase_strategy == "scorer" and self._entropy_reg_coeff(phase_reward_cfg) > 0.0:

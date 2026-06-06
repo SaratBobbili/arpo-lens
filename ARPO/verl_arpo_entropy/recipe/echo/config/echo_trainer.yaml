@@ -123,13 +123,11 @@ reward_model:
         # No-tool override: null keeps the entropy scalar; any float replaces it.
         no_tool_penalty: null
         # Direct entropy regularizer added to the actor loss as
-        # L_actor = L_GRPO - reg_coeff * mean_{m^phase}(H(pi_theta(.|x))),
-        # where the entropy is the full-vocab entropy of the *current* policy
-        # (gradient flows through pi_theta), m^phase is the phase loss mask
-        # for `strategy=entropy` and m^phase ∩ select_loss_mask for
-        # `strategy=entropy-hybrid` (mirrors the reward path's restriction).
-        # For `strategy=scorer`, only the regularizer channel is used (reward
-        # stays on the scorer); mask is m^phase ∩ non_border_loss_mask.
+        # L_actor = L_GRPO - reg_coeff * mean_{m^reg}(H(pi_theta(.|x))),
+        # where m^reg is m^phase ∩ select_loss_mask for `entropy-hybrid`,
+        # m^phase for `strategy=entropy`, and m^phase ∩ non_border_loss_mask
+        # for `strategy=scorer`. The entropy *reward* (and band H_bar / H_init)
+        # always uses m^phase ∩ non_border_loss_mask regardless of strategy.
         # Ignored for "maxentropy_rl". 0.0 disables the term.
         reg_coeff: 0.0
       # `max_entropy` block below is consulted only when strategy == "maxentropy_rl".
@@ -160,7 +158,7 @@ reward_model:
         # Banded entropy reward: score is `scale` inside
         # [(1-epsilon_low)*H_init, (1+epsilon_high)*H_init], ramps outside.
         # Steps 1..warmup_steps: no band, capture mean phase entropy as frozen H_init.
-        # After warmup: H_init is that frozen ref; H_bar uses entropy_mask.
+        # After warmup: H_init is that frozen ref; H_bar uses m^phase ∩ non_border_loss_mask.
         band:
           enable: false
           epsilon_low: 0.2

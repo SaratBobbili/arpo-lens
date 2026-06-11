@@ -842,12 +842,14 @@ class RayECHOTrainer(RayPPOTrainer):
 
         from verl.utils.tracking import Tracking
 
+        resolved_config = OmegaConf.to_container(self.config, resolve=True)
         logger = Tracking(
             project_name=self.config.trainer.project_name,
             experiment_name=self.config.trainer.experiment_name,
             default_backend=self.config.trainer.logger,
-            config=OmegaConf.to_container(self.config, resolve=True),
+            config=resolved_config,
         )
+        logger.log_hparams(resolved_config)
 
         self.global_steps = 0
         self._frozen_h_init_ref: dict[str, float] = {}

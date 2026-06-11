@@ -349,6 +349,25 @@ class RayPPOTrainer:
     Note that this trainer runs on the driver process on a single CPU/GPU node.
     """
 
+    # Per-step JSONL dump spec consumed by `_dump_logging_data`. ARPO has no
+    # phase split, so this is a flat list of (filename_under_logging_data/,
+    # metric_key looked up in the per-step `metrics` dict). Reward channels
+    # come from `_aggregate_reward_extras` (decomposes the combined scorer
+    # output into f1_mean and bad_format_rate); `actor/entropy_reg_loss` is
+    # only populated when `actor.entropy_coeff != 0`, so its file may stay
+    # absent on default runs.
+    _LOGGING_SPEC = [
+        ("reward.jsonl", "reward/f1_mean"),
+        ("format_penalty.jsonl", "reward/bad_format_rate"),
+        ("score_mean.jsonl", "critic/score/mean"),
+        ("pg_loss.jsonl", "actor/pg_loss"),
+        ("entropy_reg_loss.jsonl", "actor/entropy_reg_loss"),
+        ("grad_norm.jsonl", "actor/grad_norm"),
+        ("entropy_old_policy.jsonl", "actor/entropy_loss"),
+        ("tools_total_calls.jsonl", "tools/total_calls"),
+        ("tools_successful_calls.jsonl", "tools/successful_calls"),
+    ]
+
     # TODO: support each role have individual ray_worker_group_cls,
     # i.e., support different backend of different role
     def __init__(
@@ -934,6 +953,43 @@ class RayPPOTrainer:
         global_balance_stats = log_seqlen_unbalance(seqlen_list=global_seqlen_lst, partitions=global_partition_lst, prefix=logging_prefix)
         metrics.update(global_balance_stats)
 
+    def _init_logging_data(self) -> None:
+        # JSONL traces under {default_local_dir}/logging_data/<metric>.jsonl,
+        # consumed by ARPO/verl_arpo_entropy/scripts/plot_training_log.py.
+        self._logging_data_root = os.path.join(
+            self.config.trainer.default_local_dir, "logging_data"
+        )
+        self._prev_logged_values: dict[str, float] = {}
+        os.makedirs(self._logging_data_root, exist_ok=True)
+
+    def _aggregate_reward_extras(self, reward_extra_infos_dict: dict, metrics: dict) -> None:
+        # ARPO's NaiveRewardManager populates per-sample lists in
+        # `reward_extra_infos_dict` from compute_score(). Decompose the single
+        # combined scalar into the two axes that actually move it:
+        #   reward/f1_mean        — task signal (zero on bad-format / wrong)
+        #   reward/bad_format_rate — share of samples whose score == -1
+        if "f1_score" in reward_extra_infos_dict:
+            f1 = torch.tensor(reward_extra_infos_dict["f1_score"], dtype=torch.float32)
+            metrics["reward/f1_mean"] = f1.mean().item()
+        if "score" in reward_extra_infos_dict:
+            scores = torch.tensor(reward_extra_infos_dict["score"], dtype=torch.float32)
+            metrics["reward/bad_format_rate"] = (scores < 0.0).float().mean().item()
+
+    def _dump_logging_data(self, metrics: dict) -> None:
+        # Append one line per (key, step) to its file: {"step", "value", "gain"}.
+        # `gain` is value_t - value_{t-1} for the same key, or null on the very
+        # first dump. Keys absent from `metrics` (e.g. actor/entropy_reg_loss
+        # when entropy_coeff == 0) are skipped silently — by design.
+        for filename, metric_key in self._LOGGING_SPEC:
+            if metric_key not in metrics:
+                continue
+            value = float(metrics[metric_key])
+            prev = self._prev_logged_values.get(metric_key)
+            gain = None if prev is None else value - prev
+            self._prev_logged_values[metric_key] = value
+            with open(os.path.join(self._logging_data_root, filename), "a") as f:
+                f.write(json.dumps({"step": self.global_steps, "value": value, "gain": gain}) + "\n")
+
     def fit(self):
         """
         The training loop of PPO.
@@ -945,17 +1001,21 @@ class RayPPOTrainer:
 
         from verl.utils.tracking import Tracking
 
+        resolved_config = OmegaConf.to_container(self.config, resolve=True)
         logger = Tracking(
             project_name=self.config.trainer.project_name,
             experiment_name=self.config.trainer.experiment_name,
             default_backend=self.config.trainer.logger,
-            config=OmegaConf.to_container(self.config, resolve=True),
+            config=resolved_config,
         )
+        logger.log_hparams(resolved_config)
 
         self.global_steps = 0
 
         # load checkpoint before doing anything
         self._load_checkpoint()
+
+        self._init_logging_data()
 
         # perform validation before training
         # currently, we only support validation using the reward_function.
@@ -1117,6 +1177,7 @@ class RayPPOTrainer:
                         print(f"{list(reward_extra_infos_dict.keys())=}")
                         if reward_extra_infos_dict:
                             batch.non_tensor_batch.update({k: np.array(v) for k, v in reward_extra_infos_dict.items()})
+                        self._aggregate_reward_extras(reward_extra_infos_dict, metrics)
 
                         # compute rewards. apply_kl_penalty if available
                         if self.config.algorithm.use_kl_in_reward:
@@ -1231,6 +1292,7 @@ class RayPPOTrainer:
 
                 # TODO: make a canonical logger that supports various backend
                 logger.log(data=metrics, step=self.global_steps)
+                self._dump_logging_data(metrics)
 
                 progress_bar.update(1)
                 self.global_steps += 1

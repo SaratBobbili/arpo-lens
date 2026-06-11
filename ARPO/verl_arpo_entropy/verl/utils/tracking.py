@@ -132,6 +132,11 @@ class Tracking:
             if backend is None or default_backend in backend:
                 logger_instance.log(data=data, step=step)
 
+    def log_hparams(self, config, step=0):
+        if "wandb" not in self.logger:
+            return
+        self.log(config_to_hparams(config), step=step, backend=["wandb"])
+
     def __del__(self):
         if "wandb" in self.logger:
             self.logger["wandb"].finish(exit_code=0)
@@ -255,6 +260,26 @@ def _flatten_dict(raw: Dict[str, Any], *, sep: str) -> Dict[str, Any]:
     ans = pd.json_normalize(raw, sep=sep).to_dict(orient="records")[0]
     assert isinstance(ans, dict)
     return ans
+
+
+_HPARAM_SKIP_KEY_PARTS = ("system_prompt",)
+_HPARAM_MAX_STR_LEN = 256
+
+
+def config_to_hparams(config, prefix: str = "hparams") -> Dict[str, Any]:
+    flat = _flatten_dict(_transform_params_to_json_serializable(config, convert_list_to_dict=False), sep="/")
+    hparams = {}
+    for key, value in flat.items():
+        if any(part in _HPARAM_SKIP_KEY_PARTS for part in key.split("/")):
+            continue
+        if value is None:
+            continue
+        if isinstance(value, bool):
+            value = int(value)
+        elif isinstance(value, str) and len(value) > _HPARAM_MAX_STR_LEN:
+            continue
+        hparams[f"{prefix}/{key}"] = value
+    return hparams
 
 
 @dataclasses.dataclass

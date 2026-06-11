@@ -305,9 +305,9 @@ class RayECHOTrainer(RayPPOTrainer):
         For `entropy` / `entropy-hybrid`, H_bar and H_init always use
         m^phase ∩ non_border_loss_mask (strategy masks apply only to the actor
         regularizer). `maxentropy_rl` may pass `reward_entropy_mask` for its
-        additive entropy leg. With `entropy.band.enable`, global steps
-        1..warmup_steps use scale*H_bar (no band) and capture mean phase
-        entropy as frozen H_init; later steps band against that frozen anchor.
+        additive entropy leg.         With `entropy.band.enable`, the first `warmup_steps` invocations of
+        this phase use scale*H_bar (no band) and capture mean phase entropy as
+        frozen H_init; later invocations band against that frozen anchor.
         """
         phase_entropy_mask = (
             phase_batch.batch[phase_mask_key].to(torch.float32)
@@ -324,15 +324,39 @@ class RayECHOTrainer(RayPPOTrainer):
         if band_enable:
             assert reward_entropy_mask is None, "entropy.band uses phase-level H_bar only"
             warmup_steps = int(band_cfg.get("warmup_steps", 1))
-            if self.global_steps <= warmup_steps:
+            band_phase_steps = self._entropy_band_warmup_counts.get(phase_mask_key, 0)
+            if band_phase_steps < warmup_steps:
                 per_sample = h_bar * scale
                 band_warmup_active = True
                 self._frozen_h_init_ref[phase_mask_key] = h_bar.mean().item()
+                self._entropy_band_warmup_counts[phase_mask_key] = band_phase_steps + 1
             else:
                 frozen = self._frozen_h_init_ref[phase_mask_key]
                 assert frozen is not None, (
-                    f"entropy.band missing frozen H_init for {phase_mask_key} at global_step={self.global_steps}"
+                    f"entropy.band missing frozen H_init for {phase_mask_key} "
+                    f"after {band_phase_steps} warmup invocations at global_step={self.global_steps}"
                 )
+            # #region agent log
+            try:
+                with open("/scratch/user/saratb_tamu.edu/research/arpo-lens/.cursor/debug-e66d49.log", "a") as _dbg_f:
+                    _dbg_f.write(json.dumps({
+                        "sessionId": "e66d49",
+                        "hypothesisId": "A",
+                        "location": "echo_ray_trainer.py:_build_entropy_scalar_reward",
+                        "message": "entropy_band_warmup",
+                        "data": {
+                            "phase_mask_key": phase_mask_key,
+                            "global_steps": self.global_steps,
+                            "band_phase_steps": band_phase_steps,
+                            "warmup_steps": warmup_steps,
+                            "band_warmup_active": band_warmup_active,
+                            "has_frozen": phase_mask_key in self._frozen_h_init_ref,
+                        },
+                        "timestamp": int(__import__("time").time() * 1000),
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
                 h_init = torch.full_like(h_bar, frozen)
                 per_sample, h_init, h_low, h_high = self._apply_entropy_band_score(
                     h_bar, h_init, entropy_cfg, scale
@@ -827,6 +851,7 @@ class RayECHOTrainer(RayPPOTrainer):
 
         self.global_steps = 0
         self._frozen_h_init_ref: dict[str, float] = {}
+        self._entropy_band_warmup_counts: dict[str, int] = {}
         self._best_metric_value = float("-inf")
         self._best_metric_step = -1
         self._best_metric_key = None

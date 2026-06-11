@@ -1,5 +1,5 @@
 project_name: qwen3BInst
-experiment_name: echo3BInst_hl_ll_scorer_grpo_hl_kl_true_ll_kl_false_reg_on_ll
+experiment_name: echo3BInst_hl_scorer_ll_hybrid_band_kl_on
 nnodes: 1
 n_gpus_per_node: 8
 
@@ -39,7 +39,7 @@ phase_order: '["high_level", "low_level"]'
 high_level_update_repeats: 1
 low_level_update_repeats: 1
 high_level_reward_strategy: scorer
-low_level_reward_strategy: scorer
+low_level_reward_strategy: entropy-hybrid
 high_level_algorithm: grpo
 low_level_algorithm: grpo
 norm_adv_by_std_in_grpo: False
@@ -48,7 +48,7 @@ low_level_filter_groups_enable: True
 high_level_filter_metric: seq_reward
 low_level_filter_metric: seq_reward
 
-mask_first_select: low
+mask_first_select: high
 mask_select: low
 mask_think: high
 mask_answer: high
@@ -65,7 +65,7 @@ clip_ratio_low_neg: 0.0
 clip_ratio_high_neg: 0.1
 
 hl_kl_loss_coef: 0.001
-ll_kl_loss_coef: 0.0
+ll_kl_loss_coef: 0.001
 
 hl_entropy_reg_coeff: 0.0
 ll_entropy_reg_coeff: 0.01
@@ -94,6 +94,7 @@ hl_entropy_band_epsilon_high: 0.2
 ll_entropy_band_epsilon_high: 0.4
 hl_entropy_band_h_floor: 1.0e-4
 ll_entropy_band_h_floor: 1.0e-4
+ll_entropy_band_warmup_steps: 0
 
 hl_max_entropy_alpha: 0.1
 ll_max_entropy_alpha: 0.1

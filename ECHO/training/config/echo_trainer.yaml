@@ -1,0 +1,214 @@
+hydra:
+  searchpath:
+    - file://${oc.env:VERL_ROOT}/verl/trainer/config
+
+defaults:
+  # Inherit full ARPO/PPO defaults, then override only ECHO-specific knobs below.
+  - ppo_trainer
+  # System prompt candidates live in a dedicated file for readability.
+  - echo_system_prompts
+  - _self_
+
+data:
+  # Dataloader read size per fetch; set > train_batch_size when using per-phase DAPO dynamic sampling.
+  gen_batch_size: ${data.train_batch_size}
+  # Which system prompt candidate to inject at runtime (via rl_dataset.py).
+  # Set to the suffix number of the desired system_prompt_N key below, or null to skip.
+  active_system_prompt: 1
+
+  # system_prompt_N keys are loaded from echo_system_prompts.yaml via Hydra defaults.
+
+reward_model:
+  # Start ECHO with a dedicated manager key so we can evolve reward logic independently.
+  # Only consulted by phases whose strategy == "scorer".
+  reward_manager: echo
+  # Order in which the hierarchical phases are executed within each training
+  # step. The first phase in this list runs its full GRPO pipeline
+  # (rollout -> reward -> advantage -> actor/critic update) before the second
+  # phase starts. Phases whose rollout budget is 0 are skipped regardless of
+  # order. Must be a permutation of {"high_level", "low_level"}.
+  phase_order: ["high_level", "low_level"]
+  # Number of full phase updates to run before switching to the next phase in
+  # phase_order. Each repeated phase update counts as one training/global step.
+  phase_update_repeats:
+    high_level: 1
+    low_level: 1
+  # Per-phase reward strategy. Each hierarchical phase independently selects how
+  # its token-level reward tensor is produced. Both strategies emit a sparse
+  # scalar at the last valid response token so GRPO's sum(dim=-1) recovers the
+  # per-sample score directly (no extra aggregation needed in the trainer).
+  # Border tokens (open/close tag chars: <select>, </select>, <think>, </think>,
+  # <answer>, </answer>, <search>, </search>, <python>, </python>, <result>,
+  # </result>) are *always* excluded from the entropy reduction across all three
+  # entropy-bearing strategies (entropy / entropy-hybrid) via the
+  # rollout-emitted `non_border_loss_mask`. The policy gradient still credits
+  # these tokens through the GRPO response_mask; only the entropy bonus and the
+  # direct entropy regularizer skip them, so entropy maximization cannot push
+  # the model off the structural tags that tool calling and answer parsing depend on.
+  # Supported strategies:
+  #   scorer         -> ECHORewardManager + custom_reward_function on the
+  #                     decoded answer. Emits -1 on format failure, else the
+  #                     task score (e.g. F1 in deep_research_echo), at the
+  #                     last valid response token.
+  #   entropy        -> Per-token policy entropy over the phase's loss-mask
+  #                     tokens reduced to one per-sample scalar (sum or mean
+  #                     per `entropy.reduction`), optionally normalized by
+  #                     log(vocab_size) and scaled/clamped, written at the
+  #                     last valid response token. Optional overrides via
+  #                     `bad_format_penalty` (0 = disabled) and
+  #                     `no_tool_penalty` (null = disabled; phase-specific).
+  #   entropy-hybrid -> Identical to `entropy` (same `entropy:` config block,
+  #                     same override semantics, same sparse write at the
+  #                     last valid response token) except the per-token
+  #                     entropy reduction is restricted to tokens inside any
+  #                     <select>...</select> block (`select_loss_mask` from
+  #                     rollout), intersected with the phase mask. Intended
+  #                     for mask_categories where `<select>`, `<search>`,
+  #                     `<python>` share the same phase; to exclude the
+  #                     initial <select> from the computation, move
+  #                     `first_select` to the opposite phase so the
+  #                     intersection drops it.
+  phase_rewards:
+    high_level:
+      # grpo: single rollout pass per step (shared prompts with other GRPO phases).
+      # dapo: dynamic sampling — keep prompt groups only if filter metric std > 0.
+      algorithm: grpo
+      kl_loss_coef: 0.0
+      filter_groups:
+        enable: false
+        metric: seq_reward
+        max_num_gen_batches: 10
+      strategy: scorer
+      # `entropy` block below is consulted only when strategy in
+      # {"entropy", "entropy-hybrid"}.
+      entropy:
+        reduction: sum    # How per-token entropy is reduced to a per-sample scalar: {sum, mean}.
+        scale: 1.0        # Multiplies the reduced entropy before writing the scalar.
+        # If true, divide per-token entropy by log(vocab_size) so H lands in [0,1].
+        # Applies to BOTH channels of this strategy:
+        #   (a) reward channel  -> bounded entropy reward scalar (this file's
+        #       `_build_entropy_scalar_reward`); GRPO σ_g absorbs the absolute
+        #       scale anyway, so this primarily affects logged reward magnitude.
+        #   (b) regularizer channel (reg_coeff > 0) -> dp_actor divides H by
+        #       log(vocab_size) before agg_loss so `reg_coeff` is interpreted on
+        #       H ∈ [0,1] units, matching the reward channel. Without this, the
+        #       regularizer is in raw nats and `reg_coeff` is silently ~12x
+        #       larger than the user expects (Qwen2.5: log(152K) ≈ 11.93).
+        normalize: false
+        clamp_min: null   # Optional lower bound applied after scale/normalize.
+        clamp_max: null   # Optional upper bound applied after scale/normalize.
+        # Bad-format override: 0 keeps the entropy scalar; non-zero replaces it.
+        bad_format_penalty: 0.0
+        # No-tool override: null keeps the entropy scalar; any float replaces it.
+        no_tool_penalty: null
+        # Direct entropy regularizer added to the actor loss as
+        # L_actor = L_GRPO - reg_coeff * mean_{m^reg}(H(pi_theta(.|x))),
+        # where m^reg is m^phase ∩ select_loss_mask for `entropy-hybrid`,
+        # m^phase for `strategy=entropy`, and m^phase ∩ non_border_loss_mask
+        # for `strategy=scorer`. The entropy *reward* always uses
+        # m^phase ∩ non_border_loss_mask regardless of strategy.
+        # 0.0 disables the term.
+        reg_coeff: 0.0
+    low_level:
+      algorithm: grpo
+      kl_loss_coef: 0.0
+      filter_groups:
+        enable: false
+        metric: seq_reward
+        max_num_gen_batches: 10
+      strategy: entropy
+      entropy:
+        # LL uses mean so per-sample advantage reflects average entropy per LL
+        # token rather than the sum, which would be length-biased across
+        # variable-length tool-call traces.
+        reduction: mean
+        scale: 1.0
+        normalize: false
+        clamp_min: null
+        clamp_max: null
+        bad_format_penalty: 0.0
+        no_tool_penalty: 0.0
+        # See high_level.entropy.reg_coeff for full semantics. With
+        # strategy=entropy|entropy-hybrid, also drives the entropy reward.
+        # With strategy=scorer, only enables L_actor -= reg_coeff * H on
+        # m^LL ∩ non_border_loss_mask while GRPO uses the scorer reward.
+        reg_coeff: 0.0
+
+actor_rollout_ref:
+  actor:
+    use_sign_cond_clip: false
+    clip_ratio_low: 0.2
+    clip_ratio_high: 0.2
+    clip_ratio_c: 3.0
+    clip_ratio_low_pos: 0.2
+    clip_ratio_high_pos: 0.2
+    clip_ratio_low_neg: 0.2
+    clip_ratio_high_neg: 0.2
+  rollout:
+    # Use ECHO rollout implementation that emits hierarchical masks.
+    mode: sync_echo
+    # If true, phase-level masks (high/low/select/first_select/tool) exclude tag
+    # boundary tokens (<think>, </think>, <select>, ...). non_border_loss_mask
+    # remains unchanged and still excludes tag boundaries for entropy reductions.
+    exclude_tag_tokens_from_phase_masks: true
+    # Number of rollouts per prompt used for the high-level masked update.
+    # The low-level phase uses the remaining budget: n - high_level_budget.
+    high_level_budget: ${actor_rollout_ref.rollout.n}
+    # Which token category feeds into which hierarchical level ("high", "low", "none").
+    # "result" blocks are always excluded (neither high nor low).
+    # This block is the single source of truth: the format validator profile
+    # (c1/c2/c3/c4) is resolved from this dict at trainer init and fails fast
+    # if the combination does not match a supported profile. Supported
+    # signatures:
+    #   c1 (below): plan/reasoning/answer HL; tool choice + tool payload LL.
+    #   c2: like c1 but `select: high` (non-initial <select> is HL).
+    #   c3: like c1 but `search: high` and `python: high` (tool payloads are
+    #       HL; prevents LL from entropy-hacking via junk tool-code tokens).
+    #   c4: only `think`/`answer` HL; `first_select`, `select`, `search`,
+    #       `python` are all LL. HL supervises reasoning + final answer only;
+    #       LL owns the entire tool-planning + tool-payload stack.
+    mask_categories:
+      first_select: high   # initial planning <select> block declaring the tool set
+      select: low           # subsequent tool-selection <select> blocks
+      think: high           # <think> reasoning blocks
+      answer: high          # <answer> blocks
+      search: low           # <search> tool-query blocks
+      python: low           # <python> tool-code blocks
+    tools:
+      call_limit: 5         # max tool calls per sample during rollout
+      max_workers: 64       # thread pool size for concurrent tool execution
+      timeout: 120          # per-call timeout in seconds
+      retry_count: 3        # retries on tool failure
+      # Reduce live API failures (cache + timeouts): set tool_instances.search.params.cache_file,
+      # tool_instances.search.params.request_timeout, and override tools.retry_count / tools.timeout from the launch script as needed.
+      # When true, rollouts where any tool exhausted retries emit tool_rollout_failed; ECHO zeros phase masks/rewards and isolates uid so GRPO skips them. When false (default), failed tool rollouts train normally.
+      skip_training_on_tool_failure: false
+      verbose_logging: false
+      fail_on_error: false
+      tool_instances:
+        python:
+          class_path: verl.workers.agent.tools.python_tool.PythonTool
+          params:
+            conda_path: /scratch/user/saratb_tamu.edu/miniconda3   # conda root used to locate the python interpreter for the tool subprocess
+            conda_env: arpo                                        # env name under ${conda_path}/envs/ providing the interpreter + sympy/numpy etc.
+        search:
+          class_path: verl.workers.agent.tools.search_tool.BingSearchTool
+          params:
+            api_key: null                # Bright Data API token for api.brightdata.com/request; override from launch script
+            zone: null                   # Bright Data SERP zone name (e.g. serp_api1); override from launch script
+            cache_file: null             # on-disk search cache path; override from launch script
+            location: us                 # Country code appended as &cc=<code> to the Bing URL; also selects the Bright Data proxy geo. "us" is faster/more reliable from this cluster than "cn".
+            request_timeout: 120         # Per-HTTP-call read timeout (s) for api.brightdata.com; must exceed Brightdata SERP tail (~30-60s+ under load) to avoid spurious ReadTimeout retries.
+
+trainer:
+  # Group experiments under a recipe-specific default project.
+  project_name: verl-echo
+  # Enable best-checkpoint tracking based on validation metrics.
+  # When true, writes best_checkpoint/hf/ (~6GB) from the current global_step actor.
+  save_best_checkpoint: false
+  # Metric family to track for best checkpoint.
+  # Supported: {val-core/reward, val-aux/f1-score}
+  best_checkpoint_metric: val-core/reward
+  # If one phase budget is zero, still compute that phase's logging metrics
+  # from the other phase's rollouts (no extra rollout generation, no updates).
+  log_zero_budget_phase_metrics: true

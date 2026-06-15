@@ -27,6 +27,11 @@ wandb-summary.json
 # Search caches (runtime, large)
 ARPO/search_cache/*.json.lock
 ARPO/search_cache/*.tmp
+ECHO/search_cache/
+ECHO/training/scripts/secrets.sh
+ECHO/training/docs/convergence_plot/
+ECHO/training/docs/echo_monotone_plots/
+ECHO/training/docs/reports/
 ARPO/*.db
 ARPO/*.json
 ARPO/*.mp3

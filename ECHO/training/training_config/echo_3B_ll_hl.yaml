@@ -1,0 +1,87 @@
+project_name: qwen3BInst
+experiment_name: echo3BInst_hl_scorer_ll_entropy
+nnodes: 1
+n_gpus_per_node: 8
+
+train_batch_size: 128
+ppo_mini_batch_size: 16
+max_prompt_length: 1536
+max_response_length: 4096
+prompt_key: prompt
+train_files: rl_datasets/train_10k.parquet
+valid_files: rl_datasets/valid.parquet
+
+actor_model_subpath: checkpoints/Qwen2.5-3B-Instruct
+reward_manager: echo
+
+rollout_n: 16
+high_level_budget: 8
+enable_multi_turn: false
+tensor_model_parallel_size: 1
+gpu_memory_utilization: 0.7
+rollout_name: vllm
+rollout_mode: sync_echo
+exclude_tag_tokens_from_phase_masks: true
+search_cache_file: search_cache_echo_3B.json
+search_class_path: verl.workers.agent.tools.search_tool.BingSearchTool
+brightdata_timeout: 90
+tool_call_limit: 3
+
+total_epochs: 2
+save_freq: 5
+test_freq: 5
+save_best_checkpoint: true
+best_checkpoint_metric: val-core/reward
+max_actor_ckpt_to_keep: 1
+resume_mode: auto
+
+phase_order: '["high_level", "low_level"]'
+high_level_update_repeats: 1
+low_level_update_repeats: 1
+high_level_reward_strategy: scorer
+low_level_reward_strategy: entropy
+high_level_algorithm: grpo
+low_level_algorithm: grpo
+norm_adv_by_std_in_grpo: False
+high_level_filter_groups_enable: True
+low_level_filter_groups_enable: True
+high_level_filter_metric: seq_reward
+low_level_filter_metric: seq_reward
+
+mask_first_select: high
+mask_select: low
+mask_think: high
+mask_answer: high
+mask_search: low
+mask_python: low
+
+use_sign_cond_clip: false
+clip_ratio_low: 0.2
+clip_ratio_high: 0.2
+clip_ratio_c: 3.0
+clip_ratio_low_pos: 0.0
+clip_ratio_high_pos: 0.2
+clip_ratio_low_neg: 0.0
+clip_ratio_high_neg: 0.2
+
+hl_kl_loss_coef: 0.0
+ll_kl_loss_coef: 0.0
+
+hl_entropy_reg_coeff: 0.0
+ll_entropy_reg_coeff: 0.0
+hl_entropy_reduction: sum
+ll_entropy_reduction: mean
+hl_entropy_scale: 1.0
+ll_entropy_scale: 1.0
+hl_entropy_normalize: false
+ll_entropy_normalize: true
+
+hl_entropy_clamp_min: 0.1
+ll_entropy_clamp_min: 0.1
+hl_entropy_clamp_max: 0.4
+ll_entropy_clamp_max: 0.4
+
+hl_bad_format_penalty: -1.0
+ll_bad_format_penalty: -1.0
+hl_no_tool_penalty: null
+ll_no_tool_penalty: -0.05

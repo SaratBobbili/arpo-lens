@@ -196,32 +196,6 @@ When LL uses `entropy` or `entropy-hybrid`, optimization pressure shifts toward 
 
 ---
 
-## 9) `echo3BInst_hl_scorer_ll_hybrid_band_frozen_hinit_kl_on`
-
-**Config delta** (launch: `training_config/echo_3B_ll_hl_dispo_band.yaml`):
-- `high_level_reward_strategy=scorer`, `low_level_reward_strategy=entropy-hybrid`
-- `ll_entropy_band_enable=true`, `ll_entropy_band_warmup_steps=1`
-- `ll_entropy_band_epsilon_low=0.2`, `ll_entropy_band_epsilon_high=0.4`
-- `hl_kl_loss_coef=0.001`, `ll_kl_loss_coef=0.001`, `ll_entropy_reg_coeff=0.01`
-- Frozen `H_init` = mean phase policy entropy captured on global step 1 (not post-`</select>` token)
-
-**Hypothesis**:
-- Step 1 warmup + frozen phase entropy anchor fixes broken band (`entropy_in_band_rate` ~1% on old mismatched-mask anchor).
-- Band on phase-level `H_bar` (same mask as `H_init`); actor reg stays on select mask for hybrid.
-
-**W&B watch list**:
-- End of warmup: `entropy_h_bar_mean` ≈ `entropy_h_init_frozen_mean`
-- Step 2+: `entropy_in_band_rate` near 1.0 initially, then target 30–70% as policy moves
-- `low_level/actor/entropy_reg_loss` still reflects select-only entropy (unchanged actor geometry)
-- `val-core/DR_grpo_mix/reward/mean@1` ≥ 0.43 sustained
-- Compare vs `ll_scorer`, `hybrid_kl_on` (#8), old `band_first_select`
-
-**Note**: frozen ref is not persisted across checkpoint resume.
-
-**Outcome**: *(pending run)*
-
----
-
 ## Cross-experiment takeaways
 
 1. **LL reward choice dominates small penalties**  

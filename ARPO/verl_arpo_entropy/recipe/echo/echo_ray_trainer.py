@@ -268,28 +268,6 @@ class RayECHOTrainer(RayPPOTrainer):
         denom = entropy_mask.sum(dim=-1).clamp_min(1.0)
         return masked.sum(dim=-1) / denom
 
-    def _apply_entropy_band_score(
-        self,
-        h_bar: torch.Tensor,
-        h_init: torch.Tensor,
-        entropy_cfg,
-        scale: float,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        band_cfg = entropy_cfg.band
-        eps_fallback = float(band_cfg.get("epsilon", 0.2))
-        eps_low = float(band_cfg.get("epsilon_low", eps_fallback))
-        eps_high = float(band_cfg.get("epsilon_high", eps_fallback))
-        h_floor = float(band_cfg.get("h_floor", 1e-4))
-        h_init = h_init.clamp_min(h_floor)
-        h_low = (1.0 - eps_low) * h_init
-        h_high = (1.0 + eps_high) * h_init
-        score = torch.full_like(h_bar, scale)
-        below = h_bar < h_low
-        above = h_bar > h_high
-        score = torch.where(below, scale * (h_bar / h_low), score)
-        score = torch.where(above, scale * (h_high / h_bar.clamp_min(h_floor)), score)
-        return score, h_init, h_low, h_high
-
     def _build_entropy_scalar_reward(
         self,
         entropys: torch.Tensor,
@@ -302,82 +280,25 @@ class RayECHOTrainer(RayPPOTrainer):
 
         Reduces per-token entropy to one per-sample scalar (sum or mean per
         `entropy_cfg.reduction`), optionally normalized by log(vocab_size).
-        For `entropy` / `entropy-hybrid`, H_bar and H_init always use
-        m^phase ∩ non_border_loss_mask (strategy masks apply only to the actor
-        regularizer). `maxentropy_rl` may pass `reward_entropy_mask` for its
-        additive entropy leg.         With `entropy.band.enable`, the first `warmup_steps` invocations of
-        this phase use scale*H_bar (no band) and capture mean phase entropy as
-        frozen H_init; later invocations band against that frozen anchor.
+        For `entropy` / `entropy-hybrid`, reduction uses m^phase ∩
+        non_border_loss_mask (strategy masks apply only to the actor regularizer).
+        `maxentropy_rl` may pass `reward_entropy_mask` for its additive entropy leg.
         """
         phase_entropy_mask = (
             phase_batch.batch[phase_mask_key].to(torch.float32)
             * phase_batch.batch["non_border_loss_mask"].to(torch.float32)
         )
         if reward_entropy_mask is not None:
-            h_bar = self._reduce_masked_entropy(entropys, reward_entropy_mask, entropy_cfg)
+            entropy_per_sample = self._reduce_masked_entropy(entropys, reward_entropy_mask, entropy_cfg)
         else:
-            h_bar = self._reduce_masked_entropy(entropys, phase_entropy_mask, entropy_cfg)
+            entropy_per_sample = self._reduce_masked_entropy(entropys, phase_entropy_mask, entropy_cfg)
         scale = float(entropy_cfg.scale)
-        band_cfg = entropy_cfg.get("band")
-        band_enable = bool(band_cfg.get("enable", False)) if band_cfg is not None else False
-        band_warmup_active = False
-        if band_enable:
-            assert reward_entropy_mask is None, "entropy.band uses phase-level H_bar only"
-            warmup_steps = int(band_cfg.get("warmup_steps", 1))
-            band_phase_steps = self._entropy_band_warmup_counts.get(phase_mask_key, 0)
-            if band_phase_steps < warmup_steps:
-                per_sample = h_bar * scale
-                band_warmup_active = True
-                self._frozen_h_init_ref[phase_mask_key] = h_bar.mean().item()
-                self._entropy_band_warmup_counts[phase_mask_key] = band_phase_steps + 1
-            else:
-                frozen = self._frozen_h_init_ref[phase_mask_key]
-                assert frozen is not None, (
-                    f"entropy.band missing frozen H_init for {phase_mask_key} "
-                    f"after {band_phase_steps} warmup invocations at global_step={self.global_steps}"
-                )
-            # #region agent log
-            try:
-                with open("/scratch/user/saratb_tamu.edu/research/arpo-lens/.cursor/debug-e66d49.log", "a") as _dbg_f:
-                    _dbg_f.write(json.dumps({
-                        "sessionId": "e66d49",
-                        "hypothesisId": "A",
-                        "location": "echo_ray_trainer.py:_build_entropy_scalar_reward",
-                        "message": "entropy_band_warmup",
-                        "data": {
-                            "phase_mask_key": phase_mask_key,
-                            "global_steps": self.global_steps,
-                            "band_phase_steps": band_phase_steps,
-                            "warmup_steps": warmup_steps,
-                            "band_warmup_active": band_warmup_active,
-                            "has_frozen": phase_mask_key in self._frozen_h_init_ref,
-                        },
-                        "timestamp": int(__import__("time").time() * 1000),
-                    }) + "\n")
-            except Exception:
-                pass
-            # #endregion
-                h_init = torch.full_like(h_bar, frozen)
-                per_sample, h_init, h_low, h_high = self._apply_entropy_band_score(
-                    h_bar, h_init, entropy_cfg, scale
-                )
-        else:
-            per_sample = h_bar * scale
-            if entropy_cfg.clamp_min is not None or entropy_cfg.clamp_max is not None:
-                per_sample = torch.clamp(per_sample, min=entropy_cfg.clamp_min, max=entropy_cfg.clamp_max)
+        per_sample = entropy_per_sample * scale
+        if entropy_cfg.clamp_min is not None or entropy_cfg.clamp_max is not None:
+            per_sample = torch.clamp(per_sample, min=entropy_cfg.clamp_min, max=entropy_cfg.clamp_max)
 
         metrics: dict = {}
-        metrics["reward/entropy_h_bar_mean"] = h_bar.mean().detach().item()
-        if band_enable:
-            metrics["reward/entropy_h_phase_mean"] = h_bar.mean().detach().item()
-            metrics["reward/entropy_h_init_frozen_mean"] = self._frozen_h_init_ref[phase_mask_key]
-            metrics["reward/entropy_band_warmup_active"] = float(band_warmup_active)
-            if not band_warmup_active:
-                in_band = (h_bar >= h_low) & (h_bar <= h_high)
-                metrics["reward/entropy_h_init_mean"] = h_init.mean().detach().item()
-                metrics["reward/entropy_h_low_mean"] = h_low.mean().detach().item()
-                metrics["reward/entropy_h_high_mean"] = h_high.mean().detach().item()
-                metrics["reward/entropy_in_band_rate"] = in_band.float().mean().detach().item()
+        metrics["reward/entropy_reduced_mean"] = entropy_per_sample.mean().detach().item()
         bad_format_penalty = float(entropy_cfg.get("bad_format_penalty", 0))
         no_tool_penalty_cfg = entropy_cfg.get("no_tool_penalty", None)
         no_tool_penalty_active = no_tool_penalty_cfg is not None
@@ -467,12 +388,6 @@ class RayECHOTrainer(RayPPOTrainer):
             if algo == "dapo":
                 assert bool(cfg.filter_groups.enable), f"{phase_name} algorithm=dapo requires filter_groups.enable=true"
                 assert cfg.filter_groups.metric, f"{phase_name} algorithm=dapo requires filter_groups.metric"
-            band = cfg.entropy.get("band")
-            if band is not None and bool(band.get("enable", False)):
-                warmup_steps = int(band.get("warmup_steps", 1))
-                assert warmup_steps >= 1, (
-                    f"{phase_name} entropy.band.enable requires warmup_steps >= 1, got {warmup_steps}"
-                )
 
     @staticmethod
     def _phase_algorithm(phase_reward_cfg) -> str:
@@ -852,8 +767,6 @@ class RayECHOTrainer(RayPPOTrainer):
         logger.log_hparams(resolved_config)
 
         self.global_steps = 0
-        self._frozen_h_init_ref: dict[str, float] = {}
-        self._entropy_band_warmup_counts: dict[str, int] = {}
         self._best_metric_value = float("-inf")
         self._best_metric_step = -1
         self._best_metric_key = None

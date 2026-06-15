@@ -112,12 +112,6 @@ reward_model:
         normalize: false
         clamp_min: null   # Optional lower bound applied after scale/normalize.
         clamp_max: null   # Optional upper bound applied after scale/normalize.
-        band:
-          enable: false
-          epsilon_low: 0.2
-          epsilon_high: 0.2
-          h_floor: 1.0e-4
-          warmup_steps: 1
         # Bad-format override: 0 keeps the entropy scalar; non-zero replaces it.
         bad_format_penalty: 0.0
         # No-tool override: null keeps the entropy scalar; any float replaces it.
@@ -126,8 +120,8 @@ reward_model:
         # L_actor = L_GRPO - reg_coeff * mean_{m^reg}(H(pi_theta(.|x))),
         # where m^reg is m^phase ∩ select_loss_mask for `entropy-hybrid`,
         # m^phase for `strategy=entropy`, and m^phase ∩ non_border_loss_mask
-        # for `strategy=scorer`. The entropy *reward* (and band H_bar / H_init)
-        # always uses m^phase ∩ non_border_loss_mask regardless of strategy.
+        # for `strategy=scorer`. The entropy *reward* always uses
+        # m^phase ∩ non_border_loss_mask regardless of strategy.
         # Ignored for "maxentropy_rl". 0.0 disables the term.
         reg_coeff: 0.0
       # `max_entropy` block below is consulted only when strategy == "maxentropy_rl".
@@ -155,16 +149,6 @@ reward_model:
         normalize: false
         clamp_min: null
         clamp_max: null
-        # Banded entropy reward: score is `scale` inside
-        # [(1-epsilon_low)*H_init, (1+epsilon_high)*H_init], ramps outside.
-        # Steps 1..warmup_steps: no band, capture mean phase entropy as frozen H_init.
-        # After warmup: H_init is that frozen ref; H_bar uses m^phase ∩ non_border_loss_mask.
-        band:
-          enable: false
-          epsilon_low: 0.2
-          epsilon_high: 0.2
-          h_floor: 1.0e-4
-          warmup_steps: 1
         bad_format_penalty: 0.0
         no_tool_penalty: 0.0
         # See high_level.entropy.reg_coeff for full semantics. With

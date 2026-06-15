@@ -1,0 +1,22 @@
+# Runtime caches and artifacts — agent must not read, edit, or delete
+ARPO/search_cache/
+ARPO/checkpoints/
+checkpoints/
+ARPO/verl_arpo_entropy/*.db
+ARPO/verl_arpo_entropy/*.pdf
+ARPO/verl_arpo_entropy/*.jpg
+ARPO/verl_arpo_entropy/*.png
+ARPO/verl_arpo_entropy/*.csv
+ARPO/verl_arpo_entropy/*.npz
+ARPO/verl_arpo_entropy/point_analysis/
+ARPO/verl_arpo_entropy/recipe/echo/convergence_plot/
+ARPO/verl_arpo_entropy/recipe/echo/echo_monotone_plots/
+ARPO/verl_arpo_entropy/recipe/echo/reports/
+ARPO/verl_arpo_entropy/recipe/echo/secrets.sh
+ARPO/verl_arpo_entropy/recipe/echo/older_scripts/
+evaluation/search_cache*.db
+evaluation/search_url_cache*.db
+evaluation/logs/
+evaluation/outputs/
+evaluation/xmix_runs/
+LLaMA-Factory/arpo_train_sft/checkpoints/

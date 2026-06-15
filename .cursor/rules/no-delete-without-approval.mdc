@@ -1,0 +1,13 @@
+---
+description: Prevent accidental file deletion or reorganization by the agent
+alwaysApply: true
+---
+
+# No Delete Without Approval
+
+- Never run `rm`, `git rm`, `git clean`, or delete/move/rename files unless the user explicitly requests it in the current message.
+- Never move tracked files without `git mv`.
+- Before any cleanup that touches more than one file, run `git ls-files --deleted` and stop if non-empty.
+- Prefer `git restore` over deletion when fixing drift.
+- Never edit paths listed in `.cursorignore`.
+- If a file must be removed from git tracking, use `git rm --cached` only with explicit user approval.

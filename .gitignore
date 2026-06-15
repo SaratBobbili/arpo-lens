@@ -1,5 +1,4 @@
 LLaMA-Factory/arpo_train_sft/dataset/*.jsonl
-LLaMA-Factory/arpo_train_sft/dataset/*.jsonl
 LLaMA-Factory/LLaMA-Factory-backup
 *.pyc
 *.err
@@ -10,3 +9,54 @@ LLaMA-Factory/LLaMA-Factory-backup
 __pycache__/
 *.py[cod]
 ARPO/verl_arpo_entropy/recipe/echo/secrets.sh
+ARPO/verl_arpo_entropy/recipe/echo/convergence_plot/
+ARPO/verl_arpo_entropy/recipe/echo/echo_monotone_plots/
+ARPO/verl_arpo_entropy/recipe/echo/reports/
+
+# Cursor / IDE
+.cursor/*
+!.cursor/rules/
+!.cursor/rules/**
+
+# Checkpoints and training outputs
+checkpoints/
+**/checkpoints/
+wandb-metadata.json
+wandb-summary.json
+
+# Search caches (runtime, large)
+ARPO/search_cache/*.json.lock
+ARPO/search_cache/*.tmp
+ARPO/*.db
+ARPO/*.json
+ARPO/*.mp3
+ARPO/*.txt
+ARPO/checkpoints/
+
+# Agent/tool runtime artifacts in verl root
+ARPO/verl_arpo_entropy/*.db
+ARPO/verl_arpo_entropy/*.pdf
+ARPO/verl_arpo_entropy/*.jpg
+ARPO/verl_arpo_entropy/*.png
+ARPO/verl_arpo_entropy/*.csv
+ARPO/verl_arpo_entropy/*.npz
+ARPO/verl_arpo_entropy/*.txt
+ARPO/verl_arpo_entropy/*.html
+ARPO/verl_arpo_entropy/*.log
+ARPO/verl_arpo_entropy/*.asy
+ARPO/verl_arpo_entropy/*.svg
+ARPO/verl_arpo_entropy/point_analysis/
+ARPO/verl_arpo_entropy/example_db
+
+# Evaluation outputs
+evaluation/logs/
+evaluation/outputs/
+evaluation/xmix_runs/
+evaluation/vllm_scripts/logs/
+evaluation/*.png
+evaluation/*.asy
+
+# Misc
+=0.10.0,
+config.yaml
+notes.tex

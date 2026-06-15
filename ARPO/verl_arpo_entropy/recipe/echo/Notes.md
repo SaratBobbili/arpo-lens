@@ -8,7 +8,7 @@ Distill what each experiment actually taught us, so future runs change only the 
 
 ## Reward-plumbing note
 
-- HL and LL now share the same reward-strategy config surface (`scorer`, `entropy`, `entropy-hybrid`, `maxentropy_rl`) in launch/config plumbing.
+- HL and LL now share the same reward-strategy config surface (`scorer`, `entropy`, `entropy-hybrid`) in launch/config plumbing.
 - Format validators remain phase-specific by design: HL and LL still check different structure rules before scoring.
 - LL `scorer` uses full answer/F1 scoring after LL format validation; no-tool behavior remains a separate signal for phase penalties.
 

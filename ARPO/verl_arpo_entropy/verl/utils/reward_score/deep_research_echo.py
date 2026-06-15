@@ -21,10 +21,6 @@ VALIDATOR_PROFILE_SIGNATURES = {
     # are all LL. Isolates HL to reasoning + final answer and hands the entire
     # tool-planning + tool-payload stack to LL.
     "c4": {"first_select": "low",  "select": "low",  "think": "high", "answer": "high", "search": "low",  "python": "low"},
-    # c5: every category is HL. Used by the maxentropy_rl single-phase setup
-    # where the LL phase is skipped (rollout budget = 0) and HL owns the full
-    # set of format checks.
-    "c5": {"first_select": "high", "select": "high", "think": "high", "answer": "high", "search": "high", "python": "high"},
 }
 
 
@@ -194,12 +190,10 @@ def _check_tool_ordering(blocks):
 
 # ---------------------------------------------------------------------------
 # Profile-aware validators. Routing table (HL = owned by high_level phase):
-#   first_select                  -> HL for c1, c2, c3, c5; LL for c4
-#   think, answer                 -> HL for c1, c2, c3, c4, c5
-#   select (non-initial)          -> HL for c2, c5;          LL for c1, c3, c4
-#   search/python (tool payloads) -> HL for c3, c5;          LL for c1, c2, c4
-#   c5 is the all-HL profile used by maxentropy_rl: HL runs every check; LL
-#   has no checks (single-phase configuration).
+#   first_select                  -> HL for c1, c2, c3; LL for c4
+#   think, answer                 -> HL for c1, c2, c3, c4
+#   select (non-initial)          -> HL for c2;          LL for c1, c3, c4
+#   search/python (tool payloads) -> HL for c3;          LL for c1, c2, c4
 # ---------------------------------------------------------------------------
 
 def validate_high_level(text, profile="c1"):
@@ -209,15 +203,15 @@ def validate_high_level(text, profile="c1"):
     ok, reason = _check_all_closed(blocks)
     if not ok:
         return False, reason
-    # HL always owns think/answer; first_select is HL for c1/c2/c3/c5 but LL for
+    # HL always owns think/answer; first_select is HL for c1/c2/c3 but LL for
     # c4 (c4 moves the entire tool-planning stack, including the initial plan,
     # to LL).
     hl_checks = [_check_think_followup, _check_answer_boxed]
-    if profile in ("c1", "c2", "c3", "c5"):
+    if profile in ("c1", "c2", "c3"):
         hl_checks.insert(0, _check_first_select)
-    if profile in ("c2", "c5"):
+    if profile == "c2":
         hl_checks.append(_check_step_select)
-    if profile in ("c3", "c5"):
+    if profile == "c3":
         hl_checks.append(_check_tool_ordering)
     for check in hl_checks:
         ok, reason = check(blocks)
@@ -233,11 +227,6 @@ def validate_low_level(text, profile="c1"):
     ok, reason = _check_all_closed(blocks)
     if not ok:
         return False, reason
-    # c5: HL owns every format check; LL is vacuously valid so logging
-    # metrics (low_level_valid) stay sane even though the LL phase never
-    # consumes this verdict.
-    if profile == "c5":
-        return True, "low-level format is correct"
     # c4 owns first_select fully at LL; for c1/c2/c3 HL already validates it,
     # but LL still needs a minimal guard because _check_step_select and
     # _check_tool_ordering both derive `allowed_tools` from blocks[0].

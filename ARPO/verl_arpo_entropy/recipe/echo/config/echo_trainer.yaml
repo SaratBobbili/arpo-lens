@@ -44,7 +44,7 @@ reward_model:
   # Border tokens (open/close tag chars: <select>, </select>, <think>, </think>,
   # <answer>, </answer>, <search>, </search>, <python>, </python>, <result>,
   # </result>) are *always* excluded from the entropy reduction across all three
-  # entropy-bearing strategies (entropy / entropy-hybrid / maxentropy_rl) via the
+  # entropy-bearing strategies (entropy / entropy-hybrid) via the
   # rollout-emitted `non_border_loss_mask`. The policy gradient still credits
   # these tokens through the GRPO response_mask; only the entropy bonus and the
   # direct entropy regularizer skip them, so entropy maximization cannot push
@@ -72,17 +72,6 @@ reward_model:
   #                     initial <select> from the computation, move
   #                     `first_select` to the opposite phase so the
   #                     intersection drops it.
-  #   maxentropy_rl  -> r_i = scorer_i + alpha * ent_i. Calls the same
-  #                     `scorer` path to get the per-sample task reward
-  #                     (preserving its -1 format penalty as-is, no extra
-  #                     gating), and adds a constant alpha times the
-  #                     per-sample entropy scalar reduced over a
-  #                     rollout-emitted mask (default `tool_loss_mask`,
-  #                     covering <first_select> + <select> + <search> +
-  #                     <python>) intersected with the phase mask. The
-  #                     combined scalar is written sparsely at the last
-  #                     valid response token like the other strategies, so
-  #                     GRPO's sum(dim=-1) recovers r_i directly.
   phase_rewards:
     high_level:
       # grpo: single rollout pass per step (shared prompts with other GRPO phases).
@@ -122,16 +111,8 @@ reward_model:
         # m^phase for `strategy=entropy`, and m^phase ∩ non_border_loss_mask
         # for `strategy=scorer`. The entropy *reward* always uses
         # m^phase ∩ non_border_loss_mask regardless of strategy.
-        # Ignored for "maxentropy_rl". 0.0 disables the term.
+        # 0.0 disables the term.
         reg_coeff: 0.0
-      # `max_entropy` block below is consulted only when strategy == "maxentropy_rl".
-      # Implements r_i = scorer_i + alpha * ent_i with no extra format gating
-      # (the scorer's own -1 on bad format is preserved as-is).
-      max_entropy:
-        alpha: 0.1                # Constant multiplier on the per-sample entropy term added to the scorer's per-sample reward.
-        mask_key: tool_loss_mask  # Rollout-emitted mask used to reduce per-token entropy to a per-sample scalar; intersected with the phase loss mask. tool_loss_mask covers <first_select> + <select> + <search> + <python>.
-        reduction: mean           # Per-token entropy reduction: {sum, mean}. mean keeps alpha length-invariant.
-        normalize: true           # If true, divide per-token entropy by log(vocab_size) before reduction so alpha is tokenizer-agnostic.
     low_level:
       algorithm: grpo
       kl_loss_coef: 0.0
@@ -156,11 +137,6 @@ reward_model:
         # With strategy=scorer, only enables L_actor -= reg_coeff * H on
         # m^LL ∩ non_border_loss_mask while GRPO uses the scorer reward.
         reg_coeff: 0.0
-      max_entropy:
-        alpha: 0.1
-        mask_key: tool_loss_mask
-        reduction: mean
-        normalize: true
 
 actor_rollout_ref:
   actor:

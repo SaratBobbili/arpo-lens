@@ -85,12 +85,3 @@ hl_bad_format_penalty: -1.0
 ll_bad_format_penalty: -1.0
 hl_no_tool_penalty: null
 ll_no_tool_penalty: 0.0
-
-hl_max_entropy_alpha: 0.1
-ll_max_entropy_alpha: 0.1
-hl_max_entropy_mask_key: tool_loss_mask
-ll_max_entropy_mask_key: tool_loss_mask
-hl_max_entropy_reduction: mean
-ll_max_entropy_reduction: mean
-hl_max_entropy_normalize: true
-ll_max_entropy_normalize: true

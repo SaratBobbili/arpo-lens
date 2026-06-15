@@ -59,13 +59,13 @@ will do at eval time.
 | Metric | What it means |
 |---|---|
 | `<phase>/reward/effective_reward_mean` | Mean per-sample reward actually used by GRPO for that phase/strategy. This is the source for `<save_path>/logging_data/<phase>/reward.jsonl`. |
-| `<phase>/reward/score_mean` | Mean scorer output for scorer-based paths (`scorer`, scorer leg of `maxentropy_rl`). |
+| `<phase>/reward/score_mean` | Mean scorer output for scorer-based paths (`scorer`). |
 | `<phase>/reward/f1_mean` | Mean F1 component from scorer output (zeros on non-matching answers). |
 | `high_level/reward/format_pass_rate` | Fraction of HL rollouts that passed all format checks. Want this climbing toward 1.0. |
 | `high_level/reward/bad_format_rate` | `1 − format_pass_rate`. |
 | `high_level/reward/no_tool_rate` | Fraction of HL rollouts that produced a valid answer without ever calling a tool. |
 | `<phase>/reward/entropy_scalar_mean_good` | Entropy reward mean over good-format and tool-using samples when entropy overrides are active; otherwise equals `entropy_scalar_mean`. |
-| `<phase>/reward/entropy_scalar_mean` | Entropy-channel reward mean over all samples (for `entropy`, `entropy-hybrid`, and entropy leg of `maxentropy_rl`). |
+| `<phase>/reward/entropy_scalar_mean` | Entropy-channel reward mean over all samples (for `entropy` and `entropy-hybrid`). |
 | `<phase>/reward/entropy_reduced_mean` | Pre-scale mean of masked entropy over `m^phase ∩ non_border_loss_mask`. |
 | `low_level/reward/bad_format_rate` | LL-side format failure rate (defined by the LL validator). |
 | `low_level/reward/no_tool_rate` | Fraction of valid LL rollouts that never invoked a tool. Should drift toward 0 as training pushes the model to actually use tools. |
@@ -206,7 +206,7 @@ split: ARPO writes one set of files at the top level (`reward.jsonl`,
 `tools_total_calls.jsonl`, `tools_successful_calls.jsonl`); ECHO writes the
 same set under `logging_data/high_level/` *and* `logging_data/low_level/`,
 where `reward.jsonl` reads `<phase>/reward/effective_reward_mean` so files stay
-valid across scorer, entropy, entropy-hybrid, and maxentropy_rl.
+valid across scorer, entropy, and entropy-hybrid.
 
 ## 6. ECHO ↔ ARPO term map
 

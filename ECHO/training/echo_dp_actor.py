@@ -8,7 +8,7 @@ from verl.utils.py_functional import append_to_dict
 from verl.utils.seqlen_balancing import rearrange_micro_batches
 from verl.workers.actor.dp_actor import DataParallelPPOActor
 
-from .echo_core_algos import agg_loss, compute_policy_loss, kl_penalty
+from .echo_core_algos import agg_loss, compute_entropy_normalized, compute_policy_loss, kl_penalty
 
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
@@ -21,6 +21,9 @@ class DataParallelECHOActor(DataParallelPPOActor):
 
         temperature = data.meta_info["temperature"]
         multi_turn = data.meta_info.get("multi_turn", False)
+        phase_strategy = data.meta_info.get("phase_strategy", "scorer")
+        entropy_normalization = data.meta_info.get("entropy_normalization", "token_pool")
+        entropy_alpha = float(data.meta_info.get("entropy_alpha", 0.2))
         entropy_coeff_override = data.meta_info.get("entropy_coeff_override", None)
         entropy_loss_mask_key = data.meta_info.get("entropy_loss_mask_key", None)
         entropy_loss_normalizer = data.meta_info.get("entropy_loss_normalizer", None)
@@ -33,15 +36,24 @@ class DataParallelECHOActor(DataParallelPPOActor):
             select_keys.append(entropy_loss_mask_key)
         if self.config.use_kl_loss:
             select_keys.append("ref_log_prob")
-        batch = data.select(batch_keys=select_keys).batch
-        has_multi_modal_inputs = "multi_modal_inputs" in data.non_tensor_batch.keys()
 
+        # uid needed for group-level entropy normalization
+        non_tensor_select_keys = []
+        if phase_strategy in ("entropy", "aepo") and entropy_normalization == "group":
+            non_tensor_select_keys.append("uid")
+
+        has_multi_modal_inputs = "multi_modal_inputs" in data.non_tensor_batch.keys()
         if has_multi_modal_inputs:
-            num_mini_batches = data.batch.batch_size[0] // self.config.ppo_mini_batch_size
-            non_tensor_select_keys = ["multi_modal_inputs"]
-            dataloader = data.select(select_keys, non_tensor_select_keys).chunk(num_mini_batches)
-        else:
-            dataloader = batch.split(self.config.ppo_mini_batch_size)
+            non_tensor_select_keys.append("multi_modal_inputs")
+
+        batch = data.select(batch_keys=select_keys, non_tensor_batch_keys=non_tensor_select_keys).batch
+        dataloader = (
+            data.select(select_keys, non_tensor_select_keys).chunk(
+                data.batch.batch_size[0] // self.config.ppo_mini_batch_size
+            )
+            if has_multi_modal_inputs
+            else batch.split(self.config.ppo_mini_batch_size)
+        )
 
         metrics = {}
         for epoch in range(self.config.ppo_epochs):
@@ -62,9 +74,12 @@ class DataParallelECHOActor(DataParallelPPOActor):
 
                 for data in micro_batches:
                     if isinstance(data, DataProto):
+                        uid = data.non_tensor_batch.get("uid", None)
                         data = {**data.batch.to(get_torch_device().current_device()), **data.non_tensor_batch}
                     else:
+                        uid = None
                         data = data.to(get_torch_device().current_device())
+
                     responses = data["responses"]
                     response_length = responses.size(1)
                     attention_mask = data["attention_mask"]
@@ -88,10 +103,21 @@ class DataParallelECHOActor(DataParallelPPOActor):
                     entropy_coeff = entropy_coeff_override if entropy_coeff_override is not None else self.config.entropy_coeff
                     loss_agg_mode = self.config.loss_agg_mode
 
-                    calculate_entropy = False
-                    if entropy_coeff != 0:
-                        calculate_entropy = True
-                    entropy, log_prob = self._forward_micro_batch(micro_batch=data, temperature=temperature, calculate_entropy=calculate_entropy)
+                    # Always compute fresh entropy from the current policy.
+                    entropy, log_prob = self._forward_micro_batch(micro_batch=data, temperature=temperature, calculate_entropy=True)
+
+                    # Apply phase strategy: modify advantages in-place before policy loss.
+                    if phase_strategy in ("entropy", "aepo"):
+                        entropy_norm = compute_entropy_normalized(
+                            entropy=entropy,
+                            response_mask=response_mask,
+                            normalization=entropy_normalization,
+                            index=uid,
+                        )
+                        if phase_strategy == "entropy":
+                            advantages = entropy_norm
+                        else:  # aepo
+                            advantages = advantages * (1.0 + entropy_alpha * entropy_norm)
 
                     pg_loss, pg_clipfrac, ppo_kl, pg_clipfrac_lower = compute_policy_loss(
                         old_log_prob=old_log_prob,
@@ -127,9 +153,7 @@ class DataParallelECHOActor(DataParallelPPOActor):
                         policy_loss = pg_loss
 
                     if self.config.use_kl_loss:
-                        kl_loss_coef = (
-                            kl_loss_coef_override if kl_loss_coef_override is not None else self.config.kl_loss_coef
-                        )
+                        kl_loss_coef = kl_loss_coef_override if kl_loss_coef_override is not None else self.config.kl_loss_coef
                         ref_log_prob = data["ref_log_prob"]
                         kld = kl_penalty(logprob=log_prob, ref_logprob=ref_log_prob, kl_penalty=self.config.kl_loss_type)
                         kl_loss = agg_loss(loss_mat=kld, loss_mask=response_mask, loss_agg_mode=loss_agg_mode)
@@ -144,16 +168,14 @@ class DataParallelECHOActor(DataParallelPPOActor):
                         loss = policy_loss / self.gradient_accumulation
                     loss.backward()
 
-                    data = {
+                    append_to_dict(metrics, {
                         "actor/pg_loss": pg_loss.detach().item(),
                         "actor/pg_clipfrac": pg_clipfrac.detach().item(),
                         "actor/ppo_kl": ppo_kl.detach().item(),
                         "actor/pg_clipfrac_lower": pg_clipfrac_lower.detach().item(),
-                    }
-                    append_to_dict(metrics, data)
+                    })
 
                 grad_norm = self._optimizer_step()
-                data = {"actor/grad_norm": grad_norm.detach().item()}
-                append_to_dict(metrics, data)
+                append_to_dict(metrics, {"actor/grad_norm": grad_norm.detach().item()})
         self.actor_optimizer.zero_grad()
         return metrics

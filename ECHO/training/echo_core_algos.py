@@ -170,6 +170,55 @@ def compute_grpo_outcome_advantage(
     return scores, scores
 
 
+def compute_entropy_normalized(
+    entropy: torch.Tensor,
+    response_mask: torch.Tensor,
+    normalization: str,
+    index: np.ndarray = None,
+    epsilon: float = 1e-6,
+) -> torch.Tensor:
+    """Normalize per-token entropy for use as an advantage signal.
+
+    Args:
+        entropy: (bsz, response_length) per-token Shannon entropy from current policy.
+        response_mask: (bsz, response_length) phase loss mask.
+        normalization: "token_pool" — z-score over all valid tokens in the micro-batch;
+                       "group"      — reduce to per-sample mean, GRPO group normalize,
+                                      then broadcast back to tokens.
+        index: (bsz,) prompt uid strings, required when normalization="group".
+        epsilon: numerical stability for std.
+
+    Returns:
+        entropy_normalized: (bsz, response_length), zeroed outside response_mask.
+    """
+    with torch.no_grad():
+        if normalization == "token_pool":
+            valid = entropy[response_mask.bool()]
+            mean = valid.mean()
+            std = valid.std().clamp_min(epsilon)
+            normed = (entropy - mean) / std
+            return normed * response_mask.float()
+
+        # group: reduce to per-sample scalar, GRPO-normalize within prompt group, broadcast
+        denom = response_mask.float().sum(dim=-1).clamp_min(1.0)
+        per_sample = (entropy * response_mask.float()).sum(dim=-1) / denom  # (bsz,)
+
+        id2scores = defaultdict(list)
+        id2mean = {}
+        id2std = {}
+        bsz = per_sample.shape[0]
+        for i in range(bsz):
+            id2scores[index[i]].append(per_sample[i])
+        for idx, vals in id2scores.items():
+            t = torch.stack(vals)
+            id2mean[idx] = t.mean() if len(vals) > 1 else torch.tensor(0.0)
+            id2std[idx] = t.std().clamp_min(epsilon) if len(vals) > 1 else torch.tensor(1.0)
+        normed_sample = torch.zeros_like(per_sample)
+        for i in range(bsz):
+            normed_sample[i] = (per_sample[i] - id2mean[index[i]]) / id2std[index[i]]
+        return normed_sample.unsqueeze(-1) * response_mask.float()
+
+
 def compute_grpo_passk_outcome_advantage(
     token_level_rewards: torch.Tensor,
     response_mask: torch.Tensor,

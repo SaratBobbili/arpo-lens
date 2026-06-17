@@ -39,7 +39,7 @@ phase_order: '["low_level", "high_level"]'
 high_level_update_repeats: 1
 low_level_update_repeats: 1
 high_level_reward_strategy: scorer
-low_level_reward_strategy: entropy-hybrid
+low_level_reward_strategy: entropy
 high_level_algorithm: dapo
 low_level_algorithm: grpo
 norm_adv_by_std_in_grpo: False
@@ -69,19 +69,7 @@ ll_kl_loss_coef: 0.0
 
 hl_entropy_reg_coeff: 0.0
 ll_entropy_reg_coeff: 0.1
-hl_entropy_reduction: sum
-ll_entropy_reduction: mean
-hl_entropy_scale: 1.0
-ll_entropy_scale: 1.0
-hl_entropy_normalize: false
-ll_entropy_normalize: true
-
-hl_entropy_clamp_min: null
-ll_entropy_clamp_min: null
-hl_entropy_clamp_max: null
-ll_entropy_clamp_max: null
-
-hl_bad_format_penalty: 0.0
-ll_bad_format_penalty: -0.1
-hl_no_tool_penalty: null
-ll_no_tool_penalty: 0.0
+hl_entropy_normalization: token_pool
+ll_entropy_normalization: token_pool
+hl_entropy_alpha: 0.2
+ll_entropy_alpha: 0.2

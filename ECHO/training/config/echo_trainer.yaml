@@ -33,41 +33,15 @@ reward_model:
   phase_update_repeats:
     high_level: 1
     low_level: 1
-  # Per-phase reward strategy. Each hierarchical phase independently selects how
-  # its token-level reward tensor is produced. Both strategies emit a sparse
-  # scalar at the last valid response token so GRPO's sum(dim=-1) recovers the
-  # per-sample score directly (no extra aggregation needed in the trainer).
-  # Border tokens (open/close tag chars: <select>, </select>, <think>, </think>,
-  # <answer>, </answer>, <search>, </search>, <python>, </python>, <result>,
-  # </result>) are *always* excluded from the entropy reduction across all three
-  # entropy-bearing strategies (entropy / entropy-hybrid) via the
-  # rollout-emitted `non_border_loss_mask`. The policy gradient still credits
-  # these tokens through the GRPO response_mask; only the entropy bonus and the
-  # direct entropy regularizer skip them, so entropy maximization cannot push
-  # the model off the structural tags that tool calling and answer parsing depend on.
+  # Per-phase reward strategy. Scorer reward is always computed for all phases.
+  # The strategy controls how advantages are shaped inside update_policy using
+  # the current (new) policy's entropy.
   # Supported strategies:
-  #   scorer         -> ECHORewardManager + custom_reward_function on the
-  #                     decoded answer. Emits -1 on format failure, else the
-  #                     task score (e.g. F1 in deep_research_echo), at the
-  #                     last valid response token.
-  #   entropy        -> Per-token policy entropy over the phase's loss-mask
-  #                     tokens reduced to one per-sample scalar (sum or mean
-  #                     per `entropy.reduction`), optionally normalized by
-  #                     log(vocab_size) and scaled/clamped, written at the
-  #                     last valid response token. Optional overrides via
-  #                     `bad_format_penalty` (0 = disabled) and
-  #                     `no_tool_penalty` (null = disabled; phase-specific).
-  #   entropy-hybrid -> Identical to `entropy` (same `entropy:` config block,
-  #                     same override semantics, same sparse write at the
-  #                     last valid response token) except the per-token
-  #                     entropy reduction is restricted to tokens inside any
-  #                     <select>...</select> block (`select_loss_mask` from
-  #                     rollout), intersected with the phase mask. Intended
-  #                     for mask_categories where `<select>`, `<search>`,
-  #                     `<python>` share the same phase; to exclude the
-  #                     initial <select> from the computation, move
-  #                     `first_select` to the opposite phase so the
-  #                     intersection drops it.
+  #   scorer  -> Use GRPO advantage from scorer reward as-is.
+  #   entropy -> Replace GRPO advantage with per-token entropy normalized
+  #              across the phase mask (z-scored within the configured scope).
+  #   aepo    -> Modulate scorer GRPO advantage by entropy:
+  #              A = A_scorer * (1 + alpha * H_norm).
   phase_rewards:
     high_level:
       # grpo: single rollout pass per step (shared prompts with other GRPO phases).
@@ -79,35 +53,16 @@ reward_model:
         metric: seq_reward
         max_num_gen_batches: 10
       strategy: scorer
-      # `entropy` block below is consulted only when strategy in
-      # {"entropy", "entropy-hybrid"}.
       entropy:
-        reduction: sum    # How per-token entropy is reduced to a per-sample scalar: {sum, mean}.
-        scale: 1.0        # Multiplies the reduced entropy before writing the scalar.
-        # If true, divide per-token entropy by log(vocab_size) so H lands in [0,1].
-        # Applies to BOTH channels of this strategy:
-        #   (a) reward channel  -> bounded entropy reward scalar (this file's
-        #       `_build_entropy_scalar_reward`); GRPO σ_g absorbs the absolute
-        #       scale anyway, so this primarily affects logged reward magnitude.
-        #   (b) regularizer channel (reg_coeff > 0) -> dp_actor divides H by
-        #       log(vocab_size) before agg_loss so `reg_coeff` is interpreted on
-        #       H ∈ [0,1] units, matching the reward channel. Without this, the
-        #       regularizer is in raw nats and `reg_coeff` is silently ~12x
-        #       larger than the user expects (Qwen2.5: log(152K) ≈ 11.93).
-        normalize: false
-        clamp_min: null   # Optional lower bound applied after scale/normalize.
-        clamp_max: null   # Optional upper bound applied after scale/normalize.
-        # Bad-format override: 0 keeps the entropy scalar; non-zero replaces it.
-        bad_format_penalty: 0.0
-        # No-tool override: null keeps the entropy scalar; any float replaces it.
-        no_tool_penalty: null
-        # Direct entropy regularizer added to the actor loss as
-        # L_actor = L_GRPO - reg_coeff * mean_{m^reg}(H(pi_theta(.|x))),
-        # where m^reg is m^phase ∩ select_loss_mask for `entropy-hybrid`,
-        # m^phase for `strategy=entropy`, and m^phase ∩ non_border_loss_mask
-        # for `strategy=scorer`. The entropy *reward* always uses
-        # m^phase ∩ non_border_loss_mask regardless of strategy.
-        # 0.0 disables the term.
+        # How entropy is z-scored before use as an advantage signal:
+        #   token_pool -> z-score over all valid tokens in the micro-batch (AEPO-style).
+        #   group      -> reduce to per-sample mean, GRPO-normalize within prompt group,
+        #                 then broadcast back to tokens.
+        normalization: token_pool
+        # Scaling weight for the entropy term in the aepo strategy.
+        alpha: 0.2
+        # Direct entropy regularizer: L_actor = L_PG - reg_coeff * mean(H) on the
+        # phase loss mask. 0.0 disables. Applies to all three strategies.
         reg_coeff: 0.0
     low_level:
       algorithm: grpo
@@ -118,20 +73,8 @@ reward_model:
         max_num_gen_batches: 10
       strategy: entropy
       entropy:
-        # LL uses mean so per-sample advantage reflects average entropy per LL
-        # token rather than the sum, which would be length-biased across
-        # variable-length tool-call traces.
-        reduction: mean
-        scale: 1.0
-        normalize: false
-        clamp_min: null
-        clamp_max: null
-        bad_format_penalty: 0.0
-        no_tool_penalty: 0.0
-        # See high_level.entropy.reg_coeff for full semantics. With
-        # strategy=entropy|entropy-hybrid, also drives the entropy reward.
-        # With strategy=scorer, only enables L_actor -= reg_coeff * H on
-        # m^LL ∩ non_border_loss_mask while GRPO uses the scorer reward.
+        normalization: token_pool
+        alpha: 0.2
         reg_coeff: 0.0
 
 actor_rollout_ref:

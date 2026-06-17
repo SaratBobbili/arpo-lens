@@ -5,36 +5,20 @@ from collections import Counter
 
 VALID_ECHO_TOOLS = {"search", "python", "no-tool"}
 
-# Supported mask_categories -> validator_profile signatures. The profile is the
-# single source of truth derived from `actor_rollout_ref.rollout.mask_categories`
-# at startup; each profile routes a fixed subset of format checks to HL vs LL.
-# "result" is always excluded (never masked).
-VALIDATOR_PROFILE_SIGNATURES = {
-    # c1: planning/reasoning/answer HL; tool choice + tool payload LL.
-    "c1": {"first_select": "high", "select": "low",  "think": "high", "answer": "high", "search": "low",  "python": "low"},
-    # c2: same as c1 but non-initial <select> is pulled up to HL.
-    "c2": {"first_select": "high", "select": "high", "think": "high", "answer": "high", "search": "low",  "python": "low"},
-    # c3: same as c1 but <search>/<python> payloads are HL (prevents LL from
-    # entropy-hacking via junk tool-code tokens).
-    "c3": {"first_select": "high", "select": "low",  "think": "high", "answer": "high", "search": "high", "python": "high"},
-    # c4: only <think>/<answer> are HL; first_select + select + search + python
-    # are all LL. Isolates HL to reasoning + final answer and hands the entire
-    # tool-planning + tool-payload stack to LL.
-    "c4": {"first_select": "low",  "select": "low",  "think": "high", "answer": "high", "search": "low",  "python": "low"},
+_DEFAULT_MASK_CATEGORIES = {
+    "first_select": "high",
+    "select": "high",
+    "think": "high",
+    "answer": "high",
+    "search": "low",
+    "python": "low",
 }
 
 
-def resolve_validator_profile(mask_categories):
-    """Match `mask_categories` (dict-like) against the known profile signatures.
-    Returns the profile id ("c1"/"c2"/"c3"); raises if no profile matches."""
-    observed = {k: str(mask_categories[k]) for k in VALIDATOR_PROFILE_SIGNATURES["c1"]}
-    for profile, signature in VALIDATOR_PROFILE_SIGNATURES.items():
-        if observed == signature:
-            return profile
-    raise ValueError(
-        f"mask_categories {observed} does not match any supported validator profile. "
-        f"Supported profiles: {VALIDATOR_PROFILE_SIGNATURES}"
-    )
+def _in_phase(mask_categories, cat, phase):
+    """True if `cat` is active in `phase` ('high_level' or 'low_level')."""
+    level = mask_categories.get(cat, "none")
+    return level == "both" or (phase == "high_level" and level == "high") or (phase == "low_level" and level == "low")
 
 
 # ---------------------------------------------------------------------------
@@ -196,22 +180,19 @@ def _check_tool_ordering(blocks):
 #   search/python (tool payloads) -> HL for c3;          LL for c1, c2, c4
 # ---------------------------------------------------------------------------
 
-def validate_high_level(text, profile="c1"):
+def validate_high_level(text, mask_categories):
     blocks = get_ordered_blocks(text)
     if not blocks:
         return False, "no tags found"
     ok, reason = _check_all_closed(blocks)
     if not ok:
         return False, reason
-    # HL always owns think/answer; first_select is HL for c1/c2/c3 but LL for
-    # c4 (c4 moves the entire tool-planning stack, including the initial plan,
-    # to LL).
     hl_checks = [_check_think_followup, _check_answer_boxed]
-    if profile in ("c1", "c2", "c3"):
+    if _in_phase(mask_categories, "first_select", "high_level"):
         hl_checks.insert(0, _check_first_select)
-    if profile == "c2":
+    if _in_phase(mask_categories, "select", "high_level"):
         hl_checks.append(_check_step_select)
-    if profile == "c3":
+    if _in_phase(mask_categories, "search", "high_level") or _in_phase(mask_categories, "python", "high_level"):
         hl_checks.append(_check_tool_ordering)
     for check in hl_checks:
         ok, reason = check(blocks)
@@ -220,17 +201,14 @@ def validate_high_level(text, profile="c1"):
     return True, "high-level format is correct"
 
 
-def validate_low_level(text, profile="c1"):
+def validate_low_level(text, mask_categories):
     blocks = get_ordered_blocks(text)
     if not blocks:
         return False, "no tags found"
     ok, reason = _check_all_closed(blocks)
     if not ok:
         return False, reason
-    # c4 owns first_select fully at LL; for c1/c2/c3 HL already validates it,
-    # but LL still needs a minimal guard because _check_step_select and
-    # _check_tool_ordering both derive `allowed_tools` from blocks[0].
-    if profile == "c4":
+    if _in_phase(mask_categories, "first_select", "low_level"):
         ok, reason = _check_first_select(blocks)
         if not ok:
             return False, reason
@@ -239,11 +217,11 @@ def validate_low_level(text, profile="c1"):
             return False, "missing planning <select> needed to derive allowed tools"
         if not set(extract_tools_from_select(blocks[0][3])):
             return False, "planning <select> declares no tools"
-    if profile in ("c1", "c3", "c4"):
+    if _in_phase(mask_categories, "select", "low_level"):
         ok, reason = _check_step_select(blocks)
         if not ok:
             return False, reason
-    if profile in ("c1", "c2", "c4"):
+    if _in_phase(mask_categories, "search", "low_level") or _in_phase(mask_categories, "python", "low_level"):
         ok, reason = _check_tool_ordering(blocks)
         if not ok:
             return False, reason
@@ -254,11 +232,11 @@ def validate_low_level(text, profile="c1"):
 # Combined validation
 # ---------------------------------------------------------------------------
 
-def validate_format_echo(text, profile="c1"):
+def validate_format_echo(text, mask_categories):
     """Run both high-level and low-level validation, return
     (is_valid, reason, high_level_valid, low_level_valid)."""
-    high_valid, high_reason = validate_high_level(text, profile)
-    low_valid, low_reason = validate_low_level(text, profile)
+    high_valid, high_reason = validate_high_level(text, mask_categories)
+    low_valid, low_reason = validate_low_level(text, mask_categories)
 
     if high_valid and low_valid:
         return True, "format is correct", True, True
@@ -399,13 +377,9 @@ def compute_score(data_source, solution_str, ground_truth, extra_info=None):
     }
 
     response = solution_str
-    # Validator profile is derived from mask_categories at trainer init and
-    # forwarded via extra_info; defaults to c1 for standalone scoring calls.
-    profile = extra_info.get("validator_profile", "c1") if extra_info else "c1"
-    # Both validators always run so high_level_valid / low_level_valid are available
-    # for logging regardless of which phase is gating the -1 verdict.
-    hl_valid, hl_reason = validate_high_level(response, profile)
-    ll_valid, ll_reason = validate_low_level(response, profile)
+    mask_categories = extra_info.get("mask_categories", _DEFAULT_MASK_CATEGORIES) if extra_info else _DEFAULT_MASK_CATEGORIES
+    hl_valid, hl_reason = validate_high_level(response, mask_categories)
+    ll_valid, ll_reason = validate_low_level(response, mask_categories)
     result["high_level_valid"] = hl_valid
     result["low_level_valid"] = ll_valid
 

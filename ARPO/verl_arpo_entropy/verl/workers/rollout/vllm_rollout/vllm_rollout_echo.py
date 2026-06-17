@@ -53,7 +53,7 @@ _TAG_INFO = {
 # Close tags first so `</tag><tag>` boundaries resolve correctly.
 _TAG_MATCH_ORDER = tuple(t for t in _TAG_INFO if t.startswith("</")) + tuple(t for t in _TAG_INFO if not t.startswith("</"))
 
-_VALID_MASK_LEVELS = {"high", "low", "none"}
+_VALID_MASK_LEVELS = {"high", "low", "both", "none"}
 _DEFAULT_MASK_CATEGORIES = {
     "first_select": "high",
     "select": "high",
@@ -217,18 +217,15 @@ class vLLMRolloutECHO(vLLMRollout):
                 char_high[i] = 1
             elif level == "low":
                 char_low[i] = 1
+            elif level == "both":
+                char_high[i] = 1
+                char_low[i] = 1
 
         # Collapse character masks to token masks, intersecting with result_mask.
-        # `non_border_mask` is 1 only on tokens whose characters do NOT overlap
-        # any open/close tag string. Used by the trainer to exclude tag boundary
-        # tokens from the entropy reduction so entropy maximization cannot push
-        # the policy off the structural <tag>/</tag> tokens that tool calling and
-        # answer parsing depend on.
         high_level_mask: List[int] = []
         low_level_mask: List[int] = []
         select_mask: List[int] = []
         first_select_mask: List[int] = []
-        non_border_mask: List[int] = []
         cursor = 0
         for token_text, keep_token in zip(token_texts, result_mask):
             next_cursor = cursor + len(token_text)
@@ -245,12 +242,10 @@ class vLLMRolloutECHO(vLLMRollout):
                     else True
                 )
             )
-            non_border_active_token = int(bool(keep_token) and not token_border)
             high_level_mask.append(int(phase_active_token and token_high))
             low_level_mask.append(int(phase_active_token and token_low))
             select_mask.append(int(phase_active_token and token_select))
             first_select_mask.append(int(phase_active_token and token_first_select))
-            non_border_mask.append(non_border_active_token)
             cursor = next_cursor
 
         first_select_post_idx = -1
@@ -263,7 +258,7 @@ class vLLMRolloutECHO(vLLMRollout):
                     break
                 cursor += token_len
 
-        return high_level_mask, low_level_mask, select_mask, first_select_mask, non_border_mask, first_select_post_idx
+        return high_level_mask, low_level_mask, select_mask, first_select_mask, first_select_post_idx
 
     def _extract_content(self, text: str, tag: str) -> str:
         """Extracts content from within the last <tag>...</tag> block."""
@@ -516,7 +511,6 @@ class vLLMRolloutECHO(vLLMRollout):
             output_low_level_masks = []
             output_select_masks = []
             output_first_select_masks = []
-            output_non_border_masks = []
             output_first_select_post_idxs = []
             for i in range(batch_size):
                 sample_indices = sample_to_indices.get(i, [])
@@ -528,7 +522,6 @@ class vLLMRolloutECHO(vLLMRollout):
                         low_level_mask,
                         select_mask,
                         first_select_mask,
-                        non_border_mask,
                         first_select_post_idx,
                     ) = self._compute_hierarchical_masks(
                         output_ids=output_ids, result_mask=output_mask
@@ -539,7 +532,6 @@ class vLLMRolloutECHO(vLLMRollout):
                     output_low_level_masks.append(low_level_mask)
                     output_select_masks.append(select_mask)
                     output_first_select_masks.append(first_select_mask)
-                    output_non_border_masks.append(non_border_mask)
                     output_first_select_post_idxs.append(first_select_post_idx)
 
             padded_response_list = []
@@ -548,22 +540,19 @@ class vLLMRolloutECHO(vLLMRollout):
             padded_low_level_mask_list = []
             padded_select_mask_list = []
             padded_first_select_mask_list = []
-            padded_non_border_mask_list = []
-            for output_ids, result_mask, high_level_mask, low_level_mask, select_mask, first_select_mask, non_border_mask in zip(
+            for output_ids, result_mask, high_level_mask, low_level_mask, select_mask, first_select_mask in zip(
                 output_sequences,
                 output_result_masks,
                 output_high_level_masks,
                 output_low_level_masks,
                 output_select_masks,
                 output_first_select_masks,
-                output_non_border_masks,
             ):
                 assert len(output_ids) == len(result_mask), f"output_ids: {len(output_ids)}, result_mask: {len(result_mask)}"
                 assert len(output_ids) == len(high_level_mask), f"output_ids: {len(output_ids)}, high_level_mask: {len(high_level_mask)}"
                 assert len(output_ids) == len(low_level_mask), f"output_ids: {len(output_ids)}, low_level_mask: {len(low_level_mask)}"
                 assert len(output_ids) == len(select_mask), f"output_ids: {len(output_ids)}, select_mask: {len(select_mask)}"
                 assert len(output_ids) == len(first_select_mask), f"output_ids: {len(output_ids)}, first_select_mask: {len(first_select_mask)}"
-                assert len(output_ids) == len(non_border_mask), f"output_ids: {len(output_ids)}, non_border_mask: {len(non_border_mask)}"
 
                 response = torch.tensor(output_ids)
                 response = pad_sequence_to_length(response, self.config.response_length, self.pad_token_id)
@@ -578,8 +567,6 @@ class vLLMRolloutECHO(vLLMRollout):
                 select_mask_tensor = pad_sequence_to_length(select_mask_tensor, self.config.response_length, 0)
                 first_select_mask_tensor = torch.tensor(first_select_mask)
                 first_select_mask_tensor = pad_sequence_to_length(first_select_mask_tensor, self.config.response_length, 0)
-                non_border_mask_tensor = torch.tensor(non_border_mask)
-                non_border_mask_tensor = pad_sequence_to_length(non_border_mask_tensor, self.config.response_length, 0)
 
                 padded_response_list.append(response)
                 padded_result_mask_list.append(result_mask_tensor)
@@ -587,7 +574,6 @@ class vLLMRolloutECHO(vLLMRollout):
                 padded_low_level_mask_list.append(low_level_mask_tensor)
                 padded_select_mask_list.append(select_mask_tensor)
                 padded_first_select_mask_list.append(first_select_mask_tensor)
-                padded_non_border_mask_list.append(non_border_mask_tensor)
 
             response = torch.stack(padded_response_list, dim=0).to(input_ids.device)
             loss_mask = torch.stack(padded_result_mask_list, dim=0).to(input_ids.device)
@@ -595,7 +581,6 @@ class vLLMRolloutECHO(vLLMRollout):
             low_level_loss_mask = torch.stack(padded_low_level_mask_list, dim=0).to(input_ids.device)
             select_loss_mask = torch.stack(padded_select_mask_list, dim=0).to(input_ids.device)
             first_select_loss_mask = torch.stack(padded_first_select_mask_list, dim=0).to(input_ids.device)
-            non_border_loss_mask = torch.stack(padded_non_border_mask_list, dim=0).to(input_ids.device)
             first_select_post_idx = torch.tensor(
                 output_first_select_post_idxs, dtype=torch.long, device=input_ids.device
             )
@@ -643,7 +628,6 @@ class vLLMRolloutECHO(vLLMRollout):
             low_level_loss_mask = low_level_loss_mask * response_attention_mask
             select_loss_mask = select_loss_mask * response_attention_mask
             first_select_loss_mask = first_select_loss_mask * response_attention_mask
-            non_border_loss_mask = non_border_loss_mask * response_attention_mask
 
             if tool_metrics["tools/total_calls"] > 0:
                 tool_metrics["tools/avg_execution_time"] = tool_metrics["tools/total_execution_time"] / tool_metrics["tools/total_calls"]
@@ -672,7 +656,6 @@ class vLLMRolloutECHO(vLLMRollout):
                     "select_loss_mask": select_loss_mask,
                     "first_select_loss_mask": first_select_loss_mask,
                     "first_select_post_idx": first_select_post_idx,
-                    "non_border_loss_mask": non_border_loss_mask,
                     "position_ids": final_position_ids,
                 },
                 batch_size=final_batch_size,

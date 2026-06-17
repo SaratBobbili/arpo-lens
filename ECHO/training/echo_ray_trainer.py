@@ -37,7 +37,6 @@ from .echo_core_algos import agg_loss, apply_kl_penalty, compute_advantage, filt
 from verl.trainer.ppo.reward import compute_reward, compute_reward_async
 from verl.utils.metric import reduce_metrics
 
-from verl.utils.reward_score.deep_research_echo import resolve_validator_profile
 
 _ARPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 _VERL_TO_HF_SCRIPT = os.path.join(_ARPO_ROOT, "merge_ckpt", "convert_checkpoint_from_verl_to_hf.py")
@@ -235,13 +234,8 @@ class RayECHOTrainer(RayPPOTrainer):
 
         Reduces per-token entropy to one per-sample scalar (sum or mean per
         `entropy_cfg.reduction`), optionally normalized by log(vocab_size).
-        Reduction uses m^phase ∩ non_border_loss_mask (strategy masks apply
-        only to the actor regularizer).
         """
-        phase_entropy_mask = (
-            phase_batch.batch[phase_mask_key].to(torch.float32)
-            * phase_batch.batch["non_border_loss_mask"].to(torch.float32)
-        )
+        phase_entropy_mask = phase_batch.batch[phase_mask_key].to(torch.float32)
         entropy_per_sample = self._reduce_masked_entropy(entropys, phase_entropy_mask, entropy_cfg)
         scale = float(entropy_cfg.scale)
         per_sample = entropy_per_sample * scale
@@ -466,7 +460,7 @@ class RayECHOTrainer(RayPPOTrainer):
             meta_info=deepcopy(prompt_batch.meta_info) if prompt_batch.meta_info else {},
         )
         phase_batch.meta_info["phase"] = phase_name
-        phase_batch.meta_info["validator_profile"] = self._validator_profile
+        phase_batch.meta_info["mask_categories"] = dict(self.config.actor_rollout_ref.rollout.mask_categories)
 
         with _timer(f"{phase_name}_gen", timing_raw):
             phase_gen_batch = deepcopy(gen_batch)
@@ -563,7 +557,7 @@ class RayECHOTrainer(RayPPOTrainer):
             if entropys is None:
                 raise RuntimeError(f"{phase_name} phase uses entropy reward but compute_log_prob did not return entropys.")
             phase_mask_f = phase_batch.batch[phase_mask_key].to(torch.float32)
-            reg_entropy_mask_f = phase_mask_f * phase_batch.batch["non_border_loss_mask"].to(torch.float32)
+            reg_entropy_mask_f = phase_mask_f
             if phase_strategy == "entropy-hybrid":
                 reg_entropy_mask_f = reg_entropy_mask_f * phase_batch.batch["select_loss_mask"].to(torch.float32)
             phase_batch.batch[f"{phase_name}_token_entropy"] = entropys.to(torch.float32) * reg_entropy_mask_f
@@ -581,8 +575,7 @@ class RayECHOTrainer(RayPPOTrainer):
                     f"{phase_name} phase uses scorer with entropy.reg_coeff > 0 but compute_log_prob did not return entropys."
                 )
             phase_mask_f = phase_batch.batch[phase_mask_key].to(torch.float32)
-            entropy_mask_f = phase_mask_f * phase_batch.batch["non_border_loss_mask"].to(torch.float32)
-            phase_batch.batch["entropy_reg_loss_mask"] = entropy_mask_f
+            phase_batch.batch["entropy_reg_loss_mask"] = phase_mask_f
 
         if self.use_reference_policy:
             with _timer(f"{phase_name}_ref", timing_raw):
@@ -691,13 +684,6 @@ class RayECHOTrainer(RayPPOTrainer):
         self._best_metric_value = float("-inf")
         self._best_metric_step = -1
         self._best_metric_key = None
-
-        # Resolve validator profile once from the rollout mask_categories so the
-        # format validator's HL/LL routing matches the phase mask layout.
-        # Fails fast if mask_categories does not match any supported profile.
-        self._validator_profile = resolve_validator_profile(
-            self.config.actor_rollout_ref.rollout.mask_categories
-        )
 
         self._init_logging_data()
 

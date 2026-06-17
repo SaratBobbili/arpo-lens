@@ -38,8 +38,8 @@ reward_model:
   # the current (new) policy's entropy.
   # Supported strategies:
   #   scorer  -> Use GRPO advantage from scorer reward as-is.
-  #   entropy -> Replace GRPO advantage with per-token entropy normalized
-  #              across the phase mask (z-scored within the configured scope).
+  #   entropy -> Replace GRPO advantage with scaled normalized entropy:
+  #              A = alpha * H_norm.
   #   aepo    -> Modulate scorer GRPO advantage by entropy:
   #              A = A_scorer * (1 + alpha * H_norm).
   phase_rewards:
@@ -59,7 +59,7 @@ reward_model:
         #   group      -> reduce to per-sample mean, GRPO-normalize within prompt group,
         #                 then broadcast back to tokens.
         normalization: token_pool
-        # Scaling weight for the entropy term in the aepo strategy.
+        # Scaling weight for entropy-based advantage shaping (entropy and aepo).
         alpha: 0.2
         # Direct entropy regularizer: L_actor = L_PG - reg_coeff * mean(H) on the
         # phase loss mask. 0.0 disables. Applies to all three strategies.

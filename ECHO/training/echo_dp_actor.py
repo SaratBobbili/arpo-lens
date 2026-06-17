@@ -115,7 +115,7 @@ class DataParallelECHOActor(DataParallelPPOActor):
                             index=uid,
                         )
                         if phase_strategy == "entropy":
-                            advantages = entropy_norm
+                            advantages = entropy_alpha * entropy_norm
                         else:  # aepo
                             advantages = advantages * (1.0 + entropy_alpha * entropy_norm)
 

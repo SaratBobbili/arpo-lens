@@ -19,9 +19,27 @@ implement PPO
 """
 
 from collections import defaultdict
+import json
+import time
 
 import numpy as np
 import torch
+
+_DEBUG_LOG_PATH = "/scratch/user/saratb_tamu.edu/research/arpo-lens/.cursor/debug-641b81.log"
+
+
+def _agent_debug_log(location, message, data, hypothesis_id):
+    # #region agent log
+    with open(_DEBUG_LOG_PATH, "a") as f:
+        f.write(json.dumps({
+            "sessionId": "641b81",
+            "location": location,
+            "message": message,
+            "data": data,
+            "hypothesisId": hypothesis_id,
+            "timestamp": int(time.time() * 1000),
+        }) + "\n")
+    # #endregion
 
 from verl import DataProto
 from verl.trainer.ppo.ray_trainer import AdvantageEstimator, compute_response_mask
@@ -235,6 +253,21 @@ def compute_entropy_normalized(
         for i in range(bsz):
             normed_sample[i] = (per_sample[i] - id2mean[index[i]]) / id2std[index[i]]
         return normed_sample.unsqueeze(-1) * response_mask.float()
+
+
+def resolve_advantage_signal(
+    strategy: str,
+    scorer_advantages: torch.Tensor,
+    entropy_norm: torch.Tensor,
+    entropy_alpha: float,
+) -> torch.Tensor:
+    if strategy == "scorer":
+        return scorer_advantages
+    if strategy == "entropy":
+        return entropy_alpha * entropy_norm
+    if strategy == "aepo":
+        return scorer_advantages * (1.0 + entropy_alpha * entropy_norm)
+    raise ValueError(f"Invalid advantage strategy: {strategy}")
 
 
 def compute_grpo_passk_outcome_advantage(
@@ -534,6 +567,7 @@ def compute_policy_loss(
     clip_ratio_c=3.0,
     use_aepo_clip: bool = False,
     use_sign_cond_clip: bool = False,
+    clip_sign_advantages: torch.Tensor = None,
     cliprange_low_pos: float = 0.2,
     cliprange_high_pos: float = 0.2,
     cliprange_low_neg: float = 0.2,
@@ -556,17 +590,38 @@ def compute_policy_loss(
     if cliprange_high is None:
         cliprange_high = cliprange
     if use_aepo_clip:
-        min_bound = 1 - cliprange_low
+        min_bound = torch.full_like(ratio, 1 - cliprange_low)
         max_bound = (1 + cliprange_high) / ratio.detach() * ratio
+        # #region agent log
+        _agent_debug_log(
+            "echo_core_algos.py:compute_policy_loss:aepo_clip",
+            "aepo clip bounds before clamp",
+            {
+                "use_aepo_clip": use_aepo_clip,
+                "min_bound_type": type(min_bound).__name__,
+                "max_bound_type": type(max_bound).__name__,
+                "ratio_type": type(ratio).__name__,
+                "cliprange_low_type": type(cliprange_low).__name__,
+                "cliprange_high_type": type(cliprange_high).__name__,
+                "min_bound_is_scalar": isinstance(min_bound, (int, float)),
+                "max_bound_is_tensor": isinstance(max_bound, torch.Tensor),
+                "ratio_shape": list(ratio.shape),
+                "cliprange_low": float(cliprange_low),
+                "cliprange_high": float(cliprange_high),
+            },
+            "H1",
+        )
+        # #endregion
         ratio_clipped = torch.clamp(ratio, min_bound, max_bound)
     elif use_sign_cond_clip:
+        clip_sign = clip_sign_advantages if clip_sign_advantages is not None else advantages
         ratio_low = torch.where(
-            advantages >= 0,
+            clip_sign >= 0,
             1.0 - cliprange_low_pos,
             1.0 - cliprange_low_neg,
         )
         ratio_high = torch.where(
-            advantages >= 0,
+            clip_sign >= 0,
             1.0 + cliprange_high_pos,
             1.0 + cliprange_high_neg,
         )
@@ -579,9 +634,10 @@ def compute_policy_loss(
 
     pg_losses3 = -advantages * clip_ratio_c
     clip_pg_losses2 = torch.min(pg_losses3, clip_pg_losses1)
-    pg_clipfrac_lower = verl_F.masked_mean(torch.gt(clip_pg_losses1, pg_losses3) * (advantages < 0).float(), response_mask)
+    clip_sign = clip_sign_advantages if (use_sign_cond_clip and clip_sign_advantages is not None) else advantages
+    pg_clipfrac_lower = verl_F.masked_mean(torch.gt(clip_pg_losses1, pg_losses3) * (clip_sign < 0).float(), response_mask)
 
-    pg_losses = torch.where(advantages < 0, clip_pg_losses2, clip_pg_losses1)
+    pg_losses = torch.where(clip_sign < 0, clip_pg_losses2, clip_pg_losses1)
     pg_loss = agg_loss(loss_mat=pg_losses, loss_mask=response_mask, loss_agg_mode=loss_agg_mode)
 
     return pg_loss, pg_clipfrac, ppo_kl, pg_clipfrac_lower

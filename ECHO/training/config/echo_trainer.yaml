@@ -42,6 +42,9 @@ reward_model:
   #              A = alpha * H_norm.
   #   aepo    -> Modulate scorer GRPO advantage by entropy:
   #              A = A_scorer * (1 + alpha * H_norm).
+  # Per-phase use_sign_cond_clip enables asymmetric clip bounds (clip_ratio_*_pos/neg).
+  # When enabled, sign_cond_strategy (scorer | entropy | aepo) selects which advantage
+  # sign drives clip bounds; PG advantage still follows strategy above.
   phase_rewards:
     high_level:
       # grpo: single rollout pass per step (shared prompts with other GRPO phases).
@@ -49,6 +52,8 @@ reward_model:
       algorithm: grpo
       kl_loss_coef: 0.0
       use_aepo_clip: false
+      use_sign_cond_clip: false
+      sign_cond_strategy: scorer
       filter_groups:
         enable: false
         metric: seq_reward
@@ -69,6 +74,8 @@ reward_model:
       algorithm: grpo
       kl_loss_coef: 0.0
       use_aepo_clip: false
+      use_sign_cond_clip: false
+      sign_cond_strategy: scorer
       filter_groups:
         enable: false
         metric: seq_reward
@@ -81,7 +88,6 @@ reward_model:
 
 actor_rollout_ref:
   actor:
-    use_sign_cond_clip: false
     clip_ratio_low: 0.2
     clip_ratio_high: 0.2
     clip_ratio_c: 3.0

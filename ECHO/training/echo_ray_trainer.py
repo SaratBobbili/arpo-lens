@@ -211,6 +211,7 @@ class RayECHOTrainer(RayPPOTrainer):
         phase_batch.non_tensor_batch["uid"] = uids
 
     def _validate_phase_reward_configs(self, phase_specs) -> None:
+        allowed_sign_cond = {"scorer", "entropy", "aepo"}
         for phase_name, _, _ in phase_specs:
             cfg = self._phase_reward_cfg(phase_name)
             algo = cfg.get("algorithm", "grpo")
@@ -218,6 +219,11 @@ class RayECHOTrainer(RayPPOTrainer):
             if algo == "dapo":
                 assert bool(cfg.filter_groups.enable), f"{phase_name} algorithm=dapo requires filter_groups.enable=true"
                 assert cfg.filter_groups.metric, f"{phase_name} algorithm=dapo requires filter_groups.metric"
+            if bool(cfg.get("use_sign_cond_clip", False)):
+                sign_cond_strategy = str(cfg.get("sign_cond_strategy", "scorer"))
+                assert sign_cond_strategy in allowed_sign_cond, (
+                    f"{phase_name}.sign_cond_strategy must be one of {sorted(allowed_sign_cond)}, got {sign_cond_strategy!r}"
+                )
 
     @staticmethod
     def _phase_algorithm(phase_reward_cfg) -> str:
@@ -663,6 +669,12 @@ class RayECHOTrainer(RayPPOTrainer):
                                 )
                                 phase_batch.meta_info["use_aepo_clip_override"] = bool(
                                     phase_reward_cfg.get("use_aepo_clip", False)
+                                )
+                                phase_batch.meta_info["use_sign_cond_clip_override"] = bool(
+                                    phase_reward_cfg.get("use_sign_cond_clip", False)
+                                )
+                                phase_batch.meta_info["sign_cond_strategy"] = str(
+                                    phase_reward_cfg.get("sign_cond_strategy", "scorer")
                                 )
                                 phase_batch.meta_info["phase_strategy"] = phase_strategy
                                 phase_batch.meta_info["entropy_normalization"] = str(

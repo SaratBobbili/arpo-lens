@@ -14,9 +14,46 @@ _DEFAULT_MASK_CATEGORIES = {
     "python": "low",
 }
 
+# Legacy profile ids used by evaluation launchers; each maps to a mask_categories
+# signature that routes format checks to HL vs LL.
+VALIDATOR_PROFILE_SIGNATURES = {
+    "c1": {"first_select": "high", "select": "low",  "think": "high", "answer": "high", "search": "low",  "python": "low"},
+    "c2": {"first_select": "high", "select": "high", "think": "high", "answer": "high", "search": "low",  "python": "low"},
+    "c3": {"first_select": "high", "select": "low",  "think": "high", "answer": "high", "search": "high", "python": "high"},
+    "c4": {"first_select": "low",  "select": "low",  "think": "high", "answer": "high", "search": "low",  "python": "low"},
+}
+
+
+def mask_categories_for_profile(profile: str) -> dict:
+    if profile not in VALIDATOR_PROFILE_SIGNATURES:
+        raise ValueError(
+            f"Unknown validator profile {profile!r}. Supported: {sorted(VALIDATOR_PROFILE_SIGNATURES)}"
+        )
+    return dict(VALIDATOR_PROFILE_SIGNATURES[profile])
+
+
+def resolve_validator_profile(mask_categories):
+    """Match mask_categories against known profile signatures; return profile id."""
+    observed = {k: str(mask_categories[k]) for k in VALIDATOR_PROFILE_SIGNATURES["c1"]}
+    for profile, signature in VALIDATOR_PROFILE_SIGNATURES.items():
+        if observed == signature:
+            return profile
+    raise ValueError(
+        f"mask_categories {observed} does not match any supported validator profile. "
+        f"Supported profiles: {VALIDATOR_PROFILE_SIGNATURES}"
+    )
+
 
 def _in_phase(mask_categories, cat, phase):
     """True if `cat` is active in `phase` ('high_level' or 'low_level')."""
+    # #region agent log
+    if not getattr(_in_phase, "_dbg_logged", False):
+        import time as _t
+        _payload = {"sessionId": "c18522", "runId": "pre-fix", "hypothesisId": "A", "location": "deep_research_echo.py:_in_phase", "message": "mask_categories type at _in_phase", "data": {"type": type(mask_categories).__name__, "value": mask_categories if isinstance(mask_categories, str) else list(mask_categories.keys()) if hasattr(mask_categories, "keys") else str(mask_categories)[:200], "cat": cat, "phase": phase}, "timestamp": int(_t.time() * 1000)}
+        with open("/scratch/user/saratb_tamu.edu/research/arpo-lens/.cursor/debug-c18522.log", "a") as _f:
+            _f.write(__import__("json").dumps(_payload) + "\n")
+        _in_phase._dbg_logged = True
+    # #endregion
     level = mask_categories.get(cat, "none")
     return level == "both" or (phase == "high_level" and level == "high") or (phase == "low_level" and level == "low")
 
@@ -235,6 +272,14 @@ def validate_low_level(text, mask_categories):
 def validate_format_echo(text, mask_categories):
     """Run both high-level and low-level validation, return
     (is_valid, reason, high_level_valid, low_level_valid)."""
+    # #region agent log
+    if not getattr(validate_format_echo, "_dbg_logged", False):
+        import time as _t
+        _payload = {"sessionId": "c18522", "runId": "pre-fix", "hypothesisId": "C", "location": "deep_research_echo.py:validate_format_echo", "message": "validate_format_echo entry", "data": {"mask_categories_type": type(mask_categories).__name__, "mask_categories_repr": repr(mask_categories)[:200]}, "timestamp": int(_t.time() * 1000)}
+        with open("/scratch/user/saratb_tamu.edu/research/arpo-lens/.cursor/debug-c18522.log", "a") as _f:
+            _f.write(__import__("json").dumps(_payload) + "\n")
+        validate_format_echo._dbg_logged = True
+    # #endregion
     high_valid, high_reason = validate_high_level(text, mask_categories)
     low_valid, low_reason = validate_low_level(text, mask_categories)
 

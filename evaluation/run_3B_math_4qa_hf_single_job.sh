@@ -19,7 +19,7 @@ BING_LOCATION="us"
 
 # Main reasoning model checkpoint/HF id served on ports 8002/8003.
 CHECKPOINT_DIR="/scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ECHO"
-TRAINING_RUN_DIR="${CHECKPOINT_DIR}/checkpoints/echo3BInst_hl_ll_entropy_grpo_hl_kl_true_ll_kl_false_reg_on_band_first_select"
+TRAINING_RUN_DIR="${CHECKPOINT_DIR}/checkpoints/echo3BInst_hl_scorer_ll_entropy_tag_tokens_include_group"
 # HF best checkpoint written by ECHO training (best_checkpoint/hf).
 ACTOR_MODEL_PATH="${TRAINING_RUN_DIR}/best_checkpoint/hf"
 REASON_MODEL_PATH="${ACTOR_MODEL_PATH}"
@@ -54,8 +54,8 @@ PROMPT_TYPE="echo"
 # When PROMPT_TYPE=echo these are overridden below to the combined ECHO budget so
 # the combined-budget gate in SampleProcessorCompletion fires before the per-tool
 # gate (which would inject an OOD "limit exceeded" feedback message ECHO never saw).
-MAX_PYTHON_TIMES="5"
-MAX_SEARCH_TIMES="5"
+MAX_PYTHON_TIMES="3"
+MAX_SEARCH_TIMES="3"
 
 # ---- ECHO-only config (consumed only when PROMPT_TYPE=echo) ----
 # Single source of truth for the ECHO system prompt: shared with the trainer at
@@ -88,7 +88,7 @@ COUNTS="1000000"
 DATASET_GROUP="math_all"
 
 # Pass@k turns (one output file per turn); space separated list.
-TURNS="1"
+TURNS="3"
 
 # Sampling temperature (0.0 => greedy decoding).
 TEMPERATURE="0.6"

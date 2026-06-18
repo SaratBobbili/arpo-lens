@@ -27,8 +27,8 @@ def _load_echo_format_validator():
     verl_path = os.path.join(repo_root, "ARPO", "verl_arpo_entropy")
     if verl_path not in sys.path:
         sys.path.insert(0, verl_path)
-    from verl.utils.reward_score.deep_research_echo import validate_format_echo
-    return validate_format_echo
+    from verl.utils.reward_score.deep_research_echo import validate_format_echo, mask_categories_for_profile
+    return validate_format_echo, mask_categories_for_profile
 
 
 class Evaluator:
@@ -69,7 +69,13 @@ class Evaluator:
         self.sigma = sigma
         self.prompt_type = prompt_type
         self.validator_profile = validator_profile
-        self._echo_validator = _load_echo_format_validator() if prompt_type == "echo" else None
+        if prompt_type == "echo":
+            _validate_format_echo, _mask_categories_for_profile = _load_echo_format_validator()
+            self._echo_validator = _validate_format_echo
+            self.mask_categories = _mask_categories_for_profile(validator_profile)
+        else:
+            self._echo_validator = None
+            self.mask_categories = None
 
         # Output paths
         base_path, ext = os.path.splitext(output_path)
@@ -161,7 +167,15 @@ class Evaluator:
         # Runs the trainer's validator on the raw rollout text; reported as a
         # standalone metric and never gates the F1/EM/LLM-judge score.
         if self._echo_validator is not None:
-            ok, reason, hl_ok, ll_ok = self._echo_validator(output, self.validator_profile)
+            # #region agent log
+            if not getattr(self, "_dbg_logged_validator_arg", False):
+                import time as _t
+                _payload = {"sessionId": "c18522", "runId": "post-fix", "hypothesisId": "A", "location": "evaluator.py:164", "message": "echo validator arg", "data": {"validator_profile": self.validator_profile, "mask_categories": self.mask_categories, "mask_categories_type": type(self.mask_categories).__name__, "prompt_type": self.prompt_type}, "timestamp": int(_t.time() * 1000)}
+                with open("/scratch/user/saratb_tamu.edu/research/arpo-lens/.cursor/debug-c18522.log", "a") as _f:
+                    _f.write(__import__("json").dumps(_payload) + "\n")
+                self._dbg_logged_validator_arg = True
+            # #endregion
+            ok, reason, hl_ok, ll_ok = self._echo_validator(output, self.mask_categories)
             metrics["echo_format_valid"] = int(ok)
             metrics["echo_high_level_valid"] = int(hl_ok)
             metrics["echo_low_level_valid"] = int(ll_ok)

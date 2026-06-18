@@ -48,6 +48,7 @@ reward_model:
       # dapo: dynamic sampling — keep prompt groups only if filter metric std > 0.
       algorithm: grpo
       kl_loss_coef: 0.0
+      use_aepo_clip: false
       filter_groups:
         enable: false
         metric: seq_reward
@@ -67,6 +68,7 @@ reward_model:
     low_level:
       algorithm: grpo
       kl_loss_coef: 0.0
+      use_aepo_clip: false
       filter_groups:
         enable: false
         metric: seq_reward

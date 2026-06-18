@@ -661,6 +661,9 @@ class RayECHOTrainer(RayPPOTrainer):
                                         self.config.actor_rollout_ref.actor.kl_loss_coef,
                                     )
                                 )
+                                phase_batch.meta_info["use_aepo_clip_override"] = bool(
+                                    phase_reward_cfg.get("use_aepo_clip", False)
+                                )
                                 phase_batch.meta_info["phase_strategy"] = phase_strategy
                                 phase_batch.meta_info["entropy_normalization"] = str(
                                     phase_reward_cfg.entropy.get("normalization", "token_pool")

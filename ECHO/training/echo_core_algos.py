@@ -200,6 +200,24 @@ def compute_entropy_normalized(
             return normed * response_mask.float()
 
         # group: reduce to per-sample scalar, GRPO-normalize within prompt group, broadcast
+        # #region agent log
+        import json
+        import time
+        with open("/scratch/user/saratb_tamu.edu/research/arpo-lens/.cursor/debug-a6e3dd.log", "a") as _f:
+            _f.write(json.dumps({
+                "sessionId": "a6e3dd",
+                "location": "echo_core_algos.py:compute_entropy_normalized:group",
+                "message": "group normalization index check",
+                "data": {
+                    "index_is_none": index is None,
+                    "index_type": type(index).__name__ if index is not None else None,
+                    "index_len": len(index) if index is not None else None,
+                    "bsz": int(entropy.shape[0]),
+                },
+                "hypothesisId": "D",
+                "timestamp": int(time.time() * 1000),
+            }) + "\n")
+        # #endregion
         denom = response_mask.float().sum(dim=-1).clamp_min(1.0)
         per_sample = (entropy * response_mask.float()).sum(dim=-1) / denom  # (bsz,)
 
@@ -514,6 +532,7 @@ def compute_policy_loss(
     cliprange_low=None,
     cliprange_high=None,
     clip_ratio_c=3.0,
+    use_aepo_clip: bool = False,
     use_sign_cond_clip: bool = False,
     cliprange_low_pos: float = 0.2,
     cliprange_high_pos: float = 0.2,
@@ -536,7 +555,11 @@ def compute_policy_loss(
         cliprange_low = cliprange
     if cliprange_high is None:
         cliprange_high = cliprange
-    if use_sign_cond_clip:
+    if use_aepo_clip:
+        min_bound = 1 - cliprange_low
+        max_bound = (1 + cliprange_high) / ratio.detach() * ratio
+        ratio_clipped = torch.clamp(ratio, min_bound, max_bound)
+    elif use_sign_cond_clip:
         ratio_low = torch.where(
             advantages >= 0,
             1.0 - cliprange_low_pos,

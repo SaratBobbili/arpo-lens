@@ -1,5 +1,7 @@
+import json
 import logging
 import os
+import time
 
 from verl import DataProto
 from verl.utils.debug import GPUMemoryLogger
@@ -12,6 +14,22 @@ from .echo_core_algos import agg_loss, compute_entropy_normalized, compute_polic
 
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
+
+_DEBUG_LOG_PATH = "/scratch/user/saratb_tamu.edu/research/arpo-lens/.cursor/debug-a6e3dd.log"
+
+
+def _debug_log(location, message, data, hypothesis_id):
+    # #region agent log
+    with open(_DEBUG_LOG_PATH, "a") as f:
+        f.write(json.dumps({
+            "sessionId": "a6e3dd",
+            "location": location,
+            "message": message,
+            "data": data,
+            "hypothesisId": hypothesis_id,
+            "timestamp": int(time.time() * 1000),
+        }) + "\n")
+    # #endregion
 
 
 class DataParallelECHOActor(DataParallelPPOActor):
@@ -28,6 +46,7 @@ class DataParallelECHOActor(DataParallelPPOActor):
         entropy_loss_mask_key = data.meta_info.get("entropy_loss_mask_key", None)
         entropy_loss_normalizer = data.meta_info.get("entropy_loss_normalizer", None)
         kl_loss_coef_override = data.meta_info.get("kl_loss_coef_override", None)
+        use_aepo_clip = bool(data.meta_info.get("use_aepo_clip_override", False))
 
         select_keys = ["responses", "input_ids", "attention_mask", "position_ids", "old_log_probs", "advantages"]
         if multi_turn or "loss_mask" in data.batch.keys():
@@ -42,27 +61,59 @@ class DataParallelECHOActor(DataParallelPPOActor):
         if phase_strategy in ("entropy", "aepo") and entropy_normalization == "group":
             non_tensor_select_keys.append("uid")
 
+        # #region agent log
+        _debug_log(
+            "echo_dp_actor.py:update_policy:setup",
+            "actor update_policy config",
+            {
+                "phase_strategy": phase_strategy,
+                "entropy_normalization": entropy_normalization,
+                "non_tensor_select_keys": non_tensor_select_keys,
+                "use_dynamic_bsz": bool(self.config.use_dynamic_bsz),
+                "uid_in_input": "uid" in data.non_tensor_batch,
+            },
+            "B",
+        )
+        # #endregion
+
         has_multi_modal_inputs = "multi_modal_inputs" in data.non_tensor_batch.keys()
         if has_multi_modal_inputs:
             non_tensor_select_keys.append("multi_modal_inputs")
 
-        batch = data.select(batch_keys=select_keys, non_tensor_batch_keys=non_tensor_select_keys).batch
-        dataloader = (
-            data.select(select_keys, non_tensor_select_keys).chunk(
-                data.batch.batch_size[0] // self.config.ppo_mini_batch_size
-            )
-            if has_multi_modal_inputs
-            else batch.split(self.config.ppo_mini_batch_size)
+        use_dataproto_batches = has_multi_modal_inputs or bool(non_tensor_select_keys)
+        selected = data.select(batch_keys=select_keys, non_tensor_batch_keys=non_tensor_select_keys)
+        batch = selected.batch
+        # #region agent log
+        _debug_log(
+            "echo_dp_actor.py:update_policy:after_select",
+            "selected batch uid presence",
+            {
+                "uid_in_selected_non_tensor": "uid" in selected.non_tensor_batch,
+                "use_dataproto_batches": use_dataproto_batches,
+                "has_multi_modal_inputs": has_multi_modal_inputs,
+            },
+            "C",
         )
+        # #endregion
+        if use_dataproto_batches:
+            num_mini_batches = selected.batch.batch_size[0] // self.config.ppo_mini_batch_size
+            dataloader = selected.chunk(num_mini_batches)
+        else:
+            dataloader = batch.split(self.config.ppo_mini_batch_size)
 
         metrics = {}
         for epoch in range(self.config.ppo_epochs):
             for batch_idx, data in enumerate(dataloader):
                 mini_batch = data
-                if has_multi_modal_inputs:
-                    self.gradient_accumulation = self.config.ppo_mini_batch_size // self.config.ppo_micro_batch_size_per_gpu
-                    num_micro_batches = mini_batch.batch.batch_size[0] // self.config.ppo_micro_batch_size_per_gpu
-                    micro_batches = data.select(select_keys, non_tensor_select_keys).chunk(num_micro_batches)
+                if use_dataproto_batches:
+                    if self.config.use_dynamic_bsz:
+                        max_token_len = self.config.ppo_max_token_len_per_gpu * self.ulysses_sequence_parallel_size
+                        _, micro_bsz_idx = rearrange_micro_batches(batch=mini_batch.batch, max_token_len=max_token_len)
+                        micro_batches = [mini_batch.select_idxs(partition) for partition in micro_bsz_idx]
+                    else:
+                        self.gradient_accumulation = self.config.ppo_mini_batch_size // self.config.ppo_micro_batch_size_per_gpu
+                        num_micro_batches = mini_batch.batch.batch_size[0] // self.config.ppo_micro_batch_size_per_gpu
+                        micro_batches = mini_batch.chunk(num_micro_batches)
                 elif self.config.use_dynamic_bsz:
                     max_token_len = self.config.ppo_max_token_len_per_gpu * self.ulysses_sequence_parallel_size
                     micro_batches, _ = rearrange_micro_batches(batch=mini_batch, max_token_len=max_token_len)
@@ -72,13 +123,32 @@ class DataParallelECHOActor(DataParallelPPOActor):
 
                 self.actor_optimizer.zero_grad()
 
-                for data in micro_batches:
+                for micro_idx, data in enumerate(micro_batches):
                     if isinstance(data, DataProto):
                         uid = data.non_tensor_batch.get("uid", None)
                         data = {**data.batch.to(get_torch_device().current_device()), **data.non_tensor_batch}
                     else:
                         uid = None
                         data = data.to(get_torch_device().current_device())
+
+                    # #region agent log
+                    if micro_idx == 0 and batch_idx == 0 and epoch == 0:
+                        _debug_log(
+                            "echo_dp_actor.py:update_policy:micro_batch",
+                            "first micro-batch uid state",
+                            {
+                                "runId": "post-fix",
+                                "is_dataproto": isinstance(micro_batches[0], DataProto),
+                                "uid_is_none": uid is None,
+                                "uid_type": type(uid).__name__ if uid is not None else None,
+                                "uid_len": len(uid) if uid is not None else None,
+                                "use_dynamic_bsz": bool(self.config.use_dynamic_bsz),
+                                "use_dataproto_batches": use_dataproto_batches,
+                                "micro_batch_type": type(micro_batches[0]).__name__,
+                            },
+                            "A",
+                        )
+                    # #endregion
 
                     responses = data["responses"]
                     response_length = responses.size(1)
@@ -128,6 +198,7 @@ class DataParallelECHOActor(DataParallelPPOActor):
                         cliprange_low=clip_ratio_low,
                         cliprange_high=clip_ratio_high,
                         clip_ratio_c=clip_ratio_c,
+                        use_aepo_clip=use_aepo_clip,
                         use_sign_cond_clip=use_sign_cond_clip,
                         cliprange_low_pos=clip_ratio_low_pos,
                         cliprange_high_pos=clip_ratio_high_pos,

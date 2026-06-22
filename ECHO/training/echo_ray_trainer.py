@@ -689,13 +689,8 @@ class RayECHOTrainer(RayPPOTrainer):
         for epoch in range(self.config.trainer.total_epochs):
             data_iter = iter(self.train_dataloader)
             while self.global_steps <= self.total_training_steps:
-                total_rollout_budget = int(self.config.actor_rollout_ref.rollout.n)
-                high_level_budget = int(self.config.actor_rollout_ref.rollout.get("high_level_budget", total_rollout_budget))
-                assert 0 <= high_level_budget <= total_rollout_budget, (
-                    f"Invalid high_level_budget={high_level_budget}. "
-                    f"Must satisfy 0 <= high_level_budget <= rollout.n({total_rollout_budget})."
-                )
-                low_level_budget = total_rollout_budget - high_level_budget
+                high_level_budget = int(self.config.actor_rollout_ref.rollout.get("high_level_budget", 0))
+                low_level_budget = int(self.config.actor_rollout_ref.rollout.get("low_level_budget", 0))
 
                 phase_registry = {
                     "high_level": (high_level_budget, "high_level_loss_mask"),

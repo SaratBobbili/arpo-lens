@@ -104,9 +104,8 @@ actor_rollout_ref:
     # boundary tokens (<think>, </think>, <select>, ...). non_border_loss_mask
     # remains unchanged and still excludes tag boundaries for entropy reductions.
     exclude_tag_tokens_from_phase_masks: true
-    # Number of rollouts per prompt used for the high-level masked update.
-    # The low-level phase uses the remaining budget: n - high_level_budget.
-    high_level_budget: ${actor_rollout_ref.rollout.n}
+    high_level_budget: 0
+    low_level_budget: 0
     # When true, the second phase reuses rollouts from the first phase instead
     # of generating fresh ones. Both phases still compute their own rewards.
     reuse_phase_rollouts: false

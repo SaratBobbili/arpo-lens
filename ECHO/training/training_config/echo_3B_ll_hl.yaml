@@ -1,5 +1,5 @@
 project_name: qwen3BInst
-experiment_name: echo3BInst_ll_entropy_hl_scorer_sign_cond_clip_true
+experiment_name: echo3BInst_hl_scorer_ll_entropy_sign_cond_clip_true_rollout_reuse_false
 nnodes: 1
 n_gpus_per_node: 8
 
@@ -16,6 +16,7 @@ reward_manager: echo
 
 rollout_n: 16
 high_level_budget: 8
+low_level_budget: 8
 reuse_phase_rollouts: false
 enable_multi_turn: false
 tensor_model_parallel_size: 1

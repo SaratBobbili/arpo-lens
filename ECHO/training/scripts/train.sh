@@ -82,6 +82,7 @@ ARGS=(
     actor_rollout_ref.rollout.gpu_memory_utilization="${GPU_MEMORY_UTILIZATION}"
     actor_rollout_ref.rollout.n="${ROLLOUT_N}"
     actor_rollout_ref.rollout.high_level_budget="${HIGH_LEVEL_BUDGET}"
+    actor_rollout_ref.rollout.low_level_budget="${LOW_LEVEL_BUDGET}"
     actor_rollout_ref.rollout.reuse_phase_rollouts="${REUSE_PHASE_ROLLOUTS:-false}"
     actor_rollout_ref.rollout.exclude_tag_tokens_from_phase_masks="${EXCLUDE_TAG_TOKENS_FROM_PHASE_MASKS:-true}"
     actor_rollout_ref.rollout.multi_turn.enable="${ENABLE_MULTI_TURN}"

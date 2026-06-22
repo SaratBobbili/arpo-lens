@@ -107,6 +107,9 @@ actor_rollout_ref:
     # Number of rollouts per prompt used for the high-level masked update.
     # The low-level phase uses the remaining budget: n - high_level_budget.
     high_level_budget: ${actor_rollout_ref.rollout.n}
+    # When true, the second phase reuses rollouts from the first phase instead
+    # of generating fresh ones. Both phases still compute their own rewards.
+    reuse_phase_rollouts: false
     # Which token category feeds into which hierarchical level ("high", "low", "none").
     # "result" blocks are always excluded (neither high nor low).
     # This block is the single source of truth: the format validator profile

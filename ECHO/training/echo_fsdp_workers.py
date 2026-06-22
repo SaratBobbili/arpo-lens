@@ -1,7 +1,9 @@
 import itertools
 from contextlib import nullcontext
 
+import psutil
 import torch
+from codetiming import Timer
 from omegaconf import open_dict
 
 from verl import DataProto
@@ -10,7 +12,7 @@ from verl.utils.checkpoint.fsdp_checkpoint_manager import FSDPCheckpointManager
 from verl.utils.debug import log_gpu_memory_usage
 from verl.utils.flops_counter import FlopsCounter
 from verl.utils.fs import copy_to_local
-from verl.utils.fsdp_utils import fsdp_version, load_fsdp_model_to_gpu, offload_fsdp_model_to_cpu, offload_fsdp_optimizer
+from verl.utils.fsdp_utils import fsdp_version, load_fsdp_model_to_gpu, load_fsdp_optimizer, offload_fsdp_model_to_cpu, offload_fsdp_optimizer
 from verl.utils.import_utils import import_external_libs
 from verl.utils.seqlen_balancing import get_reverse_idx, rearrange_micro_batches
 from verl.utils.device import get_torch_device
@@ -163,5 +165,47 @@ class EchoActorRolloutRefWorker(ActorRolloutRefWorker):
         if self._is_offload_param:
             offload_fsdp_model_to_cpu(self.actor_module_fsdp)
             log_gpu_memory_usage("After offload actor model during compute_log_prob", logger=logger)
+
+        return output
+
+    @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
+    def update_actor(self, data: DataProto):
+        data = data.to(get_torch_device().current_device())
+
+        assert self._is_actor
+        if self._is_offload_param:
+            load_fsdp_model_to_gpu(self.actor_module_fsdp)
+        if self._is_offload_optimizer:
+            load_fsdp_optimizer(optimizer=self.actor_optimizer, device_id=get_torch_device().current_device())
+
+        skip_lr_step = bool(data.meta_info.get("skip_lr_step", False))
+
+        with self.ulysses_sharding_manager:
+            data = self.ulysses_sharding_manager.preprocess_data(data=data)
+            with Timer(name="update_policy", logger=None) as timer:
+                metrics = self.actor.update_policy(data=data)
+            delta_time = timer.last
+            global_num_tokens = data.meta_info["global_token_num"]
+            estimated_flops, promised_flops = self.flops_counter.estimate_flops(global_num_tokens, delta_time)
+            metrics["perf/mfu/actor"] = estimated_flops * self.config.actor.ppo_epochs / promised_flops / self.world_size
+            metrics["perf/max_memory_allocated_gb"] = get_torch_device().max_memory_allocated() / (1024**3)
+            metrics["perf/max_memory_reserved_gb"] = get_torch_device().max_memory_reserved() / (1024**3)
+            metrics["perf/cpu_memory_used_gb"] = psutil.virtual_memory().used / (1024**3)
+
+            lr = self.actor_lr_scheduler.get_last_lr()[0]
+            metrics["actor/lr"] = lr
+            if not skip_lr_step:
+                self.actor_lr_scheduler.step()
+
+            output = DataProto(meta_info={"metrics": metrics})
+            output = self.ulysses_sharding_manager.postprocess_data(data=output)
+            output = output.to("cpu")
+
+        if self._is_offload_param:
+            offload_fsdp_model_to_cpu(self.actor_module_fsdp)
+            log_gpu_memory_usage("After offload actor model during update_actor", logger=logger)
+        if self._is_offload_optimizer:
+            offload_fsdp_optimizer(optimizer=self.actor_optimizer)
+            log_gpu_memory_usage("After offload actor optimizer during update_actor", logger=logger)
 
         return output

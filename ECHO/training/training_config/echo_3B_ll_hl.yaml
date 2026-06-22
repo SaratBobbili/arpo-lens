@@ -1,5 +1,5 @@
 project_name: qwen3BInst
-experiment_name: echo3BInst_hl_scorer_ll_entropy_sign_cond_clip_true
+experiment_name: echo3BInst_ll_entropy_hl_scorer_sign_cond_clip_true
 nnodes: 1
 n_gpus_per_node: 8
 
@@ -16,9 +16,10 @@ reward_manager: echo
 
 rollout_n: 16
 high_level_budget: 8
+reuse_phase_rollouts: false
 enable_multi_turn: false
 tensor_model_parallel_size: 1
-gpu_memory_utilization: 0.7
+gpu_memory_utilization: 0.6
 rollout_name: vllm
 rollout_mode: sync_echo
 exclude_tag_tokens_from_phase_masks: false
@@ -35,7 +36,7 @@ best_checkpoint_metric: val-core/reward
 max_actor_ckpt_to_keep: 1
 resume_mode: auto
 
-phase_order: '["high_level", "low_level"]'
+phase_order: '["low_level", "high_level"]'
 high_level_update_repeats: 1
 low_level_update_repeats: 1
 high_level_reward_strategy: scorer
@@ -76,5 +77,5 @@ hl_entropy_reg_coeff: 0.0
 ll_entropy_reg_coeff: 0.0
 hl_entropy_normalization: token_pool
 ll_entropy_normalization: group
-hl_entropy_alpha: 0.2
-ll_entropy_alpha: 0.2
+hl_entropy_alpha: 0.4
+ll_entropy_alpha: 0.4

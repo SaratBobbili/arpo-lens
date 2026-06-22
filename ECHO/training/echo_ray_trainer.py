@@ -344,7 +344,8 @@ class RayECHOTrainer(RayPPOTrainer):
         phase_mask_key: str,
         timing_raw: dict,
         metrics: dict,
-    ) -> tuple[DataProto, dict]:
+        return_gen_output: bool = False,
+    ):
         phase_prefix = f"{phase_name}/"
         phase_reward_cfg = self._phase_reward_cfg(phase_name)
         phase_strategy = phase_reward_cfg.strategy
@@ -444,6 +445,116 @@ class RayECHOTrainer(RayPPOTrainer):
                 metrics[f"{phase_prefix}training/rollout_probs_diff_max"] = torch.max(rollout_probs_diff).detach().item()
                 metrics[f"{phase_prefix}training/rollout_probs_diff_mean"] = torch.mean(rollout_probs_diff).detach().item()
                 metrics[f"{phase_prefix}training/rollout_probs_diff_std"] = torch.std(rollout_probs_diff).detach().item()
+
+        if self._uses_entropy_regularizer(phase_reward_cfg):
+            phase_batch.batch["entropy_reg_loss_mask"] = phase_batch.batch[phase_mask_key].to(torch.float32)
+
+        if self.use_reference_policy:
+            with _timer(f"{phase_name}_ref", timing_raw):
+                if not self.ref_in_actor:
+                    ref_log_prob = self.ref_policy_wg.compute_ref_log_prob(phase_batch)
+                else:
+                    ref_log_prob = self.actor_rollout_wg.compute_ref_log_prob(phase_batch)
+                phase_batch = phase_batch.union(ref_log_prob)
+
+        if self.use_critic:
+            with _timer(f"{phase_name}_values", timing_raw):
+                values = self.critic_wg.compute_values(phase_batch)
+                phase_batch = phase_batch.union(values)
+
+        if self.config.reward_model.launch_reward_fn_async:
+            reward_tensor, phase_reward_extra_infos_dict = ray.get(future_reward)
+        metrics[f"{phase_prefix}reward/effective_reward_mean"] = (
+            reward_tensor.to(torch.float32).sum(dim=-1).mean().detach().item()
+        )
+        phase_batch.batch["token_level_scores"] = reward_tensor
+        if phase_reward_extra_infos_dict:
+            phase_batch.non_tensor_batch.update({k: np.array(v) for k, v in phase_reward_extra_infos_dict.items()})
+            metrics.update(
+                self._prefix_metrics(
+                    self._build_scorer_metrics(phase_reward_extra_infos_dict),
+                    phase_prefix,
+                )
+            )
+
+        if self.config.algorithm.use_kl_in_reward:
+            phase_batch, kl_metrics = apply_kl_penalty(
+                phase_batch,
+                kl_ctrl=self.kl_ctrl_in_reward,
+                kl_penalty=self.config.algorithm.kl_penalty,
+            )
+            metrics.update(self._prefix_metrics(kl_metrics, phase_prefix))
+        else:
+            phase_batch.batch["token_level_rewards"] = phase_batch.batch["token_level_scores"]
+
+        if return_gen_output:
+            return phase_batch, phase_reward_extra_infos_dict, gen_batch_output
+        return phase_batch, phase_reward_extra_infos_dict
+
+    def _phase_from_cached_rollout(
+        self,
+        gen_batch_output: DataProto,
+        prompt_batch: DataProto,
+        phase_name: str,
+        phase_rollout_n: int,
+        phase_mask_key: str,
+        timing_raw: dict,
+        metrics: dict,
+    ) -> tuple[DataProto, dict]:
+        """Reuse rollout from a preceding phase, recomputing rewards with this phase's strategy."""
+        phase_prefix = f"{phase_name}/"
+        phase_reward_cfg = self._phase_reward_cfg(phase_name)
+        phase_strategy = phase_reward_cfg.strategy
+        phase_reward_extra_infos_dict: dict = {}
+
+        num_prompts = gen_batch_output.batch.batch_size[0] // phase_rollout_n
+        phase_batch = DataProto(
+            batch=TensorDict({}, batch_size=[num_prompts]),
+            non_tensor_batch=deepcopy(prompt_batch.non_tensor_batch),
+            meta_info=deepcopy(prompt_batch.meta_info) if prompt_batch.meta_info else {},
+        )
+        phase_batch.meta_info["phase"] = phase_name
+        phase_batch.meta_info["mask_categories"] = dict(self.config.actor_rollout_ref.rollout.mask_categories)
+
+        phase_batch.non_tensor_batch["uid"] = np.array(
+            [str(uuid.uuid4()) for _ in range(num_prompts)], dtype=object
+        )
+        phase_batch = phase_batch.repeat(repeat_times=phase_rollout_n, interleave=True)
+        phase_batch = phase_batch.union(gen_batch_output)
+        if phase_mask_key not in phase_batch.batch:
+            raise KeyError(f"Missing '{phase_mask_key}' in rollout batch; ensure rollout.mode=sync_echo.")
+        phase_batch.batch["loss_mask"] = phase_batch.batch[phase_mask_key]
+        phase_batch.batch["response_mask"] = phase_batch.batch[phase_mask_key]
+
+        if self.config.trainer.balance_batch:
+            phase_balance_metrics = {}
+            self._balance_batch(phase_batch, metrics=phase_balance_metrics)
+            metrics.update(self._prefix_metrics(phase_balance_metrics, phase_prefix))
+
+        self._apply_tool_failure_phase_masks(phase_batch, phase_mask_key)
+        phase_batch.meta_info["global_token_num"] = torch.sum(phase_batch.batch["attention_mask"], dim=-1).tolist()
+
+        future_reward = None
+        with _timer(f"{phase_name}_reward", timing_raw):
+            if self.use_rm:
+                reward_tensor = self.rm_wg.compute_rm_score(phase_batch)
+                phase_batch = phase_batch.union(reward_tensor)
+            if self.config.reward_model.launch_reward_fn_async:
+                future_reward = compute_reward_async.remote(phase_batch, self.config, self.tokenizer)
+            else:
+                reward_tensor, phase_reward_extra_infos_dict = compute_reward(phase_batch, self.reward_fn)
+
+        with _timer(f"{phase_name}_old_log_prob", timing_raw):
+            phase_batch.meta_info["calculate_entropy"] = True
+            old_log_prob = self.actor_rollout_wg.compute_log_prob(phase_batch)
+            loss_agg_mode = self.config.actor_rollout_ref.actor.loss_agg_mode
+            entropys = old_log_prob.batch.pop("entropys", None)
+            if entropys is not None:
+                entropy_loss = agg_loss(
+                    loss_mat=entropys, loss_mask=phase_batch.batch["loss_mask"], loss_agg_mode=loss_agg_mode
+                )
+                metrics[f"{phase_prefix}actor/entropy_old_policy"] = entropy_loss.detach().item()
+            phase_batch = phase_batch.union(old_log_prob)
 
         if self._uses_entropy_regularizer(phase_reward_cfg):
             phase_batch.batch["entropy_reg_loss_mask"] = phase_batch.batch[phase_mask_key].to(torch.float32)
@@ -604,7 +715,15 @@ class RayECHOTrainer(RayPPOTrainer):
                 repeated_phase_specs = self._expand_phase_specs_with_repeats(phase_specs)
 
                 norm_adv_by_std_in_grpo = self.config.algorithm.get("norm_adv_by_std_in_grpo", True)
-                for phase_name, phase_rollout_n, phase_mask_key in repeated_phase_specs:
+                reuse_phase_rollouts = bool(self.config.actor_rollout_ref.rollout.get("reuse_phase_rollouts", False))
+
+                batch_dict, data_iter = self._next_batch_dict(data_iter)
+                step_gen_batch, step_prompt_batch = self._pop_gen_batch(DataProto.from_single_dict(batch_dict))
+                cached_gen_batch_output = None
+                cached_rollout_n = None
+
+                for phase_idx, (phase_name, phase_rollout_n, phase_mask_key) in enumerate(repeated_phase_specs):
+                    is_last_phase_in_cycle = (phase_idx == len(repeated_phase_specs) - 1)
                     metrics = {
                         "training/high_level_rollout_budget": high_level_budget,
                         "training/low_level_rollout_budget": low_level_budget,
@@ -622,12 +741,21 @@ class RayECHOTrainer(RayPPOTrainer):
                             phase_batch, phase_reward_extra_infos_dict, data_iter = self._collect_phase_batch_dapo(
                                 data_iter, phase_name, phase_rollout_n, phase_mask_key, timing_raw, metrics
                             )
-                        else:
-                            batch_dict, data_iter = self._next_batch_dict(data_iter)
-                            step_gen_batch, step_prompt_batch = self._pop_gen_batch(DataProto.from_single_dict(batch_dict))
-                            phase_batch, phase_reward_extra_infos_dict = self._phase_rollout_to_scored_batch(
-                                step_gen_batch, step_prompt_batch, phase_name, phase_rollout_n, phase_mask_key, timing_raw, metrics
+                        elif reuse_phase_rollouts and cached_gen_batch_output is not None:
+                            phase_rollout_n = cached_rollout_n
+                            phase_batch, phase_reward_extra_infos_dict = self._phase_from_cached_rollout(
+                                cached_gen_batch_output, step_prompt_batch, phase_name,
+                                phase_rollout_n, phase_mask_key, timing_raw, metrics
                             )
+                            metrics[f"{phase_prefix}training/num_gen_batches"] = 0
+                        else:
+                            phase_batch, phase_reward_extra_infos_dict, gen_output = self._phase_rollout_to_scored_batch(
+                                step_gen_batch, step_prompt_batch, phase_name, phase_rollout_n, phase_mask_key, timing_raw, metrics,
+                                return_gen_output=True,
+                            )
+                            if reuse_phase_rollouts:
+                                cached_gen_batch_output = gen_output
+                                cached_rollout_n = phase_rollout_n
                             metrics[f"{phase_prefix}training/num_gen_batches"] = 1
 
                         with _timer(f"{phase_name}_adv", timing_raw):
@@ -686,6 +814,7 @@ class RayECHOTrainer(RayPPOTrainer):
                                 if self._uses_entropy_regularizer(phase_reward_cfg):
                                     phase_batch.meta_info["entropy_coeff_override"] = self._entropy_reg_coeff(phase_reward_cfg)
                                     phase_batch.meta_info["entropy_loss_mask_key"] = "entropy_reg_loss_mask"
+                                phase_batch.meta_info["skip_lr_step"] = not is_last_phase_in_cycle
                                 actor_output = self.actor_rollout_wg.update_actor(phase_batch)
                             actor_output_metrics = reduce_metrics(actor_output.meta_info["metrics"])
                             metrics.update(self._prefix_metrics(actor_output_metrics, phase_prefix))

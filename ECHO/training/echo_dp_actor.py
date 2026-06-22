@@ -1,7 +1,5 @@
-import json
 import logging
 import os
-import time
 
 from verl import DataProto
 from verl.utils.debug import GPUMemoryLogger
@@ -14,22 +12,6 @@ from .echo_core_algos import agg_loss, compute_entropy_normalized, compute_polic
 
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
-
-_DEBUG_LOG_PATH = "/scratch/user/saratb_tamu.edu/research/arpo-lens/.cursor/debug-a6e3dd.log"
-
-
-def _debug_log(location, message, data, hypothesis_id):
-    # #region agent log
-    with open(_DEBUG_LOG_PATH, "a") as f:
-        f.write(json.dumps({
-            "sessionId": "a6e3dd",
-            "location": location,
-            "message": message,
-            "data": data,
-            "hypothesisId": hypothesis_id,
-            "timestamp": int(time.time() * 1000),
-        }) + "\n")
-    # #endregion
 
 
 class DataParallelECHOActor(DataParallelPPOActor):
@@ -53,20 +35,6 @@ class DataParallelECHOActor(DataParallelPPOActor):
             phase_strategy in ("entropy", "aepo")
             or (use_sign_cond_clip and sign_cond_strategy in ("entropy", "aepo"))
         )
-        # #region agent log
-        with open("/scratch/user/saratb_tamu.edu/research/arpo-lens/.cursor/debug-641b81.log", "a") as f:
-            f.write(json.dumps({
-                "sessionId": "641b81",
-                "location": "echo_dp_actor.py:update_policy:setup",
-                "message": "aepo clip override for phase",
-                "data": {
-                    "use_aepo_clip": use_aepo_clip,
-                    "phase_strategy": data.meta_info.get("phase_strategy", "scorer"),
-                },
-                "hypothesisId": "H3",
-                "timestamp": int(time.time() * 1000),
-            }) + "\n")
-        # #endregion
 
         select_keys = ["responses", "input_ids", "attention_mask", "position_ids", "old_log_probs", "advantages"]
         if multi_turn or "loss_mask" in data.batch.keys():
@@ -81,21 +49,6 @@ class DataParallelECHOActor(DataParallelPPOActor):
         if needs_entropy_norm and entropy_normalization == "group":
             non_tensor_select_keys.append("uid")
 
-        # #region agent log
-        _debug_log(
-            "echo_dp_actor.py:update_policy:setup",
-            "actor update_policy config",
-            {
-                "phase_strategy": phase_strategy,
-                "entropy_normalization": entropy_normalization,
-                "non_tensor_select_keys": non_tensor_select_keys,
-                "use_dynamic_bsz": bool(self.config.use_dynamic_bsz),
-                "uid_in_input": "uid" in data.non_tensor_batch,
-            },
-            "B",
-        )
-        # #endregion
-
         has_multi_modal_inputs = "multi_modal_inputs" in data.non_tensor_batch.keys()
         if has_multi_modal_inputs:
             non_tensor_select_keys.append("multi_modal_inputs")
@@ -103,18 +56,6 @@ class DataParallelECHOActor(DataParallelPPOActor):
         use_dataproto_batches = has_multi_modal_inputs or bool(non_tensor_select_keys)
         selected = data.select(batch_keys=select_keys, non_tensor_batch_keys=non_tensor_select_keys)
         batch = selected.batch
-        # #region agent log
-        _debug_log(
-            "echo_dp_actor.py:update_policy:after_select",
-            "selected batch uid presence",
-            {
-                "uid_in_selected_non_tensor": "uid" in selected.non_tensor_batch,
-                "use_dataproto_batches": use_dataproto_batches,
-                "has_multi_modal_inputs": has_multi_modal_inputs,
-            },
-            "C",
-        )
-        # #endregion
         if use_dataproto_batches:
             num_mini_batches = selected.batch.batch_size[0] // self.config.ppo_mini_batch_size
             dataloader = selected.chunk(num_mini_batches)
@@ -150,25 +91,6 @@ class DataParallelECHOActor(DataParallelPPOActor):
                     else:
                         uid = None
                         data = data.to(get_torch_device().current_device())
-
-                    # #region agent log
-                    if micro_idx == 0 and batch_idx == 0 and epoch == 0:
-                        _debug_log(
-                            "echo_dp_actor.py:update_policy:micro_batch",
-                            "first micro-batch uid state",
-                            {
-                                "runId": "post-fix",
-                                "is_dataproto": isinstance(micro_batches[0], DataProto),
-                                "uid_is_none": uid is None,
-                                "uid_type": type(uid).__name__ if uid is not None else None,
-                                "uid_len": len(uid) if uid is not None else None,
-                                "use_dynamic_bsz": bool(self.config.use_dynamic_bsz),
-                                "use_dataproto_batches": use_dataproto_batches,
-                                "micro_batch_type": type(micro_batches[0]).__name__,
-                            },
-                            "A",
-                        )
-                    # #endregion
 
                     responses = data["responses"]
                     response_length = responses.size(1)

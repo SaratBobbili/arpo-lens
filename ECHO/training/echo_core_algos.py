@@ -19,27 +19,9 @@ implement PPO
 """
 
 from collections import defaultdict
-import json
-import time
 
 import numpy as np
 import torch
-
-_DEBUG_LOG_PATH = "/scratch/user/saratb_tamu.edu/research/arpo-lens/.cursor/debug-641b81.log"
-
-
-def _agent_debug_log(location, message, data, hypothesis_id):
-    # #region agent log
-    with open(_DEBUG_LOG_PATH, "a") as f:
-        f.write(json.dumps({
-            "sessionId": "641b81",
-            "location": location,
-            "message": message,
-            "data": data,
-            "hypothesisId": hypothesis_id,
-            "timestamp": int(time.time() * 1000),
-        }) + "\n")
-    # #endregion
 
 from verl import DataProto
 from verl.trainer.ppo.ray_trainer import AdvantageEstimator, compute_response_mask
@@ -218,24 +200,6 @@ def compute_entropy_normalized(
             return normed * response_mask.float()
 
         # group: reduce to per-sample scalar, GRPO-normalize within prompt group, broadcast
-        # #region agent log
-        import json
-        import time
-        with open("/scratch/user/saratb_tamu.edu/research/arpo-lens/.cursor/debug-a6e3dd.log", "a") as _f:
-            _f.write(json.dumps({
-                "sessionId": "a6e3dd",
-                "location": "echo_core_algos.py:compute_entropy_normalized:group",
-                "message": "group normalization index check",
-                "data": {
-                    "index_is_none": index is None,
-                    "index_type": type(index).__name__ if index is not None else None,
-                    "index_len": len(index) if index is not None else None,
-                    "bsz": int(entropy.shape[0]),
-                },
-                "hypothesisId": "D",
-                "timestamp": int(time.time() * 1000),
-            }) + "\n")
-        # #endregion
         denom = response_mask.float().sum(dim=-1).clamp_min(1.0)
         per_sample = (entropy * response_mask.float()).sum(dim=-1) / denom  # (bsz,)
 
@@ -556,6 +520,52 @@ def agg_loss(loss_mat: torch.Tensor, loss_mask: torch.Tensor, loss_agg_mode: str
     return loss
 
 
+def compute_ratio_clipped(
+    ratio,
+    advantages,
+    cliprange_low,
+    cliprange_high,
+    use_aepo_clip: bool = False,
+    use_sign_cond_clip: bool = False,
+    clip_sign_advantages: torch.Tensor = None,
+    cliprange_low_pos: float = 0.2,
+    cliprange_high_pos: float = 0.2,
+    cliprange_low_neg: float = 0.2,
+    cliprange_high_neg: float = 0.2,
+):
+    clip_sign = (
+        clip_sign_advantages
+        if (use_sign_cond_clip and clip_sign_advantages is not None)
+        else advantages
+    )
+    if use_sign_cond_clip:
+        ratio_low = torch.where(
+            clip_sign >= 0,
+            1.0 - cliprange_low_pos,
+            1.0 - cliprange_low_neg,
+        )
+        ratio_high_fixed = torch.where(
+            clip_sign >= 0,
+            1.0 + cliprange_high_pos,
+            1.0 + cliprange_high_neg,
+        )
+    else:
+        ratio_low = 1.0 - cliprange_low
+        ratio_high_fixed = 1.0 + cliprange_high
+
+    if use_aepo_clip:
+        ratio_high = ratio_high_fixed / ratio.detach() * ratio
+    else:
+        ratio_high = ratio_high_fixed
+
+    if not torch.is_tensor(ratio_low):
+        ratio_low = torch.full_like(ratio, float(ratio_low))
+    if not torch.is_tensor(ratio_high):
+        ratio_high = torch.full_like(ratio, float(ratio_high))
+
+    return torch.clamp(ratio, ratio_low, ratio_high), clip_sign
+
+
 def compute_policy_loss(
     old_log_prob,
     log_prob,
@@ -589,52 +599,25 @@ def compute_policy_loss(
         cliprange_low = cliprange
     if cliprange_high is None:
         cliprange_high = cliprange
-    if use_aepo_clip:
-        min_bound = torch.full_like(ratio, 1 - cliprange_low)
-        max_bound = (1 + cliprange_high) / ratio.detach() * ratio
-        # #region agent log
-        _agent_debug_log(
-            "echo_core_algos.py:compute_policy_loss:aepo_clip",
-            "aepo clip bounds before clamp",
-            {
-                "use_aepo_clip": use_aepo_clip,
-                "min_bound_type": type(min_bound).__name__,
-                "max_bound_type": type(max_bound).__name__,
-                "ratio_type": type(ratio).__name__,
-                "cliprange_low_type": type(cliprange_low).__name__,
-                "cliprange_high_type": type(cliprange_high).__name__,
-                "min_bound_is_scalar": isinstance(min_bound, (int, float)),
-                "max_bound_is_tensor": isinstance(max_bound, torch.Tensor),
-                "ratio_shape": list(ratio.shape),
-                "cliprange_low": float(cliprange_low),
-                "cliprange_high": float(cliprange_high),
-            },
-            "H1",
-        )
-        # #endregion
-        ratio_clipped = torch.clamp(ratio, min_bound, max_bound)
-    elif use_sign_cond_clip:
-        clip_sign = clip_sign_advantages if clip_sign_advantages is not None else advantages
-        ratio_low = torch.where(
-            clip_sign >= 0,
-            1.0 - cliprange_low_pos,
-            1.0 - cliprange_low_neg,
-        )
-        ratio_high = torch.where(
-            clip_sign >= 0,
-            1.0 + cliprange_high_pos,
-            1.0 + cliprange_high_neg,
-        )
-        ratio_clipped = torch.clamp(ratio, ratio_low, ratio_high)
-    else:
-        ratio_clipped = torch.clamp(ratio, 1 - cliprange_low, 1 + cliprange_high)
+    ratio_clipped, clip_sign = compute_ratio_clipped(
+        ratio=ratio,
+        advantages=advantages,
+        cliprange_low=cliprange_low,
+        cliprange_high=cliprange_high,
+        use_aepo_clip=use_aepo_clip,
+        use_sign_cond_clip=use_sign_cond_clip,
+        clip_sign_advantages=clip_sign_advantages,
+        cliprange_low_pos=cliprange_low_pos,
+        cliprange_high_pos=cliprange_high_pos,
+        cliprange_low_neg=cliprange_low_neg,
+        cliprange_high_neg=cliprange_high_neg,
+    )
     pg_losses2 = -advantages * ratio_clipped
     clip_pg_losses1 = torch.maximum(pg_losses1, pg_losses2)
     pg_clipfrac = verl_F.masked_mean(torch.gt(pg_losses2, pg_losses1).float(), response_mask)
 
     pg_losses3 = -advantages * clip_ratio_c
     clip_pg_losses2 = torch.min(pg_losses3, clip_pg_losses1)
-    clip_sign = clip_sign_advantages if (use_sign_cond_clip and clip_sign_advantages is not None) else advantages
     pg_clipfrac_lower = verl_F.masked_mean(torch.gt(clip_pg_losses1, pg_losses3) * (clip_sign < 0).float(), response_mask)
 
     pg_losses = torch.where(clip_sign < 0, clip_pg_losses2, clip_pg_losses1)

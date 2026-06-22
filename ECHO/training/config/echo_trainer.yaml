@@ -44,7 +44,9 @@ reward_model:
   #              A = A_scorer * (1 + alpha * H_norm).
   # Per-phase use_sign_cond_clip enables asymmetric clip bounds (clip_ratio_*_pos/neg).
   # When enabled, sign_cond_strategy (scorer | entropy | aepo) selects which advantage
-  # sign drives clip bounds; PG advantage still follows strategy above.
+  # sign drives clip bounds and dual-clip gating; PG advantage still follows strategy above.
+  # Per-phase use_aepo_clip applies the ratio-adaptive upper bound (ratio.detach) on top of
+  # whichever fixed bounds sign-cond or global clip selected; the two flags compose independently.
   phase_rewards:
     high_level:
       # grpo: single rollout pass per step (shared prompts with other GRPO phases).

@@ -50,6 +50,7 @@ class RayECHOTrainer(RayPPOTrainer):
         "low_level": [
             ("reward.jsonl", "reward/effective_reward_mean"),
             ("format_penalty.jsonl", "reward/bad_format_rate"),
+            ("in_group_reward_std.jsonl", "reward/in_group_reward_std"),
             ("pg_loss.jsonl", "actor/pg_loss"),
             ("entropy_reg_loss.jsonl", "actor/entropy_reg_loss"),
             ("grad_norm.jsonl", "actor/grad_norm"),
@@ -62,6 +63,7 @@ class RayECHOTrainer(RayPPOTrainer):
         "high_level": [
             ("reward.jsonl", "reward/effective_reward_mean"),
             ("format_penalty.jsonl", "reward/bad_format_rate"),
+            ("in_group_reward_std.jsonl", "reward/in_group_reward_std"),
             ("pg_loss.jsonl", "actor/pg_loss"),
             ("entropy_reg_loss.jsonl", "actor/entropy_reg_loss"),
             ("grad_norm.jsonl", "actor/grad_norm"),
@@ -229,6 +231,19 @@ class RayECHOTrainer(RayPPOTrainer):
     @staticmethod
     def _phase_algorithm(phase_reward_cfg) -> str:
         return phase_reward_cfg.get("algorithm", "grpo")
+
+    @staticmethod
+    def _compute_in_group_reward_std(phase_batch: DataProto) -> float:
+        seq_rewards = phase_batch.batch["token_level_rewards"].sum(dim=-1)
+        uids = phase_batch.non_tensor_batch["uid"]
+        uid_to_indices = {}
+        for i, uid in enumerate(uids):
+            uid_to_indices.setdefault(uid, []).append(i)
+        group_stds = []
+        for indices in uid_to_indices.values():
+            if len(indices) > 1:
+                group_stds.append(seq_rewards[indices].std().item())
+        return sum(group_stds) / len(group_stds) if group_stds else 0.0
 
     @staticmethod
     def _canonical_best_metric_selector(selector: str) -> str:
@@ -767,6 +782,7 @@ class RayECHOTrainer(RayPPOTrainer):
                         torch.cuda.empty_cache()
 
                         with _timer(f"{phase_name}_adv", timing_raw):
+                            metrics[f"{phase_prefix}reward/in_group_reward_std"] = self._compute_in_group_reward_std(phase_batch)
                             self._apply_tool_failure_before_grpo(phase_batch)
 
                             phase_batch = compute_advantage(

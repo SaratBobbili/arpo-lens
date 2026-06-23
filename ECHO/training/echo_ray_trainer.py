@@ -13,6 +13,7 @@ This module keeps ECHO behavior identical to ARPO PPO while hosting recipe-local
 trainer code that can diverge later.
 """
 
+import gc
 import json
 import os
 import shutil
@@ -390,6 +391,8 @@ class RayECHOTrainer(RayPPOTrainer):
                         device=phase_gen_batch.batch["input_ids"].device,
                     )
 
+        del phase_gen_batch
+
         phase_batch.non_tensor_batch["uid"] = np.array(
             [str(uuid.uuid4()) for _ in range(len(phase_batch.batch))], dtype=object
         )
@@ -742,16 +745,26 @@ class RayECHOTrainer(RayPPOTrainer):
                                 cached_gen_batch_output, step_prompt_batch, phase_name,
                                 phase_rollout_n, phase_mask_key, timing_raw, metrics
                             )
+                            del cached_gen_batch_output
+                            cached_gen_batch_output = None
                             metrics[f"{phase_prefix}training/num_gen_batches"] = 0
                         else:
-                            phase_batch, phase_reward_extra_infos_dict, gen_output = self._phase_rollout_to_scored_batch(
-                                step_gen_batch, step_prompt_batch, phase_name, phase_rollout_n, phase_mask_key, timing_raw, metrics,
-                                return_gen_output=True,
-                            )
                             if reuse_phase_rollouts:
+                                phase_batch, phase_reward_extra_infos_dict, gen_output = self._phase_rollout_to_scored_batch(
+                                    step_gen_batch, step_prompt_batch, phase_name, phase_rollout_n, phase_mask_key, timing_raw, metrics,
+                                    return_gen_output=True,
+                                )
                                 cached_gen_batch_output = gen_output
+                                del gen_output
                                 cached_rollout_n = phase_rollout_n
+                            else:
+                                phase_batch, phase_reward_extra_infos_dict = self._phase_rollout_to_scored_batch(
+                                    step_gen_batch, step_prompt_batch, phase_name, phase_rollout_n, phase_mask_key, timing_raw, metrics,
+                                )
                             metrics[f"{phase_prefix}training/num_gen_batches"] = 1
+
+                        gc.collect()
+                        torch.cuda.empty_cache()
 
                         with _timer(f"{phase_name}_adv", timing_raw):
                             self._apply_tool_failure_before_grpo(phase_batch)

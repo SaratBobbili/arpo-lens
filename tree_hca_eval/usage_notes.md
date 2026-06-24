@@ -11,6 +11,27 @@ Two conda environments are required:
 | `treehca_env` | Main env: vLLM serving, inference, evaluation, Python tool execution |
 | `retriever_env` | RAG retriever server (FAISS + e5 encoder) |
 
+#### Creating `treehca_env`
+
+```bash
+conda create -n treehca_env python=3.10 -y
+conda activate treehca_env
+
+pip install vllm
+pip install transformers openai torch numpy tqdm nltk pyyaml requests langid
+```
+
+#### Creating `retriever_env`
+
+```bash
+conda create -n retriever_env python=3.10 -y
+conda activate retriever_env
+
+pip install torch transformers faiss-gpu datasets
+pip install fastapi uvicorn pydantic
+pip install tqdm numpy huggingface_hub
+```
+
 ### RAG Data
 
 Download the Wikipedia index and corpus before first use:

@@ -31,7 +31,6 @@ tool_call_limit: 3
 phase_order: '["low_level", "high_level"]'
 high_level_reward_strategy: scorer
 
-use_mask_categories: true
 mask_first_select: high
 mask_select: low
 mask_think: high
@@ -39,16 +38,8 @@ mask_answer: high
 mask_search: low
 mask_python: low
 
-use_ll_reward: true
 low_level_reward_strategy: entropy
 
 ll_entropy_reg_coeff: 0
 ll_entropy_normalization: token_pool
 ll_entropy_alpha: 0.2
-
-use_rag: false
-rag_server_url: "http://127.0.0.1:5003"
-rag_similarity_threshold: 0.92
-rag_topk: 1
-rag_soft_fallback: true
-rag_request_timeout: 30

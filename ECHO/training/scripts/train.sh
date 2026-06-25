@@ -28,6 +28,30 @@ export PYTHONPATH="${VERL_ROOT}:${ECHO_TOP}:$PYTHONPATH"
 source "${SCRIPT_DIR}/secrets.sh"
 
 LAUNCH_CONFIG_PATH="${ECHO_ROOT}/$1"
+VALID_LAUNCH_KEYS=(
+    project_name experiment_name nnodes n_gpus_per_node
+    train_batch_size gen_batch_size ppo_mini_batch_size max_prompt_length max_response_length prompt_key
+    train_files valid_files actor_model_subpath reward_manager
+    rollout_n high_level_budget low_level_budget reuse_phase_rollouts enable_multi_turn
+    tensor_model_parallel_size gpu_memory_utilization rollout_name rollout_mode
+    exclude_tag_tokens_from_phase_masks search_cache_file search_class_path brightdata_timeout tool_call_limit
+    conda_path conda_env brightdata_api_key brightdata_zone brightdata_location wandb_api_key
+    output_root sft_root
+    total_epochs save_freq test_freq save_best_checkpoint best_checkpoint_metric max_actor_ckpt_to_keep resume_mode
+    phase_order high_level_update_repeats low_level_update_repeats
+    high_level_reward_strategy low_level_reward_strategy high_level_algorithm low_level_algorithm
+    norm_adv_by_std_in_grpo high_level_filter_groups_enable low_level_filter_groups_enable
+    high_level_filter_metric low_level_filter_metric high_level_max_num_gen_batches low_level_max_num_gen_batches
+    skip_training_on_tool_failure
+    mask_first_select mask_select mask_think mask_answer mask_search mask_python
+    clip_ratio_low clip_ratio_high clip_ratio_c clip_ratio_low_pos clip_ratio_high_pos clip_ratio_low_neg clip_ratio_high_neg
+    hl_kl_loss_coef ll_kl_loss_coef hl_use_aepo_clip ll_use_aepo_clip
+    high_level_use_sign_cond_clip low_level_use_sign_cond_clip
+    high_level_sign_cond_strategy low_level_sign_cond_strategy
+    hl_entropy_reg_coeff ll_entropy_reg_coeff hl_entropy_normalization ll_entropy_normalization
+    hl_entropy_alpha ll_entropy_alpha
+)
+python3 -c 'import sys,yaml; cfg=yaml.safe_load(open(sys.argv[1])) or {}; unknown=sorted(set(cfg)-set(sys.argv[2:])); sys.stderr.write("Unknown or unused launch config keys: " + ", ".join(unknown) + "\n") if unknown else None; sys.exit(1 if unknown else 0)' "${LAUNCH_CONFIG_PATH}" "${VALID_LAUNCH_KEYS[@]}"
 # Parse YAML config — all keys are uppercased and exported as shell variables
 eval "$(python3 -c 'import yaml,sys,shlex;cfg=yaml.safe_load(open(sys.argv[1]));[print(k.upper()+"="+shlex.quote("null" if v is None else "true" if isinstance(v,bool) and v else "false" if isinstance(v,bool) else str(v))) for k,v in cfg.items()]' "${LAUNCH_CONFIG_PATH}")"
 
@@ -122,10 +146,10 @@ ARGS=(
     "reward_model.phase_rewards.low_level.kl_loss_coef=${LL_KL_LOSS_COEF:-0.0}"
     reward_model.phase_rewards.high_level.use_aepo_clip="${HL_USE_AEPO_CLIP:-false}"
     reward_model.phase_rewards.low_level.use_aepo_clip="${LL_USE_AEPO_CLIP:-false}"
-    reward_model.phase_rewards.high_level.use_sign_cond_clip="${HL_USE_SIGN_COND_CLIP:-false}"
-    reward_model.phase_rewards.low_level.use_sign_cond_clip="${LL_USE_SIGN_COND_CLIP:-false}"
-    "reward_model.phase_rewards.high_level.sign_cond_strategy=${HL_SIGN_COND_STRATEGY:-scorer}"
-    "reward_model.phase_rewards.low_level.sign_cond_strategy=${LL_SIGN_COND_STRATEGY:-scorer}"
+    reward_model.phase_rewards.high_level.use_sign_cond_clip="${HIGH_LEVEL_USE_SIGN_COND_CLIP:-false}"
+    reward_model.phase_rewards.low_level.use_sign_cond_clip="${LOW_LEVEL_USE_SIGN_COND_CLIP:-false}"
+    "reward_model.phase_rewards.high_level.sign_cond_strategy=${HIGH_LEVEL_SIGN_COND_STRATEGY:-scorer}"
+    "reward_model.phase_rewards.low_level.sign_cond_strategy=${LOW_LEVEL_SIGN_COND_STRATEGY:-scorer}"
     "reward_model.phase_rewards.high_level.entropy.reg_coeff=${HL_ENTROPY_REG_COEFF:-0.0}"
     "reward_model.phase_rewards.low_level.entropy.reg_coeff=${LL_ENTROPY_REG_COEFF:-0.0}"
     "reward_model.phase_rewards.high_level.entropy.normalization=${HL_ENTROPY_NORMALIZATION:-token_pool}"

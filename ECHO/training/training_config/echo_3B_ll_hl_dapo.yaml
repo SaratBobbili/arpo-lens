@@ -55,7 +55,10 @@ mask_answer: high
 mask_search: low
 mask_python: low
 
-use_sign_cond_clip: True
+high_level_use_sign_cond_clip: True
+high_level_sign_cond_strategy: scorer
+low_level_use_sign_cond_clip: True
+low_level_sign_cond_strategy: scorer
 clip_ratio_low: 0.2
 clip_ratio_high: 0.2
 clip_ratio_c: 3.0

@@ -55,7 +55,10 @@ mask_answer: high
 mask_search: low
 mask_python: low
 
-use_sign_cond_clip: True
+high_level_use_sign_cond_clip: True
+high_level_sign_cond_strategy: scorer
+low_level_use_sign_cond_clip: True
+low_level_sign_cond_strategy: scorer
 clip_ratio_low: 0.2
 clip_ratio_high: 0.2
 clip_ratio_c: 3.0
@@ -73,22 +76,3 @@ hl_entropy_normalization: token_pool
 ll_entropy_normalization: token_pool
 hl_entropy_alpha: 0.2
 ll_entropy_alpha: 0.2
-
-hl_entropy_band_enable: false
-ll_entropy_band_enable: true
-hl_entropy_band_epsilon_low: 0.2
-ll_entropy_band_epsilon_low: 0.2
-hl_entropy_band_epsilon_high: 0.2
-ll_entropy_band_epsilon_high: 0.4
-hl_entropy_band_h_floor: 1.0e-4
-ll_entropy_band_h_floor: 1.0e-4
-ll_entropy_band_warmup_steps: 1
-
-hl_max_entropy_alpha: 0.1
-ll_max_entropy_alpha: 0.1
-hl_max_entropy_mask_key: tool_loss_mask
-ll_max_entropy_mask_key: tool_loss_mask
-hl_max_entropy_reduction: mean
-ll_max_entropy_reduction: mean
-hl_max_entropy_normalize: true
-ll_max_entropy_normalize: true

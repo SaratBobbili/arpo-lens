@@ -109,6 +109,30 @@ actor_rollout_ref:
     # When true, the second phase reuses rollouts from the first phase instead
     # of generating fresh ones. Both phases still compute their own rewards.
     reuse_phase_rollouts: false
+    # Per-phase rollout generation strategy. Only affects how trajectories are
+    # sampled during generate_sequences; policy update is unchanged.
+    #   default -> flat temperature sampling with rollout_n_override trajectories.
+    #   aepo    -> AEPO entropy-guided initial budget + adaptive branching.
+    # The aepo sub-block is only read when strategy == "aepo" for that phase.
+    phase_rollouts:
+      high_level:
+        strategy: default
+        aepo:
+          enable_dynamic_rollouts: false
+          initial_rollouts: 8
+          beam_size: 2
+          branch_probability: 0.5
+          entropy_weight: 0.2
+          initial_entropy_tokens: 50
+      low_level:
+        strategy: default
+        aepo:
+          enable_dynamic_rollouts: false
+          initial_rollouts: 8
+          beam_size: 2
+          branch_probability: 0.5
+          entropy_weight: 0.2
+          initial_entropy_tokens: 50
     # Which token category feeds into which hierarchical level ("high", "low", "none").
     # "result" blocks are always excluded (neither high nor low).
     # This block is the single source of truth: the format validator profile

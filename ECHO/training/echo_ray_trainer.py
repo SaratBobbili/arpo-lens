@@ -15,6 +15,7 @@ trainer code that can diverge later.
 
 import gc
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -40,6 +41,8 @@ from verl.utils.metric import reduce_metrics
 
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 _VERL_TO_HF_SCRIPT = os.path.join(_REPO_ROOT, "ARPO", "merge_ckpt", "convert_checkpoint_from_verl_to_hf.py")
+
+logger = logging.getLogger(__name__)
 
 
 class RayECHOTrainer(RayPPOTrainer):
@@ -82,6 +85,9 @@ class RayECHOTrainer(RayPPOTrainer):
     def _phase_reward_cfg(self, phase_name: str):
         # Per-phase reward config block (strategy + strategy-specific params).
         return self.config.reward_model.phase_rewards[phase_name]
+
+    def _phase_rollout_cfg(self, phase_name: str):
+        return self.config.actor_rollout_ref.rollout.phase_rollouts[phase_name]
 
     @staticmethod
     def _entropy_reg_coeff(phase_reward_cfg) -> float:
@@ -227,6 +233,22 @@ class RayECHOTrainer(RayPPOTrainer):
                 assert sign_cond_strategy in allowed_sign_cond, (
                     f"{phase_name}.sign_cond_strategy must be one of {sorted(allowed_sign_cond)}, got {sign_cond_strategy!r}"
                 )
+
+    def _validate_phase_rollout_configs(self, phase_specs) -> None:
+        allowed_rollout = {"default", "aepo"}
+        for phase_name, _, _ in phase_specs:
+            cfg = self._phase_rollout_cfg(phase_name)
+            strategy = str(cfg.get("strategy", "default"))
+            assert strategy in allowed_rollout, (
+                f"{phase_name} rollout strategy must be one of {sorted(allowed_rollout)}, got {strategy!r}"
+            )
+            if strategy == "aepo":
+                assert cfg.get("aepo") is not None, f"{phase_name} rollout strategy=aepo requires phase_rollouts.{phase_name}.aepo block"
+
+    @staticmethod
+    def _rollout_strategies_uniform(phase_specs, rollout_cfg_getter) -> bool:
+        strategies = {rollout_cfg_getter(name).get("strategy", "default") for name, _, _ in phase_specs}
+        return len(strategies) <= 1
 
     @staticmethod
     def _phase_algorithm(phase_reward_cfg) -> str:
@@ -380,6 +402,14 @@ class RayECHOTrainer(RayPPOTrainer):
             if phase_gen_batch.meta_info is None:
                 phase_gen_batch.meta_info = {}
             phase_gen_batch.meta_info["rollout_n_override"] = phase_rollout_n
+            phase_rollout_cfg = self._phase_rollout_cfg(phase_name)
+            phase_gen_batch.meta_info["rollout_strategy"] = phase_rollout_cfg.strategy
+            if phase_rollout_cfg.strategy == "aepo":
+                from omegaconf import OmegaConf
+
+                phase_gen_batch.meta_info["rollout_aepo_cfg"] = OmegaConf.to_container(
+                    phase_rollout_cfg.aepo, resolve=True
+                )
             if not self.async_rollout_mode:
                 gen_batch_output = self.actor_rollout_wg.generate_sequences(phase_gen_batch)
             else:
@@ -725,10 +755,17 @@ class RayECHOTrainer(RayPPOTrainer):
                 ]
                 assert phase_specs, "At least one hierarchical phase must have positive rollout budget."
                 self._validate_phase_reward_configs(phase_specs)
+                self._validate_phase_rollout_configs(phase_specs)
                 repeated_phase_specs = self._expand_phase_specs_with_repeats(phase_specs)
 
                 norm_adv_by_std_in_grpo = self.config.algorithm.get("norm_adv_by_std_in_grpo", True)
                 reuse_phase_rollouts = bool(self.config.actor_rollout_ref.rollout.get("reuse_phase_rollouts", False))
+                if reuse_phase_rollouts and not self._rollout_strategies_uniform(phase_specs, self._phase_rollout_cfg):
+                    logger.warning(
+                        "reuse_phase_rollouts disabled: active phases use different rollout strategies; "
+                        "regenerating rollouts per phase."
+                    )
+                    reuse_phase_rollouts = False
 
                 batch_dict, data_iter = self._next_batch_dict(data_iter)
                 step_gen_batch, step_prompt_batch = self._pop_gen_batch(DataProto.from_single_dict(batch_dict))

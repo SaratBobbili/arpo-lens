@@ -50,6 +50,13 @@ VALID_LAUNCH_KEYS=(
     high_level_sign_cond_strategy low_level_sign_cond_strategy
     hl_entropy_reg_coeff ll_entropy_reg_coeff hl_entropy_normalization ll_entropy_normalization
     hl_entropy_alpha ll_entropy_alpha
+    high_level_rollout_strategy low_level_rollout_strategy
+    hl_aepo_enable_dynamic_rollouts ll_aepo_enable_dynamic_rollouts
+    hl_aepo_initial_rollouts ll_aepo_initial_rollouts
+    hl_aepo_beam_size ll_aepo_beam_size
+    hl_aepo_branch_probability ll_aepo_branch_probability
+    hl_aepo_entropy_weight ll_aepo_entropy_weight
+    hl_aepo_initial_entropy_tokens ll_aepo_initial_entropy_tokens
 )
 python3 -c 'import sys,yaml; cfg=yaml.safe_load(open(sys.argv[1])) or {}; unknown=sorted(set(cfg)-set(sys.argv[2:])); sys.stderr.write("Unknown or unused launch config keys: " + ", ".join(unknown) + "\n") if unknown else None; sys.exit(1 if unknown else 0)' "${LAUNCH_CONFIG_PATH}" "${VALID_LAUNCH_KEYS[@]}"
 # Parse YAML config — all keys are uppercased and exported as shell variables
@@ -156,6 +163,20 @@ ARGS=(
     "reward_model.phase_rewards.low_level.entropy.normalization=${LL_ENTROPY_NORMALIZATION:-token_pool}"
     "reward_model.phase_rewards.high_level.entropy.alpha=${HL_ENTROPY_ALPHA:-0.2}"
     "reward_model.phase_rewards.low_level.entropy.alpha=${LL_ENTROPY_ALPHA:-0.2}"
+    "actor_rollout_ref.rollout.phase_rollouts.high_level.strategy=${HIGH_LEVEL_ROLLOUT_STRATEGY:-default}"
+    "actor_rollout_ref.rollout.phase_rollouts.low_level.strategy=${LOW_LEVEL_ROLLOUT_STRATEGY:-default}"
+    actor_rollout_ref.rollout.phase_rollouts.high_level.aepo.enable_dynamic_rollouts="${HL_AEPO_ENABLE_DYNAMIC_ROLLOUTS:-false}"
+    actor_rollout_ref.rollout.phase_rollouts.low_level.aepo.enable_dynamic_rollouts="${LL_AEPO_ENABLE_DYNAMIC_ROLLOUTS:-false}"
+    "actor_rollout_ref.rollout.phase_rollouts.high_level.aepo.initial_rollouts=${HL_AEPO_INITIAL_ROLLOUTS:-8}"
+    "actor_rollout_ref.rollout.phase_rollouts.low_level.aepo.initial_rollouts=${LL_AEPO_INITIAL_ROLLOUTS:-8}"
+    "actor_rollout_ref.rollout.phase_rollouts.high_level.aepo.beam_size=${HL_AEPO_BEAM_SIZE:-2}"
+    "actor_rollout_ref.rollout.phase_rollouts.low_level.aepo.beam_size=${LL_AEPO_BEAM_SIZE:-2}"
+    "actor_rollout_ref.rollout.phase_rollouts.high_level.aepo.branch_probability=${HL_AEPO_BRANCH_PROBABILITY:-0.5}"
+    "actor_rollout_ref.rollout.phase_rollouts.low_level.aepo.branch_probability=${LL_AEPO_BRANCH_PROBABILITY:-0.5}"
+    "actor_rollout_ref.rollout.phase_rollouts.high_level.aepo.entropy_weight=${HL_AEPO_ENTROPY_WEIGHT:-0.2}"
+    "actor_rollout_ref.rollout.phase_rollouts.low_level.aepo.entropy_weight=${LL_AEPO_ENTROPY_WEIGHT:-0.2}"
+    "actor_rollout_ref.rollout.phase_rollouts.high_level.aepo.initial_entropy_tokens=${HL_AEPO_INITIAL_ENTROPY_TOKENS:-50}"
+    "actor_rollout_ref.rollout.phase_rollouts.low_level.aepo.initial_entropy_tokens=${LL_AEPO_INITIAL_ENTROPY_TOKENS:-50}"
     "custom_reward_function.path=${VERL_ROOT}/verl/utils/reward_score/deep_research_echo.py"
     custom_reward_function.name=compute_score
     trainer.critic_warmup=0

@@ -308,11 +308,6 @@ class RayECHOTrainer(RayPPOTrainer):
         os.makedirs(best_dir, exist_ok=True)
 
         print(f"[best_checkpoint] merging FSDP actor to HF: {src_actor} -> {dst_hf}")
-        # #region agent log
-        import json as _json, time as _time
-        with open("/scratch/user/saratb_tamu.edu/research/arpo-lens/.cursor/debug-6f20cf.log", "a") as _df:
-            _df.write(_json.dumps({"sessionId": "6f20cf", "hypothesisId": "H1", "location": "echo_ray_trainer.py:_sync_best_checkpoint_dir", "message": "checkpoint merge paths", "data": {"__file__": __file__, "_REPO_ROOT": _REPO_ROOT, "_VERL_TO_HF_SCRIPT": _VERL_TO_HF_SCRIPT, "script_exists": os.path.isfile(_VERL_TO_HF_SCRIPT), "src_actor": src_actor, "src_actor_exists": os.path.isdir(src_actor), "dst_hf": dst_hf}, "timestamp": int(_time.time() * 1000), "runId": "post-fix"}) + "\n")
-        # #endregion
         subprocess.run(
             [
                 sys.executable,

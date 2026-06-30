@@ -46,14 +46,6 @@ def resolve_validator_profile(mask_categories):
 
 def _in_phase(mask_categories, cat, phase):
     """True if `cat` is active in `phase` ('high_level' or 'low_level')."""
-    # #region agent log
-    if not getattr(_in_phase, "_dbg_logged", False):
-        import time as _t
-        _payload = {"sessionId": "c18522", "runId": "pre-fix", "hypothesisId": "A", "location": "deep_research_echo.py:_in_phase", "message": "mask_categories type at _in_phase", "data": {"type": type(mask_categories).__name__, "value": mask_categories if isinstance(mask_categories, str) else list(mask_categories.keys()) if hasattr(mask_categories, "keys") else str(mask_categories)[:200], "cat": cat, "phase": phase}, "timestamp": int(_t.time() * 1000)}
-        with open("/scratch/user/saratb_tamu.edu/research/arpo-lens/.cursor/debug-c18522.log", "a") as _f:
-            _f.write(__import__("json").dumps(_payload) + "\n")
-        _in_phase._dbg_logged = True
-    # #endregion
     level = mask_categories.get(cat, "none")
     return level == "both" or (phase == "high_level" and level == "high") or (phase == "low_level" and level == "low")
 
@@ -272,14 +264,6 @@ def validate_low_level(text, mask_categories):
 def validate_format_echo(text, mask_categories):
     """Run both high-level and low-level validation, return
     (is_valid, reason, high_level_valid, low_level_valid)."""
-    # #region agent log
-    if not getattr(validate_format_echo, "_dbg_logged", False):
-        import time as _t
-        _payload = {"sessionId": "c18522", "runId": "pre-fix", "hypothesisId": "C", "location": "deep_research_echo.py:validate_format_echo", "message": "validate_format_echo entry", "data": {"mask_categories_type": type(mask_categories).__name__, "mask_categories_repr": repr(mask_categories)[:200]}, "timestamp": int(_t.time() * 1000)}
-        with open("/scratch/user/saratb_tamu.edu/research/arpo-lens/.cursor/debug-c18522.log", "a") as _f:
-            _f.write(__import__("json").dumps(_payload) + "\n")
-        validate_format_echo._dbg_logged = True
-    # #endregion
     high_valid, high_reason = validate_high_level(text, mask_categories)
     low_valid, low_reason = validate_low_level(text, mask_categories)
 

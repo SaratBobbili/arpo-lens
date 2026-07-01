@@ -9,6 +9,38 @@ from .base_tool import BaseTool
 class PythonTool(BaseTool):
     """Execute Python Code"""
 
+    # Packages auto-imported into every executed snippet. Each call runs as a
+    # fresh `python -c`, so these must be prepended on every execution. Ordering
+    # matters: stdlib modules that `from sympy import *` shadows (notably `re`
+    # and `product`) are re-bound AFTER the star import. scipy/pandas are
+    # intentionally omitted — they roughly double per-call import latency.
+    PREAMBLE = (
+        "import math\n"
+        "import cmath\n"
+        "import statistics\n"
+        "import datetime\n"
+        "import itertools\n"
+        "import functools\n"
+        "import heapq\n"
+        "import bisect\n"
+        "import decimal\n"
+        "import numpy as np\n"
+        "import numpy\n"
+        "import sympy\n"
+        "import sympy as sp\n"
+        "from sympy import *\n"
+        "import re\n"
+        "import random\n"
+        "from math import comb, perm, log2, radians, degrees, hypot, isclose\n"
+        "from itertools import permutations, combinations, combinations_with_replacement, product, chain\n"
+        "from functools import reduce, lru_cache, cache\n"
+        "from heapq import heappush, heappop, heapify\n"
+        "from bisect import bisect_left, bisect_right, insort\n"
+        "from fractions import Fraction\n"
+        "from decimal import Decimal\n"
+        "from collections import Counter, defaultdict, deque\n"
+    )
+
     def __init__(self, conda_path: str, conda_env: str, max_concurrent: int = 10):
         self.conda_path = conda_path
         self.conda_env = conda_env
@@ -31,6 +63,8 @@ class PythonTool(BaseTool):
 
     async def _run_code(self, code: str, timeout: int) -> Tuple[str, str]:
         code = self._preprocess_code(code)
+        # Auto-import common packages so model snippets can use them without importing
+        code = self.PREAMBLE + code
 
         try:
             proc = await asyncio.create_subprocess_exec(

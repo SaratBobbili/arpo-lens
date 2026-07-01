@@ -7,7 +7,39 @@ from verl.workers.agent.tools.base_tool import BaseTool
 
 class PythonTool(BaseTool):
     """Python code execution tool, using local conda environment"""
-    
+
+    # Packages auto-imported into every executed snippet. Each call runs as a
+    # fresh `python -c`, so these must be prepended on every execution. Ordering
+    # matters: stdlib modules that `from sympy import *` shadows (notably `re`
+    # and `product`) are re-bound AFTER the star import. scipy/pandas are
+    # intentionally omitted — they roughly double per-call import latency.
+    PREAMBLE = (
+        "import math\n"
+        "import cmath\n"
+        "import statistics\n"
+        "import datetime\n"
+        "import itertools\n"
+        "import functools\n"
+        "import heapq\n"
+        "import bisect\n"
+        "import decimal\n"
+        "import numpy as np\n"
+        "import numpy\n"
+        "import sympy\n"
+        "import sympy as sp\n"
+        "from sympy import *\n"
+        "import re\n"
+        "import random\n"
+        "from math import comb, perm, log2, radians, degrees, hypot, isclose\n"
+        "from itertools import permutations, combinations, combinations_with_replacement, product, chain\n"
+        "from functools import reduce, lru_cache, cache\n"
+        "from heapq import heappush, heappop, heapify\n"
+        "from bisect import bisect_left, bisect_right, insort\n"
+        "from fractions import Fraction\n"
+        "from decimal import Decimal\n"
+        "from collections import Counter, defaultdict, deque\n"
+    )
+
     def __init__(self, conda_path: str, conda_env: str):
         """
         Initialize Python tool
@@ -41,6 +73,8 @@ class PythonTool(BaseTool):
         """Run Python code in conda environment and return result and status"""
         # 处理交互式代码
         code = self._preprocess_code(code)
+        # Auto-import common packages so model snippets can use them without importing
+        code = self.PREAMBLE + code
         
         try:
             # Use subprocess.run to execute the command synchronously

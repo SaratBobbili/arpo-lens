@@ -2,7 +2,7 @@ import ast
 import subprocess
 from typing import Tuple
 
-from verl.workers.agent.tools.base_tool import BaseTool
+from .base_tool import BaseTool
 
 
 class PythonTool(BaseTool):
@@ -87,7 +87,10 @@ class PythonTool(BaseTool):
             )
 
             if process.returncode == 0:
-                return process.stdout.strip(), "Done"
+                stdout = process.stdout.strip()
+                if not stdout:
+                    stdout = "Code executed successfully (no output)."
+                return stdout, "Done"
             else:
                 return "", process.stderr.strip()
 
@@ -123,58 +126,3 @@ class PythonTool(BaseTool):
             pass  # Keep the original code unchanged
         
         return code
-
-def _test():
-    batch_code = [
-        """
-# Create symbolic variables
-x = sympy.symbols('x')
-y = sympy.symbols('y')
-
-# Create an expression
-expr = x**2 + 2*x*y + y**2
-
-print(f"Expression: {expr}")
-
-# Derivative
-derivative = sympy.diff(expr, x)
-print(f"Derivative with respect to x: {derivative}")
-
-# Substitute specific values
-result = expr.subs([(x, 1), (y, 2)])
-print(f"Value at x=1, y=2: {result}")
-        """,
-        """
-        np.array([1, 2, 3])
-        np.array([1, 2, 3])
-        np.array([1, 2, 3])
-        np.array([1, 2, 3])
-        np.array([1, 2, 3])
-        np.array([1, 2, 3])
-        np.array([1, 2, 3])
-        np.array([1, 2, 3])
-        print(np.array([1, 2, 3]))
-        """
-    ]
-    
-    async def run_test():
-        # Create Python tool instance
-        python_tool = PythonTool(
-            conda_path="<your_conda_path>",  # Please modify according to the actual conda installation path
-            conda_env="verl",              # Please modify according to the actual environment name
-            max_concurrent=64
-        )
-        
-        # Execute each code snippet
-        for i, code in enumerate(batch_code):
-            print(f"\n--- execute code snippet {i+1} ---")
-            result = await python_tool.execute(code)
-            print(f"Result:\n{result}")
-    
-    # Run test
-    asyncio.run(run_test())
-
-if __name__ == "__main__":
-    _test()
-
-

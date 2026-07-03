@@ -251,6 +251,7 @@ def math_answers_equal(prediction, reference):
     """Trustworthy semantic equality: string-normalized OR numeric OR symbolic."""
     if prediction is None or reference is None:
         return prediction is None and reference is None
+    prediction, reference = str(prediction), str(reference)
     if is_equiv(prediction, reference):
         return True
     if numeric_equal(prediction, reference):

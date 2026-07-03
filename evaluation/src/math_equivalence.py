@@ -52,9 +52,7 @@ def _fix_a_slash_b(string):
 def _remove_right_units(string):
     # "\\text{ " only ever occurs (at least in the val set) when describing units
     if "\\text{ " in string:
-        splits = string.split("\\text{ ")
-        assert len(splits) == 2
-        return splits[0]
+        return string.split("\\text{ ", 1)[0]
     else:
         return string
 

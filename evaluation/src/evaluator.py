@@ -16,6 +16,7 @@ from .metrics import (
     evaluate_grpo_mix_prediction,
 )
 from .utils import extract_answer
+from .diagnostics import classify_question, detect_python_error
 from .llm_evaluator_sds import LLMEvaluator
 # from .llm_evaluator import LLMEvaluator
 
@@ -44,6 +45,7 @@ class Evaluator:
         sigma: float = 0.1,
         prompt_type: Optional[str] = None,
         validator_profile: str = "c1",
+        mask_categories: Optional[dict] = None,
     ):
         """
         Initialize evaluator.
@@ -59,8 +61,14 @@ class Evaluator:
             sigma: Smoothing factor
             prompt_type: Prompt schema used during inference. When set to 'echo',
                 run the trainer's format validator and report HL/LL pass rates.
-            validator_profile: ECHO validator profile id (c1..c5) matching the
-                trainer's mask_categories signature; routes which checks gate HL vs LL.
+            validator_profile: Legacy ECHO validator profile id (c1..c4) used only
+                as a fallback when `mask_categories` is not supplied. Profiles only
+                encode high/low-only layouts and cannot express `both`/`none`.
+            mask_categories: The checkpoint's real
+                actor_rollout_ref.rollout.mask_categories dict. When provided it is
+                passed straight to the format validator (which supports
+                high/low/both/none), making the format pass rate faithful even when
+                phases overlap. Takes precedence over `validator_profile`.
         """
         self.task_type = task_type
         self.output_path = output_path
@@ -72,7 +80,10 @@ class Evaluator:
         if prompt_type == "echo":
             _validate_format_echo, _mask_categories_for_profile = _load_echo_format_validator()
             self._echo_validator = _validate_format_echo
-            self.mask_categories = _mask_categories_for_profile(validator_profile)
+            if mask_categories:
+                self.mask_categories = dict(mask_categories)
+            else:
+                self.mask_categories = _mask_categories_for_profile(validator_profile)
         else:
             self._echo_validator = None
             self.mask_categories = None
@@ -137,6 +148,8 @@ class Evaluator:
                              "python" if python_calls else
                              "search" if search_calls else "none")
             metrics["tool_counts"] = python_calls + search_calls
+            metrics["python_error"] = int(detect_python_error(output))
+            metrics["category"] = classify_question(question)
             if self._echo_validator is not None:
                 metrics.update({"echo_format_valid": 0, "echo_high_level_valid": 0,
                                 "echo_low_level_valid": 0, "echo_format_reason": "empty prediction"})
@@ -162,6 +175,10 @@ class Evaluator:
 
         # Output length
         metrics["output_length"] = len(remove_result_tags(output))
+
+        # Diagnostics: python execution failures and coarse question category
+        metrics["python_error"] = int(detect_python_error(output))
+        metrics["category"] = classify_question(question)
 
         # ECHO format validation (only when running an ECHO checkpoint).
         # Runs the trainer's validator on the raw rollout text; reported as a
@@ -290,6 +307,28 @@ class Evaluator:
             'average_search_calls': np.mean(avg_search_calls) if avg_search_calls else 0.0,
             'llm_equal': np.mean(avg_llm) if avg_llm else 0.0,
             'm1m2': final_tool_productivity,
+        }
+
+        # Python execution failure rate and per-category accuracy breakdown.
+        avg_py_err = [item['metrics'].get('python_error', 0) for item in data]
+        overall_metrics['python_exception_rate'] = float(np.mean(avg_py_err)) if avg_py_err else 0.0
+
+        cat_stats = defaultdict(lambda: {'count': 0, 'acc': 0, 'math_equal': 0, 'llm_equal': 0})
+        for item in data:
+            m = item['metrics']
+            s = cat_stats[m.get('category', 'arithmetic')]
+            s['count'] += 1
+            s['acc'] += m.get('acc', 0)
+            s['math_equal'] += m.get('math_equal', 0)
+            s['llm_equal'] += m.get('llm_equal', 0)
+        overall_metrics['category_metrics'] = {
+            cat: {
+                'count': s['count'],
+                'acc': s['acc'] / s['count'],
+                'math_equal': s['math_equal'] / s['count'],
+                'llm_equal': s['llm_equal'] / s['count'],
+            }
+            for cat, s in cat_stats.items()
         }
 
         # ECHO format pass rates: report only when the validator ran (i.e.

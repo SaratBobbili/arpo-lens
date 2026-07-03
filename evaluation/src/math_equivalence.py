@@ -1,6 +1,7 @@
 import sys
 import os
 import re
+import math
 sys.path.append(os.getcwd())
 
 def _fix_fracs(string):
@@ -144,6 +145,9 @@ def _strip_string(string):
     # remove spaces
     string = string.replace(" ", "")
 
+    # strip digit-grouping commas (1,000 -> 1000) without touching tuple/list separators
+    string = re.sub(r"(?<=\d),(?=\d{3}(?:\D|$))", "", string)
+
     # \frac1b or \frac12 --> \frac{1}{b} and \frac{1}{2}, etc. Even works with \frac1{72} (but not \frac{72}1). Also does a/b --> \\frac{a}{b}
     string = _fix_fracs(string)
 
@@ -175,3 +179,82 @@ def is_equiv(str1, str2, verbose=False):
         return ss1 == ss2
     except:
         return str1 == str2
+
+
+def _to_number(s):
+    """Parse a scalar answer (decimal, a/b, or \\frac{a}{b}) to float, else None."""
+    if s is None:
+        return None
+    t = _strip_string(str(s))
+    m = re.fullmatch(r"\\frac\{(-?\d+(?:\.\d+)?)\}\{(-?\d+(?:\.\d+)?)\}", t)
+    if not m:
+        m = re.fullmatch(r"(-?\d+(?:\.\d+)?)/(-?\d+(?:\.\d+)?)", t)
+    if m:
+        num, den = float(m.group(1)), float(m.group(2))
+        return num / den if den != 0 else None
+    try:
+        return float(t)
+    except ValueError:
+        return None
+
+
+def numeric_equal(str1, str2, rel_tol=1e-9, abs_tol=1e-9):
+    """True when both parse to numbers that are close (0.5 == \\frac12 == 1/2)."""
+    n1, n2 = _to_number(str1), _to_number(str2)
+    if n1 is None or n2 is None:
+        return False
+    return math.isclose(n1, n2, rel_tol=rel_tol, abs_tol=abs_tol)
+
+
+_SAFE_EXPR_RE = re.compile(r"^[\sA-Za-z0-9_+\-*/^().,{}\\]+$")
+_UNSAFE_TOKENS = ("__", "import", "lambda", "eval", "exec")
+
+
+def _looks_safe_expr(s):
+    if not s or len(s) > 200:
+        return False
+    if not _SAFE_EXPR_RE.match(s):
+        return False
+    return not any(tok in s for tok in _UNSAFE_TOKENS)
+
+
+def _prep_sympy(s):
+    """Convert common LaTeX forms to a sympify-parseable expression string."""
+    s = s.replace("\\left", "").replace("\\right", "")
+    s = s.replace("\\cdot", "*").replace("\\times", "*")
+    s = s.replace("\\pi", "pi")
+    s = re.sub(r"\\frac\{([^{}]+)\}\{([^{}]+)\}", r"((\1)/(\2))", s)
+    s = re.sub(r"\\sqrt\{([^{}]+)\}", r"sqrt(\1)", s)
+    s = s.replace("\\", "")
+    s = s.replace("^", "**")
+    s = s.replace("{", "(").replace("}", ")")
+    return s
+
+
+def symbolic_equal(str1, str2):
+    """True when both parse to symbolic expressions whose difference simplifies to 0.
+    Guarded to safe expression strings only (e.g. x + 11 == 11 + x)."""
+    if str1 is None or str2 is None:
+        return False
+    e1, e2 = _prep_sympy(str1.strip()), _prep_sympy(str2.strip())
+    if not (_looks_safe_expr(e1) and _looks_safe_expr(e2)):
+        return False
+    try:
+        from sympy import simplify, sympify
+        a, b = sympify(e1), sympify(e2)
+        return bool(simplify(a - b) == 0)
+    except Exception:
+        return False
+
+
+def math_answers_equal(prediction, reference):
+    """Trustworthy semantic equality: string-normalized OR numeric OR symbolic."""
+    if prediction is None or reference is None:
+        return prediction is None and reference is None
+    if is_equiv(prediction, reference):
+        return True
+    if numeric_equal(prediction, reference):
+        return True
+    if symbolic_equal(prediction, reference):
+        return True
+    return False

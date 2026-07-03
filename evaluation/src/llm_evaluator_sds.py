@@ -1,6 +1,7 @@
 import sys
 import os
 sys.path.append(os.getcwd())
+import re
 import asyncio
 import time
 from typing import List, Tuple, Dict, Any, Optional
@@ -18,6 +19,26 @@ Question: {question}
 Golden Answer: {labeled_answer}
 Predicted Answer: {pred_answer}
 """
+
+
+def parse_judge_verdict(response_text: str) -> bool:
+    """Deterministically map judge text to a correct/incorrect verdict.
+
+    The verdict is derived from the judge text alone (never OR-ed with a
+    string matcher) so llm_equal always agrees with the stored llm_response:
+    any 'incorrect'/'not correct'/'wrong' phrasing yields False, and 'correct'
+    (checked only after ruling out the negatives) yields True.
+    """
+    text = response_text or ""
+    m = re.search(r"<judgment>(.*?)</judgment>", text, re.DOTALL | re.IGNORECASE)
+    if m:
+        text = m.group(1)
+    text = text.strip().lower()
+    if not text:
+        return False
+    if "incorrect" in text or "not correct" in text or "wrong" in text:
+        return False
+    return "correct" in text
 
 
 class LLMEvaluator:
@@ -94,20 +115,8 @@ class LLMEvaluator:
 
                     reason_answer = chat_response.choices[0].message.content.strip()
 
-                    # Try to extract judgment from response
-                    try:
-                        start = reason_answer.index("<judgment>") + len("<judgment>")
-                        end = reason_answer.index("</judgment>")
-                        response_text = reason_answer[start:end].strip()
-                    except:
-                        response_text = reason_answer.strip()
-
-                    # Determine correctness
-                    is_correct = is_equiv(pred_answer, labeled_answer) or \
-                        "correct" in response_text.lower() and \
-                        not ("incorrect" in response_text.lower() or
-                             "wrong" in response_text.lower() or
-                             "not correct" in response_text.lower())
+                    # Verdict is a deterministic function of the judge text only.
+                    is_correct = parse_judge_verdict(reason_answer)
 
                     return is_correct, reason_answer
             except Exception as e:

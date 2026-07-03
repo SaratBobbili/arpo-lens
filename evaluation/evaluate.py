@@ -27,10 +27,18 @@ async def main():
                         help="Prompt schema used during inference. Set to 'echo' to additionally "
                              "report the trainer's HL/LL format pass rates.")
     parser.add_argument('--validator_profile', type=str, default='c1',
-                        help="ECHO validator profile id (c1..c5) matching mask_categories. "
-                             "Only consulted when --prompt_type=echo.")
+                        help="Legacy ECHO validator profile id (c1..c4). Only used as a "
+                             "fallback when --mask_categories is not given. Cannot express "
+                             "the 'both'/'none' phase overlap the rollout now supports.")
+    parser.add_argument('--mask_categories', type=str, default=None,
+                        help="The checkpoint's real mask_categories as a JSON dict "
+                             "(actor_rollout_ref.rollout.mask_categories). When set it is "
+                             "passed straight to the format validator and takes precedence "
+                             "over --validator_profile. Only consulted when --prompt_type=echo.")
 
     args = parser.parse_args()
+
+    mask_categories = json.loads(args.mask_categories) if args.mask_categories else None
     
     try:
         print(f"Model output file path: {args.output_path}")
@@ -73,6 +81,7 @@ async def main():
             concurrent_limit=args.concurrent_limit,
             prompt_type=args.prompt_type,
             validator_profile=args.validator_profile,
+            mask_categories=mask_categories,
         )
         
         # Show output path information

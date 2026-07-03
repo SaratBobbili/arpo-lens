@@ -12,12 +12,12 @@ def _load_compute_score():
     verl_path = os.path.join(repo_root, "ARPO", "verl_arpo_entropy")
     if verl_path not in sys.path:
         sys.path.insert(0, verl_path)
-    from verl.utils.reward_score.deep_research_echo import compute_score
+    from verl.utils.reward_score.deep_research_echo import compute_score, mask_categories_for_profile
 
-    return compute_score
+    return compute_score, mask_categories_for_profile
 
 
-def _score_file(path: str, validator_profile: str, compute_score):
+def _score_file(path: str, mask_categories: dict, compute_score):
     with open(path, "r", encoding="utf-8") as f:
         rows = json.load(f)
 
@@ -34,7 +34,7 @@ def _score_file(path: str, validator_profile: str, compute_score):
             data_source="grpo_mix",
             solution_str=row.get("output", "") or "",
             ground_truth=row.get("answer", ""),
-            extra_info={"validator_profile": validator_profile},
+            extra_info={"mask_categories": mask_categories},
         )
         hl_valid = int(result.get("high_level_valid", False))
         ll_valid = int(result.get("low_level_valid", False))
@@ -81,7 +81,7 @@ def _score_file(path: str, validator_profile: str, compute_score):
         "echo_low_level_pass_rate": ll_ok / n,
         "bad_format_rate": bad_format / n,
         "num_samples": len(rows),
-        "validator_profile": validator_profile,
+        "mask_categories": mask_categories,
     }
 
     base, _ = os.path.splitext(path)
@@ -102,10 +102,18 @@ def _score_file(path: str, validator_profile: str, compute_score):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--output_dir", required=True)
-    parser.add_argument("--validator_profile", default="c1")
+    parser.add_argument("--validator_profile", default="c1",
+                        help="Legacy fallback used only when --mask_categories is not given.")
+    parser.add_argument("--mask_categories", default=None,
+                        help="The checkpoint's real mask_categories as a JSON dict; takes "
+                             "precedence over --validator_profile and is passed straight to compute_score.")
     args = parser.parse_args()
 
-    compute_score = _load_compute_score()
+    compute_score, mask_categories_for_profile = _load_compute_score()
+    mask_categories = (
+        json.loads(args.mask_categories) if args.mask_categories
+        else mask_categories_for_profile(args.validator_profile)
+    )
     pattern = os.path.join(args.output_dir, "*", "*_output_*.json")
     files = sorted(glob.glob(pattern))
     files = [p for p in files if p.endswith(".json") and "_metrics" not in os.path.basename(p)]
@@ -113,7 +121,7 @@ def main():
         raise ValueError(f"No output json files found under: {args.output_dir}")
 
     for path in tqdm(files, desc="output files"):
-        _score_file(path, args.validator_profile, compute_score)
+        _score_file(path, mask_categories, compute_score)
 
 
 if __name__ == "__main__":

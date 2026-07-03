@@ -7,7 +7,7 @@ import string
 from typing import Dict, Any, List, Union, Optional, Tuple, Set
 from collections import Counter
 
-from .math_equivalence import is_equiv
+from .math_equivalence import is_equiv, math_answers_equal
 
 
 def normalize_answer(text: str, remove_articles: bool = False, remove_punctuations: bool = False) -> str:
@@ -94,19 +94,22 @@ def evaluate_math_prediction(
     Returns:
         A dictionary containing evaluation metrics.
     """
-    # Normalize answers
+    # Normalize answers (used only for em/f1 token metrics)
     normalized_prediction = normalize_answer(prediction)
     normalized_reference = normalize_answer(reference)
 
-    # Compute exact match and accuracy
     em = int(normalized_prediction == normalized_reference)
-    acc = int(normalized_reference in normalized_prediction)
-    
+
     # Compute F1 score
     num_same, pred_len, ref_len = compute_token_overlap(normalized_prediction, normalized_reference)
     f1 = compute_f1_score(num_same, pred_len, ref_len)
 
-    math_equal = int(is_equiv(normalized_prediction, normalized_reference))
+    # acc: strict normalized exact-match on the RAW strings (no substring
+    # containment, no lowercasing) -> removes the "216" in "-216" / "pi" in
+    # "60pi" false positives and the whitespace/\frac false negatives.
+    acc = int(is_equiv(prediction, reference))
+    # math_equal: strict OR numeric OR safe-symbolic equality on raw strings.
+    math_equal = int(math_answers_equal(prediction, reference))
 
     return {
         "em": em,
@@ -137,7 +140,8 @@ def evaluate_grpo_mix_prediction(
         normalized_reference = normalize_answer(reference, remove_articles=True, remove_punctuations=True)
 
         em = int(normalized_prediction == normalized_reference)
-        acc = int(normalized_reference in normalized_prediction)
+        # exact-match acc (no substring containment) to avoid false positives
+        acc = em
         num_same, pred_len, ref_len = compute_token_overlap(normalized_prediction, normalized_reference)
         f1 = compute_f1_score(num_same, pred_len, ref_len)
 
@@ -182,7 +186,8 @@ def evaluate_qa_prediction(
         normalized_reference = normalize_answer(reference, remove_articles=True)
 
         em = int(normalized_prediction == normalized_reference)
-        acc = int(normalized_reference in normalized_prediction)
+        # exact-match acc (no substring containment) to avoid false positives
+        acc = em
         
         num_same, pred_len, ref_len = compute_token_overlap(normalized_prediction, normalized_reference)
         f1 = compute_f1_score(num_same, pred_len, ref_len)

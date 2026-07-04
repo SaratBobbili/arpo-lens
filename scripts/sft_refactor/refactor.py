@@ -277,20 +277,19 @@ def _fit(values: List[str], n: int, filler: List[str]) -> List[str]:
     return values
 
 
-async def _gpt_json(client, model, system, prompt, sem, timeout, label="", retries=3):
+async def _gpt_json(client, model, system, prompt, timeout, label="", retries=3):
     for attempt in range(retries):
         try:
-            async with sem:
-                resp = await client.chat.completions.create(
-                    model=model,
-                    messages=[
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": prompt},
-                    ],
-                    temperature=0.3,
-                    max_tokens=4096,
-                    timeout=timeout,
-                )
+            resp = await client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.3,
+                max_tokens=4096,
+                timeout=timeout,
+            )
             return _loads_lenient(_strip_fences(resp.choices[0].message.content))
         except Exception as e:
             tqdm.write(f"[gpt:{label}] attempt {attempt + 1}/{retries} failed: {type(e).__name__}: {e}")
@@ -300,7 +299,7 @@ async def _gpt_json(client, model, system, prompt, sem, timeout, label="", retri
     return None
 
 
-async def split_row(client, args, segments, question: str, sem) -> Optional[str]:
+async def split_row(client, args, segments, question: str) -> Optional[str]:
     units, think_count = action_units(segments)
     if not units:
         return None
@@ -312,7 +311,7 @@ async def split_row(client, args, segments, question: str, sem) -> Optional[str]
 
     _, heur_tools = heuristic_split(thinks_src, units)
     data = await _gpt_json(
-        client, args.model, GPT_SYSTEM, build_split_prompt(question, segments), sem, args.timeout, "breakdown"
+        client, args.model, GPT_SYSTEM, build_split_prompt(question, segments), args.timeout, "breakdown"
     )
     if data:
         thinks = _fit(data.get("thinks", []), think_count, thinks_src)
@@ -324,7 +323,7 @@ async def split_row(client, args, segments, question: str, sem) -> Optional[str]
 
     if args.coherence_review:
         review = await _gpt_json(
-            client, args.model, GPT_REVIEW_SYSTEM, build_review_prompt(question, assembled), sem,
+            client, args.model, GPT_REVIEW_SYSTEM, build_review_prompt(question, assembled),
             args.timeout, "review",
         )
         if review and not review.get("ok"):
@@ -355,7 +354,6 @@ async def run_split(args: argparse.Namespace) -> None:
         )
         print(f"GPT client: model={args.model} base_url={args.base_url or 'default'} "
               f"timeout={args.timeout}s concurrency={args.concurrency}")
-    sem = asyncio.Semaphore(args.concurrency)
 
     ds = load_data(args.dataset, args.split)
     if args.limit:
@@ -389,7 +387,7 @@ async def run_split(args: argparse.Namespace) -> None:
         ex = ds[idx]
         question = extract_question(ex)
         segments = parse_segments(extract_assistant(ex))
-        new_assistant = await split_row(client, args, segments, question, sem)
+        new_assistant = await split_row(client, args, segments, question)
 
         async with lock:
             if new_assistant is None:
@@ -408,7 +406,21 @@ async def run_split(args: argparse.Namespace) -> None:
                 ckpt_f.flush()
             pbar.update(1)
 
-    await asyncio.gather(*(process(m) for m in index))
+    # Bounded worker pool: only `concurrency` rows in flight at once (prep is lazy, each row is
+    # checkpointed as it finishes), so progress is steady and never stalls on task-creation flood.
+    cursor = 0
+
+    async def worker() -> None:
+        nonlocal cursor
+        while True:
+            async with lock:
+                if cursor >= len(index):
+                    return
+                meta = index[cursor]
+                cursor += 1
+            await process(meta)
+
+    await asyncio.gather(*(worker() for _ in range(max(1, args.concurrency))))
     pbar.close()
     ckpt_f.close()
 

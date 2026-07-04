@@ -4,8 +4,8 @@
   "total_rows": 54574,
   "unique_patterns": 560,
   "action_counts": {
-    "gpt_split": 53675,
-    "drop": 899
+    "gpt_split": 54331,
+    "drop": 243
   },
   "flag_counts": {
     "first_tag_not_think": 356,
@@ -15,6 +15,7 @@
     "missing_boxed": 5,
     "missing_result_after_search": 39,
     "missing_answer": 466,
+    "trailing_boxed": 362,
     "missing_result_after_python": 8,
     "unpaired_answer": 2,
     "unpaired_result": 4,

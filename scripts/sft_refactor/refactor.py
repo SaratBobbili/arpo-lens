@@ -74,9 +74,14 @@ def load_data(dataset: str, split: str):
 
 def infer_conversion_rule(flags: list[str]) -> dict:
     """Drop only unrecoverable rows; everything else (incl. salvageable) goes through GPT split."""
-    if "empty_trajectory" in flags or "multiple_answer" in flags or any(f in flags for f in UNPAIRED_FLAGS):
-        return {"action": "drop", "strip_stray": False}
-    if "missing_answer" in flags and "trailing_boxed" not in flags:
+    # A trailing boxed conclusion is promoted to <answer>; the stray tag fragments it leaves behind
+    # (which trip unpaired_* / missing_answer) are stripped during reassembly, so salvage it.
+    if "trailing_boxed" not in flags and (
+        "empty_trajectory" in flags
+        or "multiple_answer" in flags
+        or "missing_answer" in flags
+        or any(f in flags for f in UNPAIRED_FLAGS)
+    ):
         return {"action": "drop", "strip_stray": False}
     return {"action": "gpt_split", "strip_stray": "has_stray_text" in flags}
 
@@ -316,8 +321,6 @@ async def split_row(client, args, segments, question: str, sem) -> Optional[str]
 async def run_split(args: argparse.Namespace) -> None:
     with open(os.path.join(args.inspect_dir, "inspect_index.jsonl")) as f:
         index = [json.loads(ln) for ln in f if ln.strip()]
-    with open(os.path.join(args.inspect_dir, "conversion_rules.json")) as f:
-        rules = json.load(f)
 
     if args.heuristic_only:
         args.coherence_review = False
@@ -352,8 +355,7 @@ async def run_split(args: argparse.Namespace) -> None:
         idx = meta["idx"]
         if idx in done:
             return
-        rule = rules.get(meta["pattern_id"], {"action": "gpt_split"})
-        if rule.get("action") == "drop":
+        if meta.get("conversion_action", "gpt_split") == "drop":
             async with lock:
                 stats["drop"] += 1
                 pbar.update(1)

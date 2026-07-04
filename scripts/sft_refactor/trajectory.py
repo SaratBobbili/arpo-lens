@@ -129,8 +129,7 @@ def structural_flags(segments: List[Segment], text: str) -> List[str]:
 
     if counts["answer"] == 0:
         flags.append("missing_answer")
-        last = next((s for s in reversed(segments) if s.kind != "stray"), None)
-        if last is not None and last.kind == "think" and "\\boxed{" in last.content and not _has_tag_markers(last.content):
+        if _trailing_boxed_think(merge_consecutive_thinks(segments)) is not None:
             flags.append("trailing_boxed")
     elif counts["answer"] > 1:
         flags.append("multiple_answer")
@@ -186,15 +185,28 @@ def merge_consecutive_thinks(segments: List[Segment]) -> List[Segment]:
     return merged
 
 
-_TAG_MARKERS = (
-    "<think>", "</think>", "<search>", "</search>", "<python>", "</python>",
-    "<result>", "</result>", "<answer>", "</answer>",
-)
+# Delimiter fragments the parser leaves stranded in a trailing boxed think; stripped before split.
+_STRIP_FRAGMENTS = ("</answer>", "<answer>", "</result>", "<result>", "</think>", "<think>")
+# Tool call / result content leaking into the trailing think — unsafe to salvage, keep dropped.
+_LEAK_MARKERS = ("<result>", "</result>", "<search>", "</search>", "<python>", "</python>")
 
 
-def _has_tag_markers(text: str) -> bool:
-    low = text.lower()
-    return any(m in low for m in _TAG_MARKERS)
+def _strip_tag_fragments(text: str) -> str:
+    for f in _STRIP_FRAGMENTS:
+        text = re.sub(re.escape(f), "", text, flags=re.IGNORECASE)
+    return text
+
+
+def _trailing_boxed_think(segs: List[Segment]) -> Segment | None:
+    """The trailing <think> holding a \\boxed{} conclusion (no <answer>, no leaked tool content)."""
+    if any(s.kind == "answer" for s in segs):
+        return None
+    last = next((s for s in reversed(segs) if s.kind != "stray"), None)
+    if last is None or last.kind != "think" or "\\boxed{" not in last.content:
+        return None
+    if any(m in last.content.lower() for m in _LEAK_MARKERS):
+        return None
+    return last
 
 
 def _split_boxed(text: str) -> tuple[str, str]:
@@ -210,16 +222,12 @@ def _split_boxed(text: str) -> tuple[str, str]:
 
 
 def _promote_trailing_answer(segs: List[Segment]) -> List[Segment]:
-    """A trajectory with no <answer> but a trailing <think> holding \\boxed{}: split it into think + answer."""
-    if any(s.kind == "answer" for s in segs):
+    """No <answer> but a trailing <think> holding \\boxed{}: strip stray tag fragments, split think + answer."""
+    last = _trailing_boxed_think(segs)
+    if last is None:
         return segs
-    if not segs or segs[-1].kind != "think" or "\\boxed{" not in segs[-1].content:
-        return segs
-    if _has_tag_markers(segs[-1].content):
-        return segs
-    last = segs[-1]
-    reasoning, answer = _split_boxed(last.content)
-    out = segs[:-1]
+    reasoning, answer = _split_boxed(_strip_tag_fragments(last.content))
+    out = [s for s in segs if s is not last]
     if reasoning:
         out.append(Segment("think", reasoning, last.start, last.end))
     out.append(Segment("answer", answer, last.start, last.end))

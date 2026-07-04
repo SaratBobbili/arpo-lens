@@ -136,8 +136,10 @@ Heuristic fallback (`--heuristic-only`, no API): keep thinks as-is; for each act
 | Metric | Value |
 |--------|-------|
 | Unique patterns | 560 |
-| `gpt_split` (post-refactor: all non-drop, incl. salvaged tool-first) | 53,969 |
-| `drop` (unpaired / multiple-or-absent answer / empty) | 605 (1.1%) |
+| `gpt_split` (post-refactor: all non-drop, incl. salvaged tool-first + trailing-boxed) | 54,331 |
+| `drop` (unpaired / multiple-or-absent answer / empty, none salvageable) | 243 (0.45%) |
+
+Salvage: 362 `missing_answer` rows whose trailing `<think>` holds a `\boxed{}` conclusion are promoted to `<answer>` (`trailing_boxed`); 12 rows whose trailing think also leaks tool-call/result content (`<result>`/`</result>`/`<python>`/`<search>`) stay dropped. `trailing_boxed` overrides the `unpaired_*`/`missing_answer` drop (those flags are artifacts of the same trailing mangle, stripped during reassembly). All 362 pass `verify`.
 
 Top patterns:
 - `think→python→result→answer` — 39.2%
@@ -210,13 +212,15 @@ Done and validated (heuristic pilot passes verify):
 - Consolidated to `constants.py` / `trajectory.py` / `refactor.py`; removed the 5 legacy scripts; added `README.md`.
 - Salvage tool-first / tool-before-think rows: `trajectory.normalize` prepends an empty leading `<think>` (GPT writes the opening reasoning). Removed `first_tag_not_think`/`tool_before_think` from drop.
 - Prompts: `GPT_SYSTEM`/`GPT_REVIEW_SYSTEM`/`NEW_SYSTEM_PROMPT` now require a CONCISE but qualitatively rich `<tool>` (not verbose) that flows from the preceding `<think>`. `build_split_prompt` shows the trajectory as an ordered, interleaved `[think i]`/`[action j]`/`(result)` view.
-- `infer_conversion_rule` reworked: drop only `empty` / `multiple_answer` / any `unpaired_*`, and `missing_answer` without `trailing_boxed`.
+- `infer_conversion_rule` reworked: drop only `empty` / `multiple_answer` / any `unpaired_*` / `missing_answer`, **unless `trailing_boxed` is set** (which overrides all of these).
 
-**BUG to fix next — trailing-boxed salvage barely fires (drop stayed 602, only 3 rows salvaged).**
-- Intended: salvage `missing_answer` rows that end in a `<think>` containing `\boxed{}` (patterns `think→python→result→think`, `think→search→result→think`) by promoting that trailing conclusion into `<answer>` (verbatim, no fabrication) via `trajectory._promote_trailing_answer` + `_split_boxed`, gated by the `trailing_boxed` flag.
-- Root cause: the dominant real shape is a final block **opened with `<think>` but closed with `</answer>`** (the boxed conclusion is the intended answer). The parser leaves a stray `</answer>` inside the think content. The `_has_tag_markers` guard I added then rejects these exact rows: of 374 trailing-boxed thinks, only 3 are "clean"; marker freq = `</answer>`:371, `<answer>`:78, `</result>`:12, `<result>`:1.
-- Fix direction: instead of rejecting, STRIP the stray trailing/embedded tag fragments from the trailing think content, then `_split_boxed` into reasoning + answer. Inspect the `<answer>`(78)/`</result>`(12) cases first to decide if stripping is safe or those stay dropped. Was about to print full raw of idx 1832 to confirm the exact tag layout (`...</result> <think>conclusion \boxed{X}.</answer>`).
-- After fix: re-run `inspect` (expect drop to fall to ~220–230, `gpt_split` ~54.3k), heuristic pilot + `verify` (all salvaged rows must pass), then update the counts in "Inspect results" and this section.
+**DONE — trailing-boxed salvage (drop 602 → 243, gpt_split 54,331; all 362 salvaged rows pass verify).**
+- `trajectory._trailing_boxed_think` is the single shared predicate used by both `structural_flags` (sets `trailing_boxed`) and `_promote_trailing_answer`: last non-stray segment is a `<think>` with `\boxed{}` and **no** leaked tool content (`<result>`/`</result>`/`<search>`/`</search>`/`<python>`/`</python>` → `_LEAK_MARKERS`). Both callers pass merged segments to stay in sync.
+- `_promote_trailing_answer` now STRIPS the stray delimiter fragments (`_STRIP_FRAGMENTS`: `</answer>`,`<answer>`,`</result>`,`<result>`,`</think>`,`<think>`) from the trailing think, then `_split_boxed` → reasoning `<think>` + verbatim boxed `<answer>`. The boxed value is never touched.
+- Marker inspection (374 trailing-boxed candidates): `</answer>`-only (293) + `<answer>`,`</answer>` (66) + none (3) = 362 salvage cleanly; the 12 rows with `</result>`/`<result>` markers leak python result output into the answer, so they stay dropped (excluded via `_LEAK_MARKERS`).
+- Those 362 also carry artifact `unpaired_think`/`missing_answer` flags (stray `</think>`/`<answer>` from the mangle); `infer_conversion_rule` checks `trailing_boxed` first so they are salvaged, not dropped. Verified: all 362 reassemble+`verify` clean.
+- `run_split` now drops by the **per-row** `conversion_action` from `inspect_index.jsonl` (not the per-pattern `conversion_rules.json`), because `trailing_boxed` is row-level and patterns like `think→search→result→think` are mixed.
+- Full heuristic split + verify: 54,331 rows, 26 bad (0 of them salvaged rows — pre-existing `stray_text`/`missing_boxed` etc., pruned downstream).
 
 Env / run notes:
 - `conda activate arpo`; dataset is cached locally. Shell runs must use elevated perms (`required_permissions: ["all"]`) — the HF filelock lives outside the workspace and the sandbox blocks it. Heredocs fail in the sandbox; use `python -c`.

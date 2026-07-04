@@ -12,7 +12,7 @@
     "strip_stray": false
   },
   "search\u2192result\u2192think\u2192answer": {
-    "action": "drop",
+    "action": "gpt_split",
     "strip_stray": false
   },
   "think\u2192search\u2192result\u2192search\u2192result\u2192search\u2192result\u2192think\u2192answer": {
@@ -148,7 +148,7 @@
     "strip_stray": false
   },
   "search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192answer": {
-    "action": "drop",
+    "action": "gpt_split",
     "strip_stray": false
   },
   "think\u2192search\u2192search\u2192result\u2192think\u2192answer+stray": {
@@ -200,7 +200,7 @@
     "strip_stray": false
   },
   "search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192answer": {
-    "action": "drop",
+    "action": "gpt_split",
     "strip_stray": false
   },
   "think\u2192search\u2192result\u2192search\u2192result\u2192python\u2192result\u2192think\u2192answer": {
@@ -236,7 +236,7 @@
     "strip_stray": false
   },
   "search\u2192result\u2192search\u2192result\u2192think\u2192answer": {
-    "action": "drop",
+    "action": "gpt_split",
     "strip_stray": false
   },
   "think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192search\u2192result\u2192think\u2192answer": {
@@ -272,7 +272,7 @@
     "strip_stray": false
   },
   "think\u2192python\u2192result\u2192think": {
-    "action": "drop",
+    "action": "gpt_split",
     "strip_stray": false
   },
   "think\u2192python\u2192result\u2192python\u2192result\u2192python\u2192result\u2192answer": {
@@ -344,7 +344,7 @@
     "strip_stray": false
   },
   "think": {
-    "action": "drop",
+    "action": "gpt_split",
     "strip_stray": false
   },
   "think\u2192python\u2192result\u2192python\u2192result\u2192answer": {
@@ -380,7 +380,7 @@
     "strip_stray": false
   },
   "search\u2192result\u2192think\u2192search\u2192result\u2192search\u2192result\u2192think\u2192answer": {
-    "action": "drop",
+    "action": "gpt_split",
     "strip_stray": false
   },
   "think\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192answer": {
@@ -448,7 +448,7 @@
     "strip_stray": false
   },
   "search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192answer": {
-    "action": "drop",
+    "action": "gpt_split",
     "strip_stray": false
   },
   "think\u2192python\u2192result\u2192think\u2192python\u2192result\u2192python\u2192result\u2192think\u2192python\u2192result\u2192python\u2192result\u2192think\u2192answer": {
@@ -524,7 +524,7 @@
     "strip_stray": false
   },
   "search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192answer": {
-    "action": "drop",
+    "action": "gpt_split",
     "strip_stray": false
   },
   "think\u2192python\u2192result\u2192search\u2192result\u2192think\u2192python\u2192result\u2192answer": {
@@ -748,7 +748,7 @@
     "strip_stray": false
   },
   "search\u2192result\u2192answer": {
-    "action": "drop",
+    "action": "gpt_split",
     "strip_stray": false
   },
   "think\u2192search\u2192result\u2192search\u2192result\u2192python\u2192result\u2192python\u2192result\u2192python\u2192result\u2192think\u2192python\u2192result\u2192python\u2192result\u2192python\u2192result\u2192think\u2192python\u2192result\u2192answer": {
@@ -812,7 +812,7 @@
     "strip_stray": false
   },
   "search\u2192result\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192answer": {
-    "action": "drop",
+    "action": "gpt_split",
     "strip_stray": false
   },
   "think\u2192python\u2192result\u2192think\u2192python\u2192result\u2192python\u2192result\u2192python\u2192result\u2192think\u2192answer": {
@@ -976,7 +976,7 @@
     "strip_stray": false
   },
   "think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think": {
-    "action": "drop",
+    "action": "gpt_split",
     "strip_stray": false
   },
   "think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192think\u2192search\u2192result\u2192think\u2192answer": {
@@ -1080,7 +1080,7 @@
     "strip_stray": false
   },
   "search\u2192result\u2192search\u2192result\u2192think\u2192search\u2192result\u2192search\u2192result\u2192search\u2192result\u2192think\u2192answer": {
-    "action": "drop",
+    "action": "gpt_split",
     "strip_stray": false
   },
   "think\u2192python\u2192result\u2192think\u2192search\u2192result\u2192search\u2192result\u2192think\u2192python\u2192result\u2192think\u2192answer": {
@@ -1128,7 +1128,7 @@
     "strip_stray": true
   },
   "search\u2192result\u2192think\u2192search\u2192result\u2192search\u2192result\u2192search\u2192result\u2192think\u2192answer": {
-    "action": "drop",
+    "action": "gpt_split",
     "strip_stray": false
   },
   "think\u2192python\u2192result\u2192think\u2192python\u2192result\u2192python\u2192result\u2192python\u2192result\u2192python\u2192result\u2192think\u2192python\u2192result\u2192think\u2192python\u2192result\u2192think\u2192python\u2192result\u2192answer": {
@@ -1212,7 +1212,7 @@
     "strip_stray": false
   },
   "search\u2192result\u2192think\u2192search\u2192result\u2192search\u2192result\u2192search\u2192result\u2192search\u2192result\u2192search\u2192result\u2192search\u2192result\u2192think\u2192answer": {
-    "action": "drop",
+    "action": "gpt_split",
     "strip_stray": false
   },
   "think\u2192search\u2192result\u2192think\u2192think\u2192search\u2192result\u2192think\u2192think\u2192answer": {
@@ -1392,7 +1392,7 @@
     "strip_stray": false
   },
   "search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192answer": {
-    "action": "drop",
+    "action": "gpt_split",
     "strip_stray": false
   },
   "think\u2192python\u2192result\u2192think\u2192python\u2192result\u2192think\u2192python\u2192result\u2192python\u2192result\u2192python\u2192result\u2192python\u2192result\u2192think\u2192answer": {
@@ -1484,7 +1484,7 @@
     "strip_stray": false
   },
   "search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192answer": {
-    "action": "drop",
+    "action": "gpt_split",
     "strip_stray": false
   },
   "think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192think\u2192answer": {
@@ -1540,7 +1540,7 @@
     "strip_stray": true
   },
   "search\u2192result\u2192search\u2192result\u2192search\u2192result\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192answer": {
-    "action": "drop",
+    "action": "gpt_split",
     "strip_stray": false
   },
   "think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192python\u2192result\u2192think\u2192python\u2192result\u2192think\u2192answer": {
@@ -1720,7 +1720,7 @@
     "strip_stray": false
   },
   "search\u2192result\u2192search\u2192result\u2192search\u2192result\u2192think\u2192answer": {
-    "action": "drop",
+    "action": "gpt_split",
     "strip_stray": false
   },
   "think\u2192python\u2192result\u2192search\u2192result\u2192python\u2192result\u2192search\u2192result\u2192python\u2192result\u2192answer": {
@@ -1748,7 +1748,7 @@
     "strip_stray": false
   },
   "search\u2192result\u2192search\u2192result\u2192search\u2192result\u2192search\u2192result\u2192search\u2192result\u2192think\u2192search\u2192result\u2192search\u2192result\u2192think\u2192answer": {
-    "action": "drop",
+    "action": "gpt_split",
     "strip_stray": false
   },
   "think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192think\u2192search\u2192result\u2192think\u2192answer": {
@@ -1964,7 +1964,7 @@
     "strip_stray": false
   },
   "think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think": {
-    "action": "drop",
+    "action": "gpt_split",
     "strip_stray": false
   },
   "think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192search\u2192think\u2192result\u2192answer+stray": {
@@ -2000,7 +2000,7 @@
     "strip_stray": false
   },
   "search\u2192result\u2192search\u2192result\u2192search\u2192result\u2192search\u2192result\u2192search\u2192result\u2192search\u2192result\u2192search\u2192result\u2192think\u2192answer": {
-    "action": "drop",
+    "action": "gpt_split",
     "strip_stray": false
   },
   "think\u2192search\u2192result\u2192search\u2192result\u2192search\u2192result\u2192search\u2192result\u2192python\u2192result\u2192python\u2192result\u2192python\u2192result\u2192python\u2192result\u2192python\u2192result\u2192think\u2192answer": {
@@ -2100,7 +2100,7 @@
     "strip_stray": false
   },
   "search\u2192result\u2192search\u2192result\u2192search\u2192result\u2192search\u2192result\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192answer": {
-    "action": "drop",
+    "action": "gpt_split",
     "strip_stray": false
   },
   "think\u2192python\u2192result\u2192search\u2192result\u2192search\u2192result\u2192python\u2192result\u2192python\u2192result\u2192answer": {

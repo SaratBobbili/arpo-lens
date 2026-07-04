@@ -51,7 +51,7 @@
       598
     ],
     "conversion_rule": {
-      "action": "drop",
+      "action": "gpt_split",
       "strip_stray": false
     }
   },
@@ -535,7 +535,7 @@
       50479
     ],
     "conversion_rule": {
-      "action": "drop",
+      "action": "gpt_split",
       "strip_stray": false
     }
   },
@@ -713,7 +713,7 @@
       1999
     ],
     "conversion_rule": {
-      "action": "drop",
+      "action": "gpt_split",
       "strip_stray": false
     }
   },
@@ -836,7 +836,7 @@
       23915
     ],
     "conversion_rule": {
-      "action": "drop",
+      "action": "gpt_split",
       "strip_stray": false
     }
   },
@@ -957,7 +957,7 @@
       2179
     ],
     "conversion_rule": {
-      "action": "drop",
+      "action": "gpt_split",
       "strip_stray": false
     }
   },
@@ -1214,7 +1214,7 @@
       4634
     ],
     "conversion_rule": {
-      "action": "drop",
+      "action": "gpt_split",
       "strip_stray": false
     }
   },
@@ -1337,7 +1337,7 @@
       20208
     ],
     "conversion_rule": {
-      "action": "drop",
+      "action": "gpt_split",
       "strip_stray": false
     }
   },
@@ -1576,7 +1576,7 @@
       39032
     ],
     "conversion_rule": {
-      "action": "drop",
+      "action": "gpt_split",
       "strip_stray": false
     }
   },
@@ -1822,7 +1822,7 @@
       50024
     ],
     "conversion_rule": {
-      "action": "drop",
+      "action": "gpt_split",
       "strip_stray": false
     }
   },
@@ -2533,7 +2533,7 @@
       53227
     ],
     "conversion_rule": {
-      "action": "drop",
+      "action": "gpt_split",
       "strip_stray": false
     }
   },
@@ -2730,7 +2730,7 @@
       10576
     ],
     "conversion_rule": {
-      "action": "drop",
+      "action": "gpt_split",
       "strip_stray": false
     }
   },
@@ -3242,7 +3242,7 @@
       27772
     ],
     "conversion_rule": {
-      "action": "drop",
+      "action": "gpt_split",
       "strip_stray": false
     }
   },
@@ -3555,7 +3555,7 @@
       17665
     ],
     "conversion_rule": {
-      "action": "drop",
+      "action": "gpt_split",
       "strip_stray": false
     }
   },
@@ -3701,7 +3701,7 @@
       18610
     ],
     "conversion_rule": {
-      "action": "drop",
+      "action": "gpt_split",
       "strip_stray": false
     }
   },
@@ -3947,7 +3947,7 @@
       22333
     ],
     "conversion_rule": {
-      "action": "drop",
+      "action": "gpt_split",
       "strip_stray": false
     }
   },
@@ -4472,7 +4472,7 @@
       52297
     ],
     "conversion_rule": {
-      "action": "drop",
+      "action": "gpt_split",
       "strip_stray": false
     }
   },
@@ -4737,7 +4737,7 @@
       47946
     ],
     "conversion_rule": {
-      "action": "drop",
+      "action": "gpt_split",
       "strip_stray": false
     }
   },
@@ -4895,7 +4895,7 @@
       33238
     ],
     "conversion_rule": {
-      "action": "drop",
+      "action": "gpt_split",
       "strip_stray": false
     }
   },
@@ -5401,7 +5401,7 @@
       40285
     ],
     "conversion_rule": {
-      "action": "drop",
+      "action": "gpt_split",
       "strip_stray": false
     }
   },
@@ -5480,7 +5480,7 @@
       41148
     ],
     "conversion_rule": {
-      "action": "drop",
+      "action": "gpt_split",
       "strip_stray": false
     }
   },
@@ -6100,7 +6100,7 @@
       50832
     ],
     "conversion_rule": {
-      "action": "drop",
+      "action": "gpt_split",
       "strip_stray": false
     }
   },
@@ -6204,7 +6204,7 @@
       51323
     ],
     "conversion_rule": {
-      "action": "drop",
+      "action": "gpt_split",
       "strip_stray": false
     }
   },
@@ -6489,7 +6489,7 @@
       53395
     ],
     "conversion_rule": {
-      "action": "drop",
+      "action": "gpt_split",
       "strip_stray": false
     }
   },

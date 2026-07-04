@@ -203,3 +203,21 @@ You are a helpful assistant that solves the given question step by step with a w
 
 - RL reward in `deep_research_echo.py` still expects `<select>` — separate update if RL uses this schema.
 - Register `echo_sft_v3` in `LLaMA-Factory/arpo_train_sft/dataset_info/dataset_info.json` after validation.
+
+## Session handoff (WIP)
+
+Done and validated (heuristic pilot passes verify):
+- Consolidated to `constants.py` / `trajectory.py` / `refactor.py`; removed the 5 legacy scripts; added `README.md`.
+- Salvage tool-first / tool-before-think rows: `trajectory.normalize` prepends an empty leading `<think>` (GPT writes the opening reasoning). Removed `first_tag_not_think`/`tool_before_think` from drop.
+- Prompts: `GPT_SYSTEM`/`GPT_REVIEW_SYSTEM`/`NEW_SYSTEM_PROMPT` now require a CONCISE but qualitatively rich `<tool>` (not verbose) that flows from the preceding `<think>`. `build_split_prompt` shows the trajectory as an ordered, interleaved `[think i]`/`[action j]`/`(result)` view.
+- `infer_conversion_rule` reworked: drop only `empty` / `multiple_answer` / any `unpaired_*`, and `missing_answer` without `trailing_boxed`.
+
+**BUG to fix next — trailing-boxed salvage barely fires (drop stayed 602, only 3 rows salvaged).**
+- Intended: salvage `missing_answer` rows that end in a `<think>` containing `\boxed{}` (patterns `think→python→result→think`, `think→search→result→think`) by promoting that trailing conclusion into `<answer>` (verbatim, no fabrication) via `trajectory._promote_trailing_answer` + `_split_boxed`, gated by the `trailing_boxed` flag.
+- Root cause: the dominant real shape is a final block **opened with `<think>` but closed with `</answer>`** (the boxed conclusion is the intended answer). The parser leaves a stray `</answer>` inside the think content. The `_has_tag_markers` guard I added then rejects these exact rows: of 374 trailing-boxed thinks, only 3 are "clean"; marker freq = `</answer>`:371, `<answer>`:78, `</result>`:12, `<result>`:1.
+- Fix direction: instead of rejecting, STRIP the stray trailing/embedded tag fragments from the trailing think content, then `_split_boxed` into reasoning + answer. Inspect the `<answer>`(78)/`</result>`(12) cases first to decide if stripping is safe or those stay dropped. Was about to print full raw of idx 1832 to confirm the exact tag layout (`...</result> <think>conclusion \boxed{X}.</answer>`).
+- After fix: re-run `inspect` (expect drop to fall to ~220–230, `gpt_split` ~54.3k), heuristic pilot + `verify` (all salvaged rows must pass), then update the counts in "Inspect results" and this section.
+
+Env / run notes:
+- `conda activate arpo`; dataset is cached locally. Shell runs must use elevated perms (`required_permissions: ["all"]`) — the HF filelock lives outside the workspace and the sandbox blocks it. Heredocs fail in the sandbox; use `python -c`.
+- Uncommitted: `constants.py`, `trajectory.py`, `refactor.py`, `sft_refactor_plan.md`, new `README.md`; 5 legacy files `git rm`'d; `output/inspect/` regenerated + pilot artifacts under `output/`.

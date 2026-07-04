@@ -129,6 +129,9 @@ def structural_flags(segments: List[Segment], text: str) -> List[str]:
 
     if counts["answer"] == 0:
         flags.append("missing_answer")
+        last = next((s for s in reversed(segments) if s.kind != "stray"), None)
+        if last is not None and last.kind == "think" and "\\boxed{" in last.content and not _has_tag_markers(last.content):
+            flags.append("trailing_boxed")
     elif counts["answer"] > 1:
         flags.append("multiple_answer")
 
@@ -183,9 +186,49 @@ def merge_consecutive_thinks(segments: List[Segment]) -> List[Segment]:
     return merged
 
 
+_TAG_MARKERS = (
+    "<think>", "</think>", "<search>", "</search>", "<python>", "</python>",
+    "<result>", "</result>", "<answer>", "</answer>",
+)
+
+
+def _has_tag_markers(text: str) -> bool:
+    low = text.lower()
+    return any(m in low for m in _TAG_MARKERS)
+
+
+def _split_boxed(text: str) -> tuple[str, str]:
+    """Split trailing reasoning into (reasoning, answer) at the paragraph/sentence holding the last \\boxed."""
+    bi = text.rfind("\\boxed{")
+    para = text.rfind("\n\n", 0, bi)
+    if para != -1:
+        cut = para
+    else:
+        sent = max(text.rfind(". ", 0, bi), text.rfind(".\n", 0, bi), text.rfind("。", 0, bi))
+        cut = sent + 1 if sent != -1 else 0
+    return text[:cut].strip(), text[cut:].strip()
+
+
+def _promote_trailing_answer(segs: List[Segment]) -> List[Segment]:
+    """A trajectory with no <answer> but a trailing <think> holding \\boxed{}: split it into think + answer."""
+    if any(s.kind == "answer" for s in segs):
+        return segs
+    if not segs or segs[-1].kind != "think" or "\\boxed{" not in segs[-1].content:
+        return segs
+    if _has_tag_markers(segs[-1].content):
+        return segs
+    last = segs[-1]
+    reasoning, answer = _split_boxed(last.content)
+    out = segs[:-1]
+    if reasoning:
+        out.append(Segment("think", reasoning, last.start, last.end))
+    out.append(Segment("answer", answer, last.start, last.end))
+    return out
+
+
 def normalize(segments: List[Segment]) -> List[Segment]:
-    """Merge thinks and prepend an empty leading think when the trajectory starts with an action."""
-    merged = merge_consecutive_thinks(segments)
+    """Merge thinks, promote a trailing boxed think into an answer, and prepend a leading think if needed."""
+    merged = _promote_trailing_answer(merge_consecutive_thinks(segments))
     if merged and merged[0].kind != "think":
         merged.insert(0, Segment("think", "", 0, 0))
     return merged

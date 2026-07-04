@@ -39,6 +39,7 @@ from trajectory import (
     count_tags,
     extract_assistant,
     extract_question,
+    normalize,
     parse_segments,
     pattern_id_from_segments,
     reassemble,
@@ -49,17 +50,15 @@ from trajectory import (
     verify_text,
 )
 
-# Tool-first / tool-before-think rows are salvaged (GPT prepends an opening <think>),
-# so they are NOT dropped — only truly malformed rows are.
-DROP_FLAGS = {
-    "empty_trajectory",
+# Only truly malformed rows are dropped. Tool-first / tool-before-think rows are salvaged
+# (leading <think> prepended); missing-answer rows are salvaged when a trailing <think> holds
+# a \boxed{} conclusion (promoted to <answer>).
+UNPAIRED_FLAGS = {
     "unpaired_think",
     "unpaired_search",
     "unpaired_python",
     "unpaired_result",
     "unpaired_answer",
-    "multiple_answer",
-    "missing_answer",
 }
 
 
@@ -74,8 +73,10 @@ def load_data(dataset: str, split: str):
 # --------------------------------------------------------------------------- #
 
 def infer_conversion_rule(flags: list[str]) -> dict:
-    """drop malformed rows; everything else goes through GPT split."""
-    if any(f in flags for f in DROP_FLAGS):
+    """Drop only unrecoverable rows; everything else (incl. salvageable) goes through GPT split."""
+    if "empty_trajectory" in flags or "multiple_answer" in flags or any(f in flags for f in UNPAIRED_FLAGS):
+        return {"action": "drop", "strip_stray": False}
+    if "missing_answer" in flags and "trailing_boxed" not in flags:
         return {"action": "drop", "strip_stray": False}
     return {"action": "gpt_split", "strip_stray": "has_stray_text" in flags}
 
@@ -215,19 +216,29 @@ def heuristic_split(thinks: List[str], units: List[dict]) -> tuple[List[str], Li
     return thinks_out, tools
 
 
-def build_split_prompt(question: str, thinks: List[str], units: List[dict]) -> str:
-    lines = [f"Question:\n{question}\n", f"Think blocks ({len(thinks)}):"]
-    for i, t in enumerate(thinks):
-        if t.strip():
-            lines.append(f"[think {i}] {t[-2000:]}")
-        else:
-            lines.append(f"[think {i}] (no source — write the opening reasoning that frames the problem)")
-    lines.append(f"\nActions ({len(units)}):")
-    for i, u in enumerate(units):
-        label = "final answer" if u["kind"] == "answer" else f"{u['kind']} call"
-        lines.append(f"[action {i}] ({label}) {u['content']}")
+def build_split_prompt(question: str, segments) -> str:
+    """Ordered, interleaved view so each tool rationale can follow the think block just above it."""
+    merged = normalize(segments)
+    lines = [f"Question:\n{question}\n", "Trajectory in order:"]
+    ti = aj = 0
+    for s in merged:
+        if s.kind == "think":
+            body = s.content.strip()
+            lines.append(
+                f"[think {ti}] {body[-1500:]}" if body
+                else f"[think {ti}] (no source — write the opening reasoning that frames the problem)"
+            )
+            ti += 1
+        elif s.kind in ("search", "python", "answer"):
+            label = "final answer" if s.kind == "answer" else f"{s.kind} call"
+            lines.append(f"[action {aj}] ({label}) {s.content[:1500]}")
+            aj += 1
+        elif s.kind == "result":
+            lines.append(f"    (result) {s.content[:400].strip()}")
     lines.append(
-        f'\nReturn JSON: {{"thinks": [{len(thinks)} strings], "tools": [{len(units)} strings]}}'
+        f'\nReturn JSON: {{"thinks": [{ti} strings], "tools": [{aj} strings]}}. '
+        "thinks[i] rewrites [think i]; tools[j] justifies [action j] and must read as a natural "
+        "continuation of the think block just above it."
     )
     return "\n".join(lines)
 
@@ -279,7 +290,7 @@ async def split_row(client, args, segments, question: str, sem) -> Optional[str]
         return reassemble(segments, thinks, tools)
 
     _, heur_tools = heuristic_split(thinks_src, units)
-    data = await _gpt_json(client, args.model, GPT_SYSTEM, build_split_prompt(question, thinks_src, units), sem)
+    data = await _gpt_json(client, args.model, GPT_SYSTEM, build_split_prompt(question, segments), sem)
     if data:
         thinks = _fit(data.get("thinks", []), think_count, thinks_src)
         tools = _fit(data.get("tools", []), len(units), heur_tools)

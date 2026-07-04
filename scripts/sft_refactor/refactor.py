@@ -61,6 +61,10 @@ UNPAIRED_FLAGS = {
     "unpaired_answer",
 }
 
+# Hardcoded API credentials live in secrets/credentials.json (git-ignored); used as CLI defaults.
+_SECRETS_FILE = Path(__file__).resolve().parent / "secrets" / "credentials.json"
+CREDS = json.loads(_SECRETS_FILE.read_text()) if _SECRETS_FILE.exists() else {}
+
 
 def load_data(dataset: str, split: str):
     from datasets import load_dataset
@@ -264,7 +268,7 @@ def _fit(values: List[str], n: int, filler: List[str]) -> List[str]:
     return values
 
 
-async def _gpt_json(client, model: str, system: str, prompt: str, sem, retries: int = 3):
+async def _gpt_json(client, model, system, prompt, sem, timeout, label="", retries=3):
     for attempt in range(retries):
         try:
             async with sem:
@@ -276,11 +280,14 @@ async def _gpt_json(client, model: str, system: str, prompt: str, sem, retries: 
                     ],
                     temperature=0.3,
                     max_tokens=4096,
+                    timeout=timeout,
                 )
             return json.loads(_strip_fences(resp.choices[0].message.content))
-        except Exception:
+        except Exception as e:
+            tqdm.write(f"[gpt:{label}] attempt {attempt + 1}/{retries} failed: {type(e).__name__}: {e}")
             if attempt < retries - 1:
                 await asyncio.sleep(2 ** attempt)
+    tqdm.write(f"[gpt:{label}] gave up after {retries} attempts -> heuristic fallback")
     return None
 
 
@@ -295,7 +302,9 @@ async def split_row(client, args, segments, question: str, sem) -> Optional[str]
         return reassemble(segments, thinks, tools)
 
     _, heur_tools = heuristic_split(thinks_src, units)
-    data = await _gpt_json(client, args.model, GPT_SYSTEM, build_split_prompt(question, segments), sem)
+    data = await _gpt_json(
+        client, args.model, GPT_SYSTEM, build_split_prompt(question, segments), sem, args.timeout, "breakdown"
+    )
     if data:
         thinks = _fit(data.get("thinks", []), think_count, thinks_src)
         tools = _fit(data.get("tools", []), len(units), heur_tools)
@@ -306,7 +315,8 @@ async def split_row(client, args, segments, question: str, sem) -> Optional[str]
 
     if args.coherence_review:
         review = await _gpt_json(
-            client, args.model, GPT_REVIEW_SYSTEM, build_review_prompt(question, assembled), sem
+            client, args.model, GPT_REVIEW_SYSTEM, build_review_prompt(question, assembled), sem,
+            args.timeout, "review",
         )
         if review and not review.get("ok"):
             r_thinks = _fit(review.get("thinks", thinks), think_count, thinks)
@@ -329,7 +339,13 @@ async def run_split(args: argparse.Namespace) -> None:
     if not args.heuristic_only:
         from openai import AsyncOpenAI
 
-        client = AsyncOpenAI(api_key=args.api_key or os.environ.get("OPENAI_API_KEY"))
+        client = AsyncOpenAI(
+            api_key=args.api_key or os.environ.get("OPENAI_API_KEY"),
+            base_url=args.base_url or None,
+            timeout=args.timeout,
+        )
+        print(f"GPT client: model={args.model} base_url={args.base_url or 'default'} "
+              f"timeout={args.timeout}s concurrency={args.concurrency}")
     sem = asyncio.Semaphore(args.concurrency)
 
     ds = load_data(args.dataset, args.split)
@@ -494,8 +510,10 @@ def main() -> None:
     ps.add_argument("--inspect-dir", required=True)
     ps.add_argument("--output", default="scripts/sft_refactor/output/echo_sft_v3.parquet")
     ps.add_argument("--jsonl", default=None)
-    ps.add_argument("--model", default="gpt-4o-mini")
-    ps.add_argument("--api-key", default=None)
+    ps.add_argument("--model", default=CREDS.get("model", "gpt-oss"))
+    ps.add_argument("--api-key", default=CREDS.get("api_key"))
+    ps.add_argument("--base-url", default=CREDS.get("base_url"))
+    ps.add_argument("--timeout", type=float, default=120.0, help="per-request timeout (s)")
     ps.add_argument("--concurrency", type=int, default=50)
     ps.add_argument("--limit", type=int, default=None)
     ps.add_argument("--fresh", action="store_true")

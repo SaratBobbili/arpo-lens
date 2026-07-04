@@ -61,6 +61,9 @@ evaluation/vllm_scripts/logs/
 evaluation/*.png
 evaluation/*.asy
 
+# Secrets
+scripts/sft_refactor/secrets/
+
 # Misc
 =0.10.0,
 config.yaml

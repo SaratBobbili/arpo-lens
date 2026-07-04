@@ -1,0 +1,176 @@
+{
+  "dataset": "dongguanting/ARPO-SFT-54K",
+  "split": "train",
+  "total_rows": 54574,
+  "unique_patterns": 560,
+  "action_counts": {
+    "gpt_split": 50913,
+    "drop": 523,
+    "pass_through": 3138
+  },
+  "flag_counts": {
+    "first_tag_not_think": 356,
+    "tool_before_think": 350,
+    "unpaired_think": 219,
+    "has_stray_text": 84,
+    "missing_boxed": 5,
+    "missing_result_after_search": 39,
+    "missing_answer": 466,
+    "missing_result_after_python": 8,
+    "unpaired_answer": 2,
+    "unpaired_result": 4,
+    "unpaired_search": 4
+  },
+  "top_patterns": [
+    {
+      "pattern_id": "think\u2192python\u2192result\u2192answer",
+      "count": 21416,
+      "pct": 39.242
+    },
+    {
+      "pattern_id": "think\u2192python\u2192result\u2192think\u2192answer",
+      "count": 10425,
+      "pct": 19.103
+    },
+    {
+      "pattern_id": "think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192answer",
+      "count": 4622,
+      "pct": 8.469
+    },
+    {
+      "pattern_id": "think\u2192search\u2192result\u2192think\u2192answer",
+      "count": 4143,
+      "pct": 7.592
+    },
+    {
+      "pattern_id": "think\u2192answer",
+      "count": 3138,
+      "pct": 5.75
+    },
+    {
+      "pattern_id": "think\u2192python\u2192result\u2192think\u2192python\u2192result\u2192think\u2192answer",
+      "count": 1480,
+      "pct": 2.712
+    },
+    {
+      "pattern_id": "think\u2192python\u2192result\u2192think\u2192python\u2192result\u2192answer",
+      "count": 1418,
+      "pct": 2.598
+    },
+    {
+      "pattern_id": "think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192answer",
+      "count": 1220,
+      "pct": 2.235
+    },
+    {
+      "pattern_id": "think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192answer",
+      "count": 679,
+      "pct": 1.244
+    },
+    {
+      "pattern_id": "think\u2192python\u2192result\u2192think\u2192python\u2192result\u2192think\u2192python\u2192result\u2192think\u2192answer",
+      "count": 482,
+      "pct": 0.883
+    },
+    {
+      "pattern_id": "think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192think\u2192answer",
+      "count": 459,
+      "pct": 0.841
+    },
+    {
+      "pattern_id": "think\u2192python\u2192result\u2192python\u2192result\u2192answer",
+      "count": 270,
+      "pct": 0.495
+    },
+    {
+      "pattern_id": "think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192think\u2192answer",
+      "count": 267,
+      "pct": 0.489
+    },
+    {
+      "pattern_id": "think\u2192python\u2192result\u2192think\u2192python\u2192result\u2192think\u2192python\u2192result\u2192answer",
+      "count": 246,
+      "pct": 0.451
+    },
+    {
+      "pattern_id": "think\u2192python\u2192result\u2192think\u2192python\u2192result\u2192think\u2192python\u2192result\u2192think\u2192python\u2192result\u2192think\u2192answer",
+      "count": 228,
+      "pct": 0.418
+    },
+    {
+      "pattern_id": "think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192answer",
+      "count": 225,
+      "pct": 0.412
+    },
+    {
+      "pattern_id": "think\u2192python\u2192result\u2192think",
+      "count": 204,
+      "pct": 0.374
+    },
+    {
+      "pattern_id": "search\u2192result\u2192think\u2192answer",
+      "count": 151,
+      "pct": 0.277
+    },
+    {
+      "pattern_id": "think\u2192python\u2192result\u2192python\u2192result\u2192think\u2192answer",
+      "count": 141,
+      "pct": 0.258
+    },
+    {
+      "pattern_id": "think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192answer",
+      "count": 133,
+      "pct": 0.244
+    },
+    {
+      "pattern_id": "think\u2192search\u2192result\u2192think\u2192python\u2192result\u2192answer",
+      "count": 122,
+      "pct": 0.224
+    },
+    {
+      "pattern_id": "think\u2192python\u2192result\u2192think\u2192python\u2192result\u2192python\u2192result\u2192think\u2192answer",
+      "count": 109,
+      "pct": 0.2
+    },
+    {
+      "pattern_id": "think\u2192search\u2192result\u2192think",
+      "count": 108,
+      "pct": 0.198
+    },
+    {
+      "pattern_id": "think\u2192search\u2192result\u2192search\u2192result\u2192python\u2192result\u2192answer",
+      "count": 101,
+      "pct": 0.185
+    },
+    {
+      "pattern_id": "think\u2192python\u2192result\u2192think\u2192python\u2192result\u2192think\u2192python\u2192result\u2192think\u2192python\u2192result\u2192think\u2192python\u2192result\u2192think\u2192answer",
+      "count": 93,
+      "pct": 0.17
+    },
+    {
+      "pattern_id": "think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192answer",
+      "count": 92,
+      "pct": 0.169
+    },
+    {
+      "pattern_id": "search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192answer",
+      "count": 87,
+      "pct": 0.159
+    },
+    {
+      "pattern_id": "think\u2192python\u2192result\u2192python\u2192result\u2192python\u2192result\u2192answer",
+      "count": 82,
+      "pct": 0.15
+    },
+    {
+      "pattern_id": "think\u2192python\u2192result\u2192think\u2192python\u2192result\u2192python\u2192result\u2192answer",
+      "count": 78,
+      "pct": 0.143
+    },
+    {
+      "pattern_id": "think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192search\u2192result\u2192think\u2192think\u2192answer",
+      "count": 77,
+      "pct": 0.141
+    }
+  ]
+}

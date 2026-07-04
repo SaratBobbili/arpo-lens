@@ -183,9 +183,17 @@ def merge_consecutive_thinks(segments: List[Segment]) -> List[Segment]:
     return merged
 
 
+def normalize(segments: List[Segment]) -> List[Segment]:
+    """Merge thinks and prepend an empty leading think when the trajectory starts with an action."""
+    merged = merge_consecutive_thinks(segments)
+    if merged and merged[0].kind != "think":
+        merged.insert(0, Segment("think", "", 0, 0))
+    return merged
+
+
 def action_units(segments: List[Segment]) -> tuple[List[dict], int]:
     """Ordered actions (search/python/answer) with nearest preceding think; plus post-merge think count."""
-    merged = merge_consecutive_thinks(segments)
+    merged = normalize(segments)
     think_count = sum(1 for s in merged if s.kind == "think")
     units: List[dict] = []
     last_think = ""
@@ -200,12 +208,12 @@ def action_units(segments: List[Segment]) -> tuple[List[dict], int]:
 
 
 def think_blocks(segments: List[Segment]) -> List[str]:
-    return [s.content for s in merge_consecutive_thinks(segments) if s.kind == "think"]
+    return [s.content for s in normalize(segments) if s.kind == "think"]
 
 
 def reassemble(segments: List[Segment], clean_thinks: List[str], tool_rationales: List[str]) -> str:
     """Emit <think> from clean_thinks and a <tool> before every search/python/answer."""
-    merged = merge_consecutive_thinks(segments)
+    merged = normalize(segments)
     parts: List[str] = []
     ti = ai = 0
     for s in merged:

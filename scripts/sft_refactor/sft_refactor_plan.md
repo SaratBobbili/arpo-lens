@@ -31,7 +31,7 @@ Transform [`dongguanting/ARPO-SFT-54K`](https://huggingface.co/datasets/dongguan
 ### Distinct jobs of `<think>` vs `<tool>`
 
 - `<think>`: general problem solving — decomposing the question, interpreting results, deciding direction. No "I will search / run code" language.
-- `<tool>`: why THIS specific action is taken now. For the pre-answer `<tool>`, it explains why no further tool is needed and the model can answer directly.
+- `<tool>`: a **substantive, qualitative** justification (not a one-line restatement) — WHAT the call does, WHY it is the right step now, and HOW it builds on prior results / what it is expected to return. For the pre-answer `<tool>`, it explains why the accumulated results are sufficient and no further tool is needed.
 
 ### Structural invariants (enforced by verify)
 
@@ -71,6 +71,7 @@ Migrated from `trajectory_parse.py`, kept as-is unless noted:
 
 New / changed:
 - `merge_consecutive_thinks(segments)` — collapse adjacent `think` segments (concatenate content) so every `think` precedes an action. Handles ~800 `think→think` rows (e.g. `think→search→result→think→think→answer`).
+- `normalize(segments)` — `merge_consecutive_thinks` + prepend an empty leading `<think>` when the trajectory starts with an action (tool-first / tool-before-think rows), so GPT can write the opening reasoning. Used by `action_units`, `think_blocks`, and `reassemble` to keep think/action indices aligned.
 - `action_units(segments)` — replaces `split_units`. Returns ordered actions (`search`/`python`/`answer`), each with `kind`, truncated `content`, and nearest preceding `think` content (context for the rationale). Also returns the post-merge think count.
 - `reassemble(segments, clean_thinks, tool_rationales)` — replaces `reassemble_after_split`. Walks merged segments; emits `<think>` from `clean_thinks[]` in order and a `<tool>` (from `tool_rationales[]`, in action order) immediately before every `search`/`python`/`answer`.
 - `verify_text(text)` — moved from `verify_format.py`; rules updated to the invariants above (each `think`→`tool`; each `tool`→call/answer; each call preceded by `tool` and followed by `result`; `answer` preceded by `tool`).
@@ -81,7 +82,7 @@ Argparse subcommands over a shared dataset loader:
 
 ### `inspect`
 Full-dataset pattern scan (from `inspect_dataset.py`). Writes `inspect_report.json`, `pattern_taxonomy.json`, `conversion_rules.json`, `inspect_index.jsonl`, `samples/`.
-- `infer_conversion_rule` simplified: keep `drop` (malformed: unpaired tags, first-tag-not-think, tool-before-think, multiple/absent answer, empty); **all other rows → `gpt_split`**. `pass_through` removed (even `think→answer` now needs a `<tool>` before the answer). Rule keeps only `action` and `strip_stray`.
+- `infer_conversion_rule` simplified: keep `drop` (malformed: unpaired tags, multiple/absent answer, empty); **all other rows → `gpt_split`**. Tool-first / tool-before-think rows are **salvaged** (not dropped): `normalize` prepends an empty leading `<think>` and GPT writes the opening reasoning. `pass_through` removed (even `think→answer` now needs a `<tool>` before the answer). Rule keeps only `action` and `strip_stray`.
 
 ### `split`
 Async GPT think/tool split (from `split_trajectories.py`). Two GPT passes per row:
@@ -135,8 +136,8 @@ Heuristic fallback (`--heuristic-only`, no API): keep thinks as-is; for each act
 | Metric | Value |
 |--------|-------|
 | Unique patterns | 560 |
-| `gpt_split` (post-refactor: all non-drop) | ~54,051 |
-| `drop` | 523 (1.0%) |
+| `gpt_split` (post-refactor: all non-drop, incl. salvaged tool-first) | 53,969 |
+| `drop` (unpaired / multiple-or-absent answer / empty) | 605 (1.1%) |
 
 Top patterns:
 - `think→python→result→answer` — 39.2%

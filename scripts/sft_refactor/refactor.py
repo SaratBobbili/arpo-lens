@@ -49,6 +49,8 @@ from trajectory import (
     verify_text,
 )
 
+# Tool-first / tool-before-think rows are salvaged (GPT prepends an opening <think>),
+# so they are NOT dropped — only truly malformed rows are.
 DROP_FLAGS = {
     "empty_trajectory",
     "unpaired_think",
@@ -58,8 +60,6 @@ DROP_FLAGS = {
     "unpaired_answer",
     "multiple_answer",
     "missing_answer",
-    "first_tag_not_think",
-    "tool_before_think",
 }
 
 
@@ -211,13 +211,17 @@ def heuristic_split(thinks: List[str], units: List[dict]) -> tuple[List[str], Li
         else:
             rationale = "Continue with the next tool call to make progress."
         tools.append(rationale)
-    return list(thinks), tools
+    thinks_out = [t if t.strip() else "Let me work through this problem step by step." for t in thinks]
+    return thinks_out, tools
 
 
 def build_split_prompt(question: str, thinks: List[str], units: List[dict]) -> str:
     lines = [f"Question:\n{question}\n", f"Think blocks ({len(thinks)}):"]
     for i, t in enumerate(thinks):
-        lines.append(f"[think {i}] {t[-2000:]}")
+        if t.strip():
+            lines.append(f"[think {i}] {t[-2000:]}")
+        else:
+            lines.append(f"[think {i}] (no source — write the opening reasoning that frames the problem)")
     lines.append(f"\nActions ({len(units)}):")
     for i, u in enumerate(units):
         label = "final answer" if u["kind"] == "answer" else f"{u['kind']} call"

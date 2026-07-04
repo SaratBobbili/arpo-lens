@@ -4,9 +4,8 @@
   "total_rows": 54574,
   "unique_patterns": 560,
   "action_counts": {
-    "gpt_split": 50913,
-    "drop": 523,
-    "pass_through": 3138
+    "gpt_split": 53675,
+    "drop": 899
   },
   "flag_counts": {
     "first_tag_not_think": 356,

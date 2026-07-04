@@ -26,6 +26,17 @@ def run():
     assert is_equiv("x + 11", "11 + x") is False
     assert math_answers_equal("x + 11", "11 + x") is True
 
+    # malformed / degenerate inputs must never raise (root-cause regression)
+    for bad in ["", "\\frac", "3\\frac", "\\sqrt", "5\\sqrt", "{", "\\frac{1}"]:
+        is_equiv(bad, "3")
+        numeric_equal(bad, "3")
+        math_answers_equal(bad, "3")
+        math_answers_equal("3", bad)
+    assert math_answers_equal("3", "\\frac") is False
+    assert numeric_equal(None, "3") is False
+    assert math_answers_equal(None, None) is True
+    assert math_answers_equal(None, "3") is False
+
     # deterministic judge: verdict must agree with the text
     assert parse_judge_verdict("Incorrect\n\nThe Predicted Answer does not match.") is False
     assert parse_judge_verdict("Correct") is True

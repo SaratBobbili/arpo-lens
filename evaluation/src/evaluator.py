@@ -103,6 +103,22 @@ class Evaluator:
                 concurrent_limit=concurrent_limit
             )
 
+    def _zero_metrics(self, question: str, output: str, reason: str) -> Dict[str, Any]:
+        """Zero-scored metrics dict, reused for empty predictions and isolated
+        per-sample failures so one bad sample never aborts the whole run."""
+        metrics = {
+            "is_valid_answer": False,
+            "em": 0, "acc": 0, "f1": 0, "math_equal": 0, "llm_equal": 0,
+            "python_calls": 0, "search_calls": 0, "output_length": 0,
+            "tools_used": "none", "tool_counts": 0,
+            "python_error": int(detect_python_error(output)),
+            "category": classify_question(question),
+        }
+        if self._echo_validator is not None:
+            metrics.update({"echo_format_valid": 0, "echo_high_level_valid": 0,
+                            "echo_low_level_valid": 0, "echo_format_reason": reason})
+        return metrics
+
     async def evaluate_sample(self, item: Dict[str, Any]) -> Dict[str, Any]:
         """
         Evaluate a single sample.
@@ -129,31 +145,7 @@ class Evaluator:
             prediction = ''
         
         if not prediction:
-            # Return zero metrics if prediction is empty
-            metrics = {
-                "is_valid_answer": False,
-                "em": 0,
-                "acc": 0,
-                "f1": 0,
-                "math_equal": 0,
-                "llm_equal": 0,
-                "python_calls": 0,
-                "search_calls": 0,
-                "output_length": 0
-            }
-            # Set tool usage stats
-            python_calls = metrics["python_calls"]
-            search_calls = metrics["search_calls"]
-            metrics["tools_used"] = ("both" if python_calls and search_calls else
-                             "python" if python_calls else
-                             "search" if search_calls else "none")
-            metrics["tool_counts"] = python_calls + search_calls
-            metrics["python_error"] = int(detect_python_error(output))
-            metrics["category"] = classify_question(question)
-            if self._echo_validator is not None:
-                metrics.update({"echo_format_valid": 0, "echo_high_level_valid": 0,
-                                "echo_low_level_valid": 0, "echo_format_reason": "empty prediction"})
-            return metrics
+            return self._zero_metrics(question, output, "empty prediction")
 
         # Initialize metrics
         metrics = {
@@ -231,7 +223,12 @@ class Evaluator:
         
         async def _evaluate_with_semaphore(item):
             async with semaphore:
-                metrics = await self.evaluate_sample(item)
+                try:
+                    metrics = await self.evaluate_sample(item)
+                except Exception as e:
+                    print(f"Sample eval failed (id={item.get('id', '?')}): {e}")
+                    metrics = self._zero_metrics(item.get('input', ''), item.get('output', ''), f"eval error: {e}")
+                    metrics["eval_error"] = str(e)
                 item_copy = item.copy()
                 item_copy['metrics'] = metrics
                 return item_copy

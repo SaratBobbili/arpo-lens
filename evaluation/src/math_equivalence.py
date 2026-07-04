@@ -11,6 +11,8 @@ def _fix_fracs(string):
         substrs = substrs[1:]
         for substr in substrs:
             new_str += "\\frac"
+            if not substr:
+                continue
             if substr[0] == "{":
                 new_str += substr
             else:
@@ -74,6 +76,9 @@ def _fix_sqrt(string):
     splits = string.split("\\sqrt")
     new_string = splits[0] 
     for split in splits[1:]:
+        if not split:
+            new_string += "\\sqrt"
+            continue
         if split[0] != "{":
             a = split[0]
             new_substr = "\\sqrt{" + a + "}" + split[1:]
@@ -121,7 +126,7 @@ def _strip_string(string):
 
     # remove percentage
     string = string.replace("\\%", "")
-    string = string.replace("\%", "")
+    string = string.replace(r"\%", "")
 
     # " 0." equivalent to " ." and "{0." equivalent to "{." Alternatively, add "0" if "." is the start of the string
     string = string.replace(" .", " 0.")

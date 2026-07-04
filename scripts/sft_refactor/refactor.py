@@ -202,6 +202,15 @@ def _strip_fences(raw: str) -> str:
     return raw
 
 
+def _loads_lenient(raw: str) -> dict:
+    """Parse model JSON; on failure treat every stray backslash as literal LaTeX (\\frac, \\boxed,
+    \\() and retry. Escapes all backslashes except before a quote, so \\b/\\f/\\n are not misread."""
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return json.loads(re.sub(r'\\(?=[^"])', r"\\\\", raw))
+
+
 def _last_sentence(text: str) -> str:
     parts = [p.strip() for p in re.split(r"(?<=[.!?。！？])\s+", text.rstrip()) if p.strip()]
     return parts[-1] if parts else ""
@@ -282,7 +291,7 @@ async def _gpt_json(client, model, system, prompt, sem, timeout, label="", retri
                     max_tokens=4096,
                     timeout=timeout,
                 )
-            return json.loads(_strip_fences(resp.choices[0].message.content))
+            return _loads_lenient(_strip_fences(resp.choices[0].message.content))
         except Exception as e:
             tqdm.write(f"[gpt:{label}] attempt {attempt + 1}/{retries} failed: {type(e).__name__}: {e}")
             if attempt < retries - 1:

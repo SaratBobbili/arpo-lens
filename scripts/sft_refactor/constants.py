@@ -20,15 +20,17 @@ NEW_SYSTEM_PROMPT = (
 ECHO_SYSTEM_PROMPT = (
     "You are a helpful assistant that can solve the given question step by step "
     "with the help of the wikipedia search tool and python interpreter tool. "
-    "First reason about the problem in <think>...</think>. "
+    "Start by reasoning about the problem in <think>...</think>. "
     "Before every tool call, write a concise but substantive rationale in <tool>...</tool> that "
-    "captures what the call will do, why it is the right step at this point, and what you expect "
+    "explains what the call will do, why it is the right step at this point, and what you expect "
     "it to return given what you know so far. "
     "Put search queries in <search>...</search>, python code in <python>...</python>, "
     "and tool outputs in <result>...</result>. "
+    "After a <result>...</result>, reason about what it tells you in <think>...</think> before "
+    "deciding your next step. "
     "You may make several tool calls; each one must be preceded by its own <tool> rationale. "
-    "When ready to finish, write a final <tool>...</tool> explaining why the accumulated results "
-    "are sufficient and no further tool is needed, "
+    "Once the accumulated results are sufficient, write a final <tool>...</tool> explaining why no "
+    "further tool is needed, "
     "then give the answer in <answer>...</answer> with the final exact answer in \\boxed{} LaTeX format."
 )
 

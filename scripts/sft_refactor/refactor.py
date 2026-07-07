@@ -7,6 +7,7 @@ Subcommands:
     split     two-pass GPT think/tool split -> refactored trajectories
     verify    structural validation of a JSONL
     prune     drop rows failing verification
+    export    swap in ECHO system prompt -> SFT-ready ShareGPT jsonl
 
 Examples:
     python scripts/sft_refactor/refactor.py inspect --output-dir output/inspect
@@ -14,6 +15,7 @@ Examples:
         --output output/echo_sft_v3.parquet --jsonl output/echo_sft_v3.jsonl
     python scripts/sft_refactor/refactor.py verify output/echo_sft_v3.jsonl
     python scripts/sft_refactor/refactor.py prune output/echo_sft_v3.jsonl -o clean.jsonl
+    python scripts/sft_refactor/refactor.py export output/echo_sft_v3_clean.jsonl -o output/echo_sft_v3_final.jsonl
 """
 
 from __future__ import annotations
@@ -33,7 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pandas as pd
 from tqdm import tqdm
 
-from constants import GPT_REVIEW_SYSTEM, GPT_SYSTEM, NEW_SYSTEM_PROMPT
+from constants import ECHO_SYSTEM_PROMPT, GPT_REVIEW_SYSTEM, GPT_SYSTEM, NEW_SYSTEM_PROMPT
 from trajectory import (
     action_units,
     count_tags,
@@ -506,6 +508,25 @@ def cmd_prune(args: argparse.Namespace) -> None:
     print(f"Saved → {args.output}")
 
 
+def cmd_export(args: argparse.Namespace) -> None:
+    rows = []
+    with open(args.jsonl) as f:
+        for line in tqdm(f, desc="Exporting"):
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            row["system"] = ECHO_SYSTEM_PROMPT
+            rows.append(row)
+
+    if args.output.endswith(".parquet"):
+        pd.DataFrame(rows).to_parquet(args.output, index=False)
+    else:
+        with open(args.output, "w") as f:
+            for row in rows:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    print(f"Exported {len(rows)} rows → {args.output}")
+
+
 # --------------------------------------------------------------------------- #
 # CLI
 # --------------------------------------------------------------------------- #
@@ -553,6 +574,11 @@ def main() -> None:
     pp.add_argument("jsonl")
     pp.add_argument("-o", "--output", required=True)
     pp.set_defaults(func=cmd_prune)
+
+    pe = sub.add_parser("export", help="swap in ECHO system prompt -> SFT-ready ShareGPT jsonl")
+    pe.add_argument("jsonl", nargs="?", default="scripts/sft_refactor/output/echo_sft_v3_clean.jsonl")
+    pe.add_argument("-o", "--output", default="scripts/sft_refactor/output/echo_sft_v3_final.jsonl")
+    pe.set_defaults(func=cmd_export)
 
     args = p.parse_args()
     args.func(args)

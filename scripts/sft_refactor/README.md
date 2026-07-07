@@ -18,14 +18,14 @@ rationale (`<tool>`) are cleanly separated, and every action is justified:
 
 | File | Role |
 |------|------|
-| `constants.py`  | `NEW_SYSTEM_PROMPT`, `GPT_SYSTEM`, `GPT_REVIEW_SYSTEM`, tag lists/aliases |
+| `constants.py`  | `NEW_SYSTEM_PROMPT`, `ECHO_SYSTEM_PROMPT`, `GPT_SYSTEM`, `GPT_REVIEW_SYSTEM`, tag lists/aliases |
 | `trajectory.py` | Segment parsing, think-merging, action extraction, reassembly, `verify_text` |
-| `refactor.py`   | CLI: `inspect` / `split` / `verify` / `prune` |
+| `refactor.py`   | CLI: `inspect` / `split` / `verify` / `prune` / `export` |
 
 ## Pipeline
 
 ```
-inspect  →  split  →  verify  →  prune
+inspect  →  split  →  verify  →  prune  →  export
 ```
 
 1. **inspect** — full-dataset pattern scan → `pattern_taxonomy.json`, `conversion_rules.json`,
@@ -35,6 +35,10 @@ inspect  →  split  →  verify  →  prune
    the assembled trajectory. Answers / queries / code / results are copied verbatim.
 3. **verify** — checks the structural invariants; prints OK/bad counts + reason histogram.
 4. **prune** — drops rows failing `verify`, writes the clean JSONL/parquet.
+5. **export** — swaps the GPT-transform `system` prompt for `ECHO_SYSTEM_PROMPT` (ECHO's
+   `system_prompt_1` reworded for the new `<think>/<tool>/<search>/<python>/<result>/<answer>`
+   structure; mirrored as `system_prompt_4` in `echo_system_prompts.yaml`). `conversations` are
+   left untouched, giving a SFT-ready ShareGPT JSONL/parquet.
 
 ## Usage
 
@@ -81,7 +85,14 @@ python scripts/sft_refactor/refactor.py verify \
 python scripts/sft_refactor/refactor.py prune \
   scripts/sft_refactor/output/echo_sft_v3.jsonl \
   -o scripts/sft_refactor/output/echo_sft_v3_clean.jsonl
+
+python scripts/sft_refactor/refactor.py export \
+  scripts/sft_refactor/output/echo_sft_v3_clean.jsonl \
+  -o scripts/sft_refactor/output/echo_sft_v3_final.jsonl
 ```
+
+`echo_sft_v3_final.jsonl` is SFT-ready (same ShareGPT schema as `echo_sft_thinkfirst.jsonl`);
+point `LLaMA-Factory/arpo_train_sft/dataset_info/dataset_info.json` at it to train.
 
 ## Key flags (`split`)
 

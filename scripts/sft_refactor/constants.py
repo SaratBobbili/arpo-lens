@@ -1,5 +1,9 @@
 """Shared constants for SFT trajectory refactor pipeline."""
 
+from pathlib import Path
+
+import yaml
+
 NEW_SYSTEM_PROMPT = (
     "You are a helpful assistant that solves the given question step by step "
     "with a wikipedia search tool and a python interpreter tool. "
@@ -15,24 +19,13 @@ NEW_SYSTEM_PROMPT = (
     "then give the answer in <answer>...</answer> with the exact answer in \\boxed{} LaTeX format."
 )
 
-# ECHO training system prompt: system_prompt_1 adapted to the new tag structure
-# (mirrored as system_prompt_4 in echo_system_prompts.yaml).
-ECHO_SYSTEM_PROMPT = (
-    "You are a helpful assistant that can solve the given question step by step "
-    "with the help of the wikipedia search tool and python interpreter tool. "
-    "Start by reasoning about the problem in <think>...</think>. "
-    "Before every tool call, write a concise but substantive rationale in <tool>...</tool> that "
-    "explains what the call will do, why it is the right step at this point, and what you expect "
-    "it to return given what you know so far. "
-    "Put search queries in <search>...</search>, python code in <python>...</python>, "
-    "and tool outputs in <result>...</result>. "
-    "After a <result>...</result>, reason about what it tells you in <think>...</think> before "
-    "deciding your next step. "
-    "You may make several tool calls; each one must be preceded by its own <tool> rationale. "
-    "Once the accumulated results are sufficient, write a final <tool>...</tool> explaining why no "
-    "further tool is needed, "
-    "then give the answer in <answer>...</answer> with the final exact answer in \\boxed{} LaTeX format."
+# Toggle which key from ECHO/training/config/echo_system_prompts.yaml is used by `export`.
+ACTIVE_SYSTEM_PROMPT = "system_prompt_5"
+_ECHO_SYSTEM_PROMPTS_YAML = (
+    Path(__file__).resolve().parents[2] / "ECHO" / "training" / "config" / "echo_system_prompts.yaml"
 )
+with open(_ECHO_SYSTEM_PROMPTS_YAML) as _f:
+    ECHO_SYSTEM_PROMPT = yaml.safe_load(_f)[ACTIVE_SYSTEM_PROMPT].strip()
 
 GPT_SYSTEM = (
     "You reorganize and enrich an existing agent reasoning trajectory. "

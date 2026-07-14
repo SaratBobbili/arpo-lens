@@ -44,8 +44,7 @@ high_level_algorithm: grpo
 low_level_algorithm: grpo
 norm_adv_by_std_in_grpo: off
 
-mask_first_select: high
-mask_select: high
+mask_tool: high
 mask_think: high
 mask_answer: high
 mask_search: high

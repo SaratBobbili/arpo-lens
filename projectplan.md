@@ -19,7 +19,7 @@ todos:
     status: completed
   - id: S6-remask-tool
     content: "S6: Rollout masks — replace first_select/select with free-text <tool>; update train.sh mask keys + echo_trainer defaults"
-    status: pending
+    status: completed
   - id: S7-regroup-configs
     content: "S7: Regroup training_config YAMLs (start echo_3B_ll_hl_grpo.yaml) into contiguous HL/LL blocks with cleaned knobs"
     status: pending
@@ -45,7 +45,7 @@ You are continuing the ECHO cleanup tracked in **`projectplan.md`** (workspace r
 6. Do not commit unless asked. Give `git add` paths when the user accepts changes.
 7. Before ending: mark the todo completed (or leave pending + blocker), append a Progress log entry, hand off next pending id.
 
-**Active subtask right now:** `S6-remask-tool`
+**Active subtask right now:** `S7-regroup-configs`
 
 ---
 
@@ -87,9 +87,10 @@ SFT reference: [`scripts/sft_refactor/trajectory.py`](scripts/sft_refactor/traje
 
 ### Still select-era / obsolete surfaces (later subtasks)
 
-- Rollout `_TAG_INFO` still has `<select>` / `first_select` and **no** free-text `<tool>` → prompt-5 tool rationales are unmasked (S6).
+- Launch YAMLs still mixed layout after key renames (S7).
+- Eval launchers may still default to prompt 1 (S8).
 
-Depends-on: S6 → S7; S8 last. Do not parallelize with completed S5.
+Depends-on: S7 → S8 last.
 
 ---
 
@@ -123,24 +124,9 @@ See Progress log.
 
 ---
 
-### S6 — Remask free-text `<tool>`
+### S6 — Remask free-text `<tool>` — COMPLETED
 
-**Goal:** Phase loss masks assign tokens under free-text `<tool>…</tool>` (prompt-5 rationales). Drop select-era `first_select` / `select` mask categories from the launch surface.
-
-**Read first:**
-
-- [`vllm_rollout_echo.py`](ARPO/verl_arpo_entropy/verl/workers/rollout/vllm_rollout/vllm_rollout_echo.py): `_TAG_INFO` (still select-centric), `_compute_hierarchical_masks` (`first_select` vs `select` counting), outputs `select_loss_mask` / `first_select_loss_mask` / `first_select_post_idx`.
-- Trainer entropy-hybrid paths that intersect LL mask with `select_loss_mask` (if still present after S4).
-- `train.sh` / `echo_trainer.yaml` `mask_categories.first_select|select|think|answer|search|python`.
-
-**Do:**
-
-1. Add `<tool>`/`</tool>` to `_TAG_INFO`; categorize block type `tool`.
-2. Remove or stop emitting `first_select`/`select` categories; map config to `mask_tool` (+ existing think/answer/search/python). Results stay excluded.
-3. Remap any remaining `select_loss_mask` consumers to `tool_loss_mask` or delete if unused after S4.
-4. Update Hydra defaults + `train.sh` mask keys + training_config `mask_*` fields.
-
-**Done when:** a prompt-5 trajectory’s `<tool>` tokens appear in HL or LL mask per `mask_tool`; no `mask_first_select` / `mask_select` in launch surface.
+See Progress log. Touchstone: [`vllm_rollout_echo.py`](ARPO/verl_arpo_entropy/verl/workers/rollout/vllm_rollout/vllm_rollout_echo.py).
 
 ---
 
@@ -267,3 +253,12 @@ _Agents append here after each session._
 - Verified: launch resolve → `data.active_system_prompt=5`; both prompt YAMLs define `_5`.
 - Follow-ups: **S6** remask free-text `<tool>`; drop `mask_first_select` / `mask_select`.
 - Next: S6-remask-tool
+
+### 2026-07-14 — S6-remask-tool — completed
+- Changes:
+  - [`vllm_rollout_echo.py`](ARPO/verl_arpo_entropy/verl/workers/rollout/vllm_rollout/vllm_rollout_echo.py): `_TAG_INFO` uses `<tool>`; drop select-era `first_select`/`select` counting; emit `tool_loss_mask` only (removed `select_loss_mask` / `first_select_loss_mask` / `first_select_post_idx`).
+  - Live launch: `mask_tool` replaces `mask_first_select`/`mask_select` in [`train.sh`](ECHO/training/scripts/train.sh), [`echo_trainer.yaml`](ECHO/training/config/echo_trainer.yaml), all 10 `training_config/*.yaml` (migrated `mask_tool` from former `mask_select` value).
+  - ARPO twin: same Hydra/train.sh/training_config mask keys; `select_loss_mask` → `tool_loss_mask` in recipe [`echo_ray_trainer.py`](ARPO/verl_arpo_entropy/recipe/echo/echo_ray_trainer.py).
+- Verified: char-token smoke on prompt-5 trajectory — `<tool>` content follows `mask_tool` into HL/LL; results excluded; launch key check on `echo_3B_ll_hl_grpo.yaml` passes.
+- Follow-ups: **S7** regroup launch YAMLs into contiguous HL/LL blocks; left `scripts/old/` + analysis report select naming untouched.
+- Next: S7-regroup-configs

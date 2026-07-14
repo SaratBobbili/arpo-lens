@@ -43,8 +43,7 @@ high_level_advantage_algorithm: grpo
 low_level_advantage_algorithm: entropy
 norm_adv_by_std_in_grpo: True
 
-mask_first_select: high
-mask_select: both
+mask_tool: both
 mask_think: high
 mask_answer: high
 mask_search: both

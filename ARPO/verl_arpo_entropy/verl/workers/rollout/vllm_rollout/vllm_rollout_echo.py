@@ -39,8 +39,8 @@ logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
 # Maps each tag string to (block_type, "open"|"close").
 _TAG_INFO = {
-    "<select>": ("select", "open"),
-    "</select>": ("select", "close"),
+    "<tool>": ("tool", "open"),
+    "</tool>": ("tool", "close"),
     "<think>": ("think", "open"),
     "</think>": ("think", "close"),
     "<answer>": ("answer", "open"),
@@ -57,8 +57,7 @@ _TAG_MATCH_ORDER = tuple(t for t in _TAG_INFO if t.startswith("</")) + tuple(t f
 
 _VALID_MASK_LEVELS = {"high", "low", "both", "none"}
 _DEFAULT_MASK_CATEGORIES = {
-    "first_select": "high",
-    "select": "high",
+    "tool": "low",
     "think": "high",
     "answer": "high",
     "search": "low",
@@ -141,7 +140,7 @@ class vLLMRolloutECHO(vLLMRollout):
     def __del__(self):
         self.executor.shutdown(wait=False)
 
-    def _compute_hierarchical_masks(self, output_ids: List[int], result_mask: List[int]) -> tuple[List[int], List[int], List[int], List[int], List[int], List[int], int]:
+    def _compute_hierarchical_masks(self, output_ids: List[int], result_mask: List[int]) -> tuple[List[int], List[int], List[int]]:
         token_texts = [
             self.tokenizer.decode([token_id], skip_special_tokens=False, clean_up_tokenization_spaces=False)
             for token_id in output_ids
@@ -149,17 +148,10 @@ class vLLMRolloutECHO(vLLMRollout):
         response_text = "".join(token_texts)
         text_length = len(response_text)
 
-        # Walk character-by-character, classifying each into a category.
         char_categories: List[str | None] = [None] * text_length
-        # Per-character flag set on every char that belongs to an open or close
-        # tag string (e.g. "<select>", "</python>"). Token-level collapse below
-        # converts this to `non_border_mask` consumed by the entropy strategies
-        # in the trainer to exclude tag boundary tokens from the entropy reduction.
         char_border: List[int] = [0] * text_length
         current_block: str | None = None
-        select_count = 0
         char_idx = 0
-        first_select_end_char: int | None = None
 
         while char_idx < text_length:
             matched_tag = None
@@ -172,22 +164,14 @@ class vLLMRolloutECHO(vLLMRollout):
                 block_type, direction = _TAG_INFO[matched_tag]
                 tag_end = min(text_length, char_idx + len(matched_tag))
 
-                # Open tags: enter the new block before labelling tag chars.
                 if direction == "open":
-                    if block_type == "select":
-                        select_count += 1
-                        current_block = "first_select" if select_count == 1 else "select"
-                    else:
-                        current_block = block_type
+                    current_block = block_type
 
                 for span_idx in range(char_idx, tag_end):
                     char_categories[span_idx] = current_block
                     char_border[span_idx] = 1
 
-                # Close tags: leave the block after labelling tag chars.
                 if direction == "close":
-                    if block_type == "select" and select_count == 1 and first_select_end_char is None:
-                        first_select_end_char = tag_end
                     current_block = None
 
                 char_idx = tag_end
@@ -196,24 +180,15 @@ class vLLMRolloutECHO(vLLMRollout):
             char_categories[char_idx] = current_block
             char_idx += 1
 
-        # Convert per-character categories to high/low masks using config; also
-        # emit a separate char_select mask that marks every char inside any
-        # <select>...</select> block (both first_select and subsequent select).
-        # Consumed by the "entropy-hybrid" reward strategy after being AND-ed
-        # with the phase mask in the trainer, so whether first_select is part
-        # of the computation is implicitly controlled by mask_categories.
         mask_cfg = self.mask_categories
         char_high = [0] * text_length
         char_low = [0] * text_length
-        char_select = [0] * text_length
-        char_first_select = [0] * text_length
+        char_tool = [0] * text_length
         for i, cat in enumerate(char_categories):
             if cat is None or cat == "result":
                 continue
-            if cat == "first_select":
-                char_first_select[i] = 1
-            if cat in ("first_select", "select"):
-                char_select[i] = 1
+            if cat == "tool":
+                char_tool[i] = 1
             level = mask_cfg.get(cat, "none")
             if level == "high":
                 char_high[i] = 1
@@ -223,18 +198,15 @@ class vLLMRolloutECHO(vLLMRollout):
                 char_high[i] = 1
                 char_low[i] = 1
 
-        # Collapse character masks to token masks, intersecting with result_mask.
         high_level_mask: List[int] = []
         low_level_mask: List[int] = []
-        select_mask: List[int] = []
-        first_select_mask: List[int] = []
+        tool_mask: List[int] = []
         cursor = 0
         for token_text, keep_token in zip(token_texts, result_mask):
             next_cursor = cursor + len(token_text)
             token_high = int(any(char_high[cursor:next_cursor])) if next_cursor > cursor else 0
             token_low = int(any(char_low[cursor:next_cursor])) if next_cursor > cursor else 0
-            token_select = int(any(char_select[cursor:next_cursor])) if next_cursor > cursor else 0
-            token_first_select = int(any(char_first_select[cursor:next_cursor])) if next_cursor > cursor else 0
+            token_tool = int(any(char_tool[cursor:next_cursor])) if next_cursor > cursor else 0
             token_border = int(any(char_border[cursor:next_cursor])) if next_cursor > cursor else 0
             phase_active_token = int(
                 bool(keep_token)
@@ -246,21 +218,10 @@ class vLLMRolloutECHO(vLLMRollout):
             )
             high_level_mask.append(int(phase_active_token and token_high))
             low_level_mask.append(int(phase_active_token and token_low))
-            select_mask.append(int(phase_active_token and token_select))
-            first_select_mask.append(int(phase_active_token and token_first_select))
+            tool_mask.append(int(phase_active_token and token_tool))
             cursor = next_cursor
 
-        first_select_post_idx = -1
-        if first_select_end_char is not None:
-            cursor = 0
-            for token_i, keep_token in enumerate(result_mask):
-                token_len = len(token_texts[token_i])
-                if keep_token and token_len > 0 and cursor >= first_select_end_char:
-                    first_select_post_idx = token_i
-                    break
-                cursor += token_len
-
-        return high_level_mask, low_level_mask, select_mask, first_select_mask, first_select_post_idx
+        return high_level_mask, low_level_mask, tool_mask
 
     def _extract_content(self, text: str, tag: str) -> str:
         """Extracts content from within the last <tag>...</tag> block."""
@@ -411,14 +372,12 @@ class vLLMRolloutECHO(vLLMRollout):
         curr_inputs: list,
         result_masks: list,
         num_samples: int,
-    ) -> tuple[list, list, list, list, list, list, list]:
+    ) -> tuple[list, list, list, list, list]:
         output_sequences = []
         output_result_masks = []
         output_high_level_masks = []
         output_low_level_masks = []
-        output_select_masks = []
-        output_first_select_masks = []
-        output_first_select_post_idxs = []
+        output_tool_masks = []
         for i in range(batch_size):
             sample_indices = sample_to_indices.get(i, [])
             selected_indices = sample_indices[:num_samples]
@@ -430,28 +389,20 @@ class vLLMRolloutECHO(vLLMRollout):
             for idx in selected_indices:
                 output_ids = curr_inputs[idx][len(prompt_token_ids_list[i]) :]
                 output_mask = result_masks[idx]
-                (
-                    high_level_mask,
-                    low_level_mask,
-                    select_mask,
-                    first_select_mask,
-                    first_select_post_idx,
-                ) = self._compute_hierarchical_masks(output_ids=output_ids, result_mask=output_mask)
+                high_level_mask, low_level_mask, tool_mask = self._compute_hierarchical_masks(
+                    output_ids=output_ids, result_mask=output_mask
+                )
                 output_sequences.append(output_ids)
                 output_result_masks.append(output_mask)
                 output_high_level_masks.append(high_level_mask)
                 output_low_level_masks.append(low_level_mask)
-                output_select_masks.append(select_mask)
-                output_first_select_masks.append(first_select_mask)
-                output_first_select_post_idxs.append(first_select_post_idx)
+                output_tool_masks.append(tool_mask)
         return (
             output_sequences,
             output_result_masks,
             output_high_level_masks,
             output_low_level_masks,
-            output_select_masks,
-            output_first_select_masks,
-            output_first_select_post_idxs,
+            output_tool_masks,
         )
 
     def _pack_echo_rollout_output(
@@ -470,9 +421,7 @@ class vLLMRolloutECHO(vLLMRollout):
         output_result_masks: list,
         output_high_level_masks: list,
         output_low_level_masks: list,
-        output_select_masks: list,
-        output_first_select_masks: list,
-        output_first_select_post_idxs: list,
+        output_tool_masks: list,
         tool_metrics: dict,
         calls_per_tool: Counter,
         success_per_tool: Counter,
@@ -482,21 +431,18 @@ class vLLMRolloutECHO(vLLMRollout):
         padded_result_mask_list = []
         padded_high_level_mask_list = []
         padded_low_level_mask_list = []
-        padded_select_mask_list = []
-        padded_first_select_mask_list = []
-        for output_ids, result_mask, high_level_mask, low_level_mask, select_mask, first_select_mask in zip(
+        padded_tool_mask_list = []
+        for output_ids, result_mask, high_level_mask, low_level_mask, tool_mask in zip(
             output_sequences,
             output_result_masks,
             output_high_level_masks,
             output_low_level_masks,
-            output_select_masks,
-            output_first_select_masks,
+            output_tool_masks,
         ):
             assert len(output_ids) == len(result_mask)
             assert len(output_ids) == len(high_level_mask)
             assert len(output_ids) == len(low_level_mask)
-            assert len(output_ids) == len(select_mask)
-            assert len(output_ids) == len(first_select_mask)
+            assert len(output_ids) == len(tool_mask)
 
             response = torch.tensor(output_ids)
             response = pad_sequence_to_length(response, self.config.response_length, self.pad_token_id)
@@ -507,27 +453,20 @@ class vLLMRolloutECHO(vLLMRollout):
             high_level_mask_tensor = pad_sequence_to_length(high_level_mask_tensor, self.config.response_length, 0)
             low_level_mask_tensor = torch.tensor(low_level_mask)
             low_level_mask_tensor = pad_sequence_to_length(low_level_mask_tensor, self.config.response_length, 0)
-            select_mask_tensor = torch.tensor(select_mask)
-            select_mask_tensor = pad_sequence_to_length(select_mask_tensor, self.config.response_length, 0)
-            first_select_mask_tensor = torch.tensor(first_select_mask)
-            first_select_mask_tensor = pad_sequence_to_length(first_select_mask_tensor, self.config.response_length, 0)
+            tool_mask_tensor = torch.tensor(tool_mask)
+            tool_mask_tensor = pad_sequence_to_length(tool_mask_tensor, self.config.response_length, 0)
 
             padded_response_list.append(response)
             padded_result_mask_list.append(result_mask_tensor)
             padded_high_level_mask_list.append(high_level_mask_tensor)
             padded_low_level_mask_list.append(low_level_mask_tensor)
-            padded_select_mask_list.append(select_mask_tensor)
-            padded_first_select_mask_list.append(first_select_mask_tensor)
+            padded_tool_mask_list.append(tool_mask_tensor)
 
         response = torch.stack(padded_response_list, dim=0).to(input_ids.device)
         loss_mask = torch.stack(padded_result_mask_list, dim=0).to(input_ids.device)
         high_level_loss_mask = torch.stack(padded_high_level_mask_list, dim=0).to(input_ids.device)
         low_level_loss_mask = torch.stack(padded_low_level_mask_list, dim=0).to(input_ids.device)
-        select_loss_mask = torch.stack(padded_select_mask_list, dim=0).to(input_ids.device)
-        first_select_loss_mask = torch.stack(padded_first_select_mask_list, dim=0).to(input_ids.device)
-        first_select_post_idx = torch.tensor(
-            output_first_select_post_idxs, dtype=torch.long, device=input_ids.device
-        )
+        tool_loss_mask = torch.stack(padded_tool_mask_list, dim=0).to(input_ids.device)
 
         non_tensor_batch = deepcopy(prompts.non_tensor_batch)
         if num_samples > 1 and do_sample:
@@ -570,8 +509,7 @@ class vLLMRolloutECHO(vLLMRollout):
         loss_mask = loss_mask * response_attention_mask
         high_level_loss_mask = high_level_loss_mask * response_attention_mask
         low_level_loss_mask = low_level_loss_mask * response_attention_mask
-        select_loss_mask = select_loss_mask * response_attention_mask
-        first_select_loss_mask = first_select_loss_mask * response_attention_mask
+        tool_loss_mask = tool_loss_mask * response_attention_mask
 
         if tool_metrics["tools/total_calls"] > 0:
             tool_metrics["tools/avg_execution_time"] = (
@@ -599,9 +537,7 @@ class vLLMRolloutECHO(vLLMRollout):
                 "loss_mask": loss_mask,
                 "high_level_loss_mask": high_level_loss_mask,
                 "low_level_loss_mask": low_level_loss_mask,
-                "select_loss_mask": select_loss_mask,
-                "first_select_loss_mask": first_select_loss_mask,
-                "first_select_post_idx": first_select_post_idx,
+                "tool_loss_mask": tool_loss_mask,
                 "position_ids": final_position_ids,
             },
             batch_size=final_batch_size,
@@ -921,9 +857,7 @@ class vLLMRolloutECHO(vLLMRollout):
                 output_result_masks,
                 output_high_level_masks,
                 output_low_level_masks,
-                output_select_masks,
-                output_first_select_masks,
-                output_first_select_post_idxs,
+                output_tool_masks,
             ) = self._collect_hierarchical_outputs(
                 batch_size,
                 prompt_token_ids_list,
@@ -948,9 +882,7 @@ class vLLMRolloutECHO(vLLMRollout):
             output_result_masks,
             output_high_level_masks,
             output_low_level_masks,
-            output_select_masks,
-            output_first_select_masks,
-            output_first_select_post_idxs,
+            output_tool_masks,
             tool_metrics,
             calls_per_tool,
             success_per_tool,
@@ -1207,9 +1139,7 @@ class vLLMRolloutECHO(vLLMRollout):
                 output_result_masks,
                 output_high_level_masks,
                 output_low_level_masks,
-                output_select_masks,
-                output_first_select_masks,
-                output_first_select_post_idxs,
+                output_tool_masks,
             ) = self._collect_hierarchical_outputs(
                 batch_size,
                 prompt_token_ids_list,
@@ -1234,9 +1164,7 @@ class vLLMRolloutECHO(vLLMRollout):
             output_result_masks,
             output_high_level_masks,
             output_low_level_masks,
-            output_select_masks,
-            output_first_select_masks,
-            output_first_select_post_idxs,
+            output_tool_masks,
             tool_metrics,
             calls_per_tool,
             success_per_tool,

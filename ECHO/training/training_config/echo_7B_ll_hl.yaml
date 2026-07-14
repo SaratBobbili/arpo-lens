@@ -32,8 +32,7 @@ tool_call_limit: ""
 phase_order: '["low_level", "high_level"]'
 high_level_advantage_algorithm: grpo
 
-mask_first_select: high
-mask_select: low
+mask_tool: low
 mask_think: high
 mask_answer: high
 mask_search: low

@@ -43,7 +43,7 @@ VALID_LAUNCH_KEYS=(
     high_level_advantage_algorithm low_level_advantage_algorithm
     norm_adv_by_std_in_grpo
     skip_training_on_tool_failure
-    mask_first_select mask_select mask_think mask_answer mask_search mask_python
+    mask_tool mask_think mask_answer mask_search mask_python
     clip_ratio_low clip_ratio_high clip_ratio_c clip_ratio_low_pos clip_ratio_high_pos clip_ratio_low_neg clip_ratio_high_neg
     hl_kl_loss_coef ll_kl_loss_coef hl_use_aepo_clip ll_use_aepo_clip
     high_level_use_sign_cond_clip low_level_use_sign_cond_clip
@@ -126,8 +126,7 @@ ARGS=(
     actor_rollout_ref.rollout.tools.tool_instances.search.params.location="${BRIGHTDATA_LOCATION}"
     actor_rollout_ref.rollout.tools.tool_instances.search.params.request_timeout="${BRIGHTDATA_TIMEOUT}"
     actor_rollout_ref.rollout.tools.tool_instances.search.class_path="${SEARCH_CLASS_PATH}"
-    actor_rollout_ref.rollout.mask_categories.first_select="${MASK_FIRST_SELECT}"
-    actor_rollout_ref.rollout.mask_categories.select="${MASK_SELECT}"
+    actor_rollout_ref.rollout.mask_categories.tool="${MASK_TOOL}"
     actor_rollout_ref.rollout.mask_categories.think="${MASK_THINK}"
     actor_rollout_ref.rollout.mask_categories.answer="${MASK_ANSWER}"
     actor_rollout_ref.rollout.mask_categories.search="${MASK_SEARCH}"

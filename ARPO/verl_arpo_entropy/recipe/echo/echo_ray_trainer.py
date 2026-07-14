@@ -545,7 +545,7 @@ class RayECHOTrainer(RayPPOTrainer):
             phase_mask_f = phase_batch.batch[phase_mask_key].to(torch.float32)
             reg_entropy_mask_f = phase_mask_f * phase_batch.batch["non_border_loss_mask"].to(torch.float32)
             if phase_strategy == "entropy-hybrid":
-                reg_entropy_mask_f = reg_entropy_mask_f * phase_batch.batch["select_loss_mask"].to(torch.float32)
+                reg_entropy_mask_f = reg_entropy_mask_f * phase_batch.batch["tool_loss_mask"].to(torch.float32)
             phase_batch.batch[f"{phase_name}_token_entropy"] = entropys.to(torch.float32) * reg_entropy_mask_f
             phase_batch.batch["entropy_reg_loss_mask"] = reg_entropy_mask_f
             reward_tensor, entropy_metrics = self._build_entropy_scalar_reward(

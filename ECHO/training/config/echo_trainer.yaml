@@ -79,9 +79,8 @@ actor_rollout_ref:
   rollout:
     # Use ECHO rollout implementation that emits hierarchical masks.
     mode: sync_echo
-    # If true, phase-level masks (high/low/select/first_select/tool) exclude tag
-    # boundary tokens (<think>, </think>, <select>, ...). non_border_loss_mask
-    # remains unchanged and still excludes tag boundaries for entropy reductions.
+    # If true, phase-level masks (high/low/tool) exclude tag boundary tokens
+    # (<think>, </think>, <tool>, ...).
     exclude_tag_tokens_from_phase_masks: true
     high_level_budget: 0
     low_level_budget: 0
@@ -112,22 +111,10 @@ actor_rollout_ref:
           branch_probability: 0.5
           entropy_weight: 0.2
           initial_entropy_tokens: 50
-    # Which token category feeds into which hierarchical level ("high", "low", "none").
-    # "result" blocks are always excluded (neither high nor low).
-    # This block is the single source of truth: the format validator profile
-    # (c1/c2/c3/c4) is resolved from this dict at trainer init and fails fast
-    # if the combination does not match a supported profile. Supported
-    # signatures:
-    #   c1 (below): plan/reasoning/answer HL; tool choice + tool payload LL.
-    #   c2: like c1 but `select: high` (non-initial <select> is HL).
-    #   c3: like c1 but `search: high` and `python: high` (tool payloads are
-    #       HL; prevents LL from entropy-hacking via junk tool-code tokens).
-    #   c4: only `think`/`answer` HL; `first_select`, `select`, `search`,
-    #       `python` are all LL. HL supervises reasoning + final answer only;
-    #       LL owns the entire tool-planning + tool-payload stack.
+    # Which token category feeds into which hierarchical level ("high", "low", "both", "none").
+    # "result" blocks are always excluded. Prompt-5 schema: think/tool/search|python/answer.
     mask_categories:
-      first_select: high   # initial planning <select> block declaring the tool set
-      select: low           # subsequent tool-selection <select> blocks
+      tool: low             # free-text <tool> rationale blocks
       think: high           # <think> reasoning blocks
       answer: high          # <answer> blocks
       search: low           # <search> tool-query blocks

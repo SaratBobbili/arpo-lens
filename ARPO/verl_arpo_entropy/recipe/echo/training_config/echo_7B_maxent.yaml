@@ -32,8 +32,7 @@ phase_order: '["high_level", "low_level"]'
 high_level_reward_strategy: maxentropy_rl
 
 use_mask_categories: true
-mask_first_select: high
-mask_select: high
+mask_tool: high
 mask_think: high
 mask_answer: high
 mask_search: high

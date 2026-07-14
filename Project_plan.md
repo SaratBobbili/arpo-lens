@@ -10,7 +10,7 @@ todos:
     status: completed
   - id: S3-hydra-train
     content: Wire RagSearchTool + rag_* params; train.sh starts ECHO RAG sidecar + waits healthy only if RagSearchTool
-    status: pending
+    status: completed
   - id: S4-readme-rag
     content: README RAG section (deps manual; corpus build; train.sh auto-starts ECHO sidecar for RagSearchTool)
     status: pending
@@ -23,7 +23,7 @@ todos:
 
 1. Read this entire `Project_plan.md` before doing any work.
 2. Work on **exactly one** subtask: the first todo with `status: pending`, or the id the user names.
-3. **Active subtask right now:** `S3-hydra-train`
+3. **Active subtask right now:** `S4-readme-rag`
 4. Do not reopen Locked decisions unless the user explicitly asks.
 5. Stay inside the active subtask’s deep brief. Put blockers and follow-ups in the Progress log.
 6. Before editing, open the files named in that subtask’s deep brief and understand the current call graph.
@@ -247,3 +247,8 @@ Plug point: Hydra `actor_rollout_ref.rollout.tools.tool_instances.search.class_p
 - Changes: Locked unified no-content return `"No search results found."` for (1) RAG miss + `soft_fallback=False`, (2) RAG miss + Bing hard fail, (3) standalone `BingSearchTool` hard fail (was `""`). Empty-organic path unchanged. Documented under Locked decisions. Confirmed RAG hit path returns same `Page N: ...` corpus values Bing would have appended.
 - Follow-ups: S3 must forward `soft_fallback` (and other `rag_*`) via Hydra/`train.sh` without inventing new miss strings.
 - Next: `S3-hydra-train`.
+
+### 2026-07-14 — S3-hydra-train — completed
+- Changes: Added launch keys `rag_server_url` / `similarity_threshold` / `topk` / `soft_fallback` / `rag_request_timeout` to `VALID_LAUNCH_KEYS` and `echo_3B_ll_hl_rag.yaml`. `train.sh` starts `ECHO/training/scripts/rag_launch.sh` only when `SEARCH_CLASS_PATH` contains `RagSearchTool`, polls `${rag_server_url}/stats` (default timeout 3600s via `RAG_READY_TIMEOUT`), fails on early exit/timeout, traps kill sidecar PID, and appends `+...params.rag_*` Hydra overrides. Non-RAG YAMLs unchanged (no sidecar, no rag_* overrides).
+- Follow-ups: S4 README for corpus build, manual deps, auto sidecar lifecycle, `CUDA_VISIBLE_DEVICES`. Full encode + `/stats` smoke still needs a GPU node.
+- Next: `S4-readme-rag`.

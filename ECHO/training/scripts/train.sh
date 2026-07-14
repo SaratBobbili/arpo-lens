@@ -36,6 +36,7 @@ VALID_LAUNCH_KEYS=(
     rollout_n high_level_budget low_level_budget reuse_phase_rollouts enable_multi_turn
     tensor_model_parallel_size gpu_memory_utilization rollout_name rollout_mode
     exclude_tag_tokens_from_phase_masks search_cache_file search_class_path brightdata_timeout tool_call_limit
+    rag_server_url similarity_threshold topk soft_fallback rag_request_timeout
     conda_path conda_env brightdata_api_key brightdata_zone brightdata_location wandb_api_key
     output_root sft_root
     total_epochs save_freq test_freq save_best_checkpoint best_checkpoint_metric max_actor_ckpt_to_keep resume_mode
@@ -194,6 +195,53 @@ mkdir -p "${CONFIG_SNAPSHOT_DIR}"
 cp "${SCRIPT_PATH}" "${CONFIG_SNAPSHOT_DIR}/launch_script.sh"
 cp "${LAUNCH_CONFIG_PATH}" "${CONFIG_SNAPSHOT_DIR}/launch_config.yaml"
 cp -r "${CONFIG_PATH}" "${CONFIG_SNAPSHOT_DIR}/config"
+
+RAG_SIDECAR_PID=""
+cleanup_rag_sidecar() {
+    if [[ -n "${RAG_SIDECAR_PID}" ]]; then
+        echo "Stopping RAG sidecar (pid=${RAG_SIDECAR_PID})"
+        kill "${RAG_SIDECAR_PID}" 2>/dev/null || true
+        wait "${RAG_SIDECAR_PID}" 2>/dev/null || true
+    fi
+}
+
+if [[ "${SEARCH_CLASS_PATH}" == *RagSearchTool ]]; then
+    RAG_SERVER_URL="${RAG_SERVER_URL:-http://127.0.0.1:5003}"
+    SIMILARITY_THRESHOLD="${SIMILARITY_THRESHOLD:-0.92}"
+    TOPK="${TOPK:-1}"
+    SOFT_FALLBACK="${SOFT_FALLBACK:-true}"
+    RAG_REQUEST_TIMEOUT="${RAG_REQUEST_TIMEOUT:-30}"
+    RAG_READY_TIMEOUT="${RAG_READY_TIMEOUT:-3600}"
+    RAG_LOG="${SAVE_PATH}/rag_sidecar.log"
+    echo "Starting ECHO RAG sidecar → ${RAG_SERVER_URL} (log: ${RAG_LOG})"
+    bash "${SCRIPT_DIR}/rag_launch.sh" >"${RAG_LOG}" 2>&1 &
+    RAG_SIDECAR_PID=$!
+    trap cleanup_rag_sidecar EXIT
+
+    waited=0
+    until curl -sf --max-time 3 "${RAG_SERVER_URL}/stats" >/dev/null; do
+        if ! kill -0 "${RAG_SIDECAR_PID}" 2>/dev/null; then
+            echo "RAG sidecar exited before becoming ready; see ${RAG_LOG}"
+            exit 1
+        fi
+        if (( waited >= RAG_READY_TIMEOUT )); then
+            echo "RAG sidecar /stats not healthy within ${RAG_READY_TIMEOUT}s; see ${RAG_LOG}"
+            exit 1
+        fi
+        sleep 5
+        waited=$((waited + 5))
+    done
+    echo "RAG sidecar ready: $(curl -sf --max-time 3 "${RAG_SERVER_URL}/stats")"
+
+    ARGS+=(
+        "+actor_rollout_ref.rollout.tools.tool_instances.search.params.rag_server_url=${RAG_SERVER_URL}"
+        "+actor_rollout_ref.rollout.tools.tool_instances.search.params.similarity_threshold=${SIMILARITY_THRESHOLD}"
+        "+actor_rollout_ref.rollout.tools.tool_instances.search.params.topk=${TOPK}"
+        "+actor_rollout_ref.rollout.tools.tool_instances.search.params.soft_fallback=${SOFT_FALLBACK}"
+        "+actor_rollout_ref.rollout.tools.tool_instances.search.params.rag_request_timeout=${RAG_REQUEST_TIMEOUT}"
+    )
+fi
+
 printf '%s\n' "${ARGS[@]:2}" > "${CONFIG_SNAPSHOT_DIR}/launch_hydra_overrides.txt"
 
 python3 -m training.main_echo "${ARGS[@]}" 2>&1 | tee "${SAVE_PATH}/run.log"

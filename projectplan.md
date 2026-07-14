@@ -25,7 +25,7 @@ todos:
     status: completed
   - id: S8-eval-prompt5
     content: "S8: Eval launchers/defaults to prompt 5. evaluation/xmix/ is out of scope (leave untouched)"
-    status: pending
+    status: completed
 isProject: false
 ---
 
@@ -45,7 +45,7 @@ You are continuing the ECHO cleanup tracked in **`projectplan.md`** (workspace r
 6. Do not commit unless asked. Give `git add` paths when the user accepts changes.
 7. Before ending: mark the todo completed (or leave pending + blocker), append a Progress log entry, hand off next pending id.
 
-**Active subtask right now:** `S8-eval-prompt5`
+**Active subtask right now:** _(none — S1–S8 complete)_
 
 ---
 
@@ -85,11 +85,9 @@ SFT reference: [`scripts/sft_refactor/trajectory.py`](scripts/sft_refactor/traje
 - Live + ARPO trainers log `reward/format_valid_rate`.
 - **`evaluation/xmix/` is out of scope** — leave untouched (intentionally broken vs new API).
 
-### Still select-era / obsolete surfaces (later subtasks)
+### Cleanup complete (S1–S8)
 
-- Eval launchers may still default to prompt 1 (S8).
-
-Depends-on: S8 last.
+Eval math/qa launchers default to prompt 5 via live [`ECHO/training/config/echo_system_prompts.yaml`](ECHO/training/config/echo_system_prompts.yaml). **`evaluation/xmix/`** left untouched.
 
 ---
 
@@ -135,17 +133,9 @@ See Progress log. All 10 live `training_config/*.yaml` use shared → `# --- hig
 
 ---
 
-### S8 — Eval defaults → prompt 5
+### S8 — Eval defaults → prompt 5 — COMPLETED
 
-**Goal:** Standard eval jobs load `system_prompt_5`.
-
-**Read first:** [`evaluation/src/prompt_manager.py`](evaluation/src/prompt_manager.py) (`ECHO_SYSTEM_PROMPT_YAML`, `ECHO_ACTIVE_SYSTEM_PROMPT`); eval `run_*` shells that export those vars (mostly `1` today).
-
-**Do:** Point YAML at a file that contains `_5` (ECHO copy or synced ARPO copy); set `ECHO_ACTIVE_SYSTEM_PROMPT=5` in active launchers. Update comments that still describe `<select>` schema.
-
-**Do not** modify [`evaluation/xmix/`](evaluation/xmix/).
-
-**Done when:** math/qa eval launchers used for ECHO checkpoints default to prompt 5.
+See Progress log. Touchstone: math/qa `evaluation/run_*.sh` + `ECHO_ACTIVE_SYSTEM_PROMPT=5`.
 
 ---
 
@@ -257,3 +247,13 @@ _Agents append here after each session._
 - Verified: all 10 pass `train.sh` `VALID_LAUNCH_KEYS` check.
 - Follow-ups: **S8** eval launchers/defaults → prompt 5; leave `evaluation/xmix/` untouched. ARPO recipe `training_config/` not synced (live-only this subtask).
 - Next: S8-eval-prompt5
+
+### 2026-07-14 — S8-eval-prompt5 — completed
+- Changes: 15 math/qa eval launchers under [`evaluation/`](evaluation/):
+  - `ECHO_SYSTEM_PROMPT_YAML` → live [`ECHO/training/config/echo_system_prompts.yaml`](ECHO/training/config/echo_system_prompts.yaml)
+  - `ECHO_ACTIVE_SYSTEM_PROMPT=5` (was 1 or 4)
+  - Comments: `<select>/<tool>` → prompt-5 schema; format-token notes use `<tool>`
+  - Left [`evaluation/xmix/`](evaluation/xmix/) untouched (still defaults to 1)
+- Verified: YAML loads `system_prompt_5` with `<tool>`, no `<select>`; all 15 launchers export `=5`
+- Follow-ups (optional, out of this plan): `tree_hca_eval/run_math_echo.sh` + `main.sh` still default to prompt 1
+- Next: _(plan complete)_

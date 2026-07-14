@@ -46,8 +46,8 @@ INFER_MODE="completion"
 #   math        -> python only (table row "+ TIR Prompting")
 #   search      -> search only
 #   code_search -> python + search (default for ARPO/AEPO trained checkpoints)
-#   echo        -> ECHO <select>/<tool> schema; loads system prompt from
-#                  ECHO_SYSTEM_PROMPT_YAML below instead of a hardcoded literal.
+#   echo        -> ECHO prompt-5 schema (think/tool/search|python/result/answer);
+#                  loads system prompt from ECHO_SYSTEM_PROMPT_YAML below.
 PROMPT_TYPE="echo"
 
 # Per-sample tool-call budgets enforced by the SampleProcessor; set to 0 to disable a tool entirely.
@@ -58,12 +58,10 @@ MAX_PYTHON_TIMES="3"
 MAX_SEARCH_TIMES="3"
 
 # ---- ECHO-only config (consumed only when PROMPT_TYPE=echo) ----
-# Single source of truth for the ECHO system prompt: shared with the trainer at
-# ARPO/verl_arpo_entropy/recipe/echo/config/echo_system_prompts.yaml.
-ECHO_SYSTEM_PROMPT_YAML="${SCRIPT_DIR}/../ARPO/verl_arpo_entropy/recipe/echo/config/echo_system_prompts.yaml"
-# Selects system_prompt_N inside the YAML; must equal data.active_system_prompt
-# used during ECHO training (echo_trainer.yaml).
-ECHO_ACTIVE_SYSTEM_PROMPT="1"
+# Live ECHO training prompts (must include system_prompt_5).
+ECHO_SYSTEM_PROMPT_YAML="${SCRIPT_DIR}/../ECHO/training/config/echo_system_prompts.yaml"
+# Selects system_prompt_N; must equal data.active_system_prompt used in training.
+ECHO_ACTIVE_SYSTEM_PROMPT="5"
 # Combined per-sample tool budget (matches vLLMRolloutECHO.tool_call_limit, default 5).
 ECHO_TOOL_CALL_LIMIT="8"
 
@@ -95,7 +93,7 @@ MAX_TOKENS="4096"
 # Sampling-distribution shape pinned to vLLMRolloutECHO + ppo_trainer.yaml defaults
 # (top_p=1.0, top_k=-1, repetition_penalty=1.0). Eval was previously running with
 # the Qwen-Instruct-style profile (top_p=0.95/top_k=20/rep_pen=1.1), which deflates
-# repeated format tokens (<select>, <think>, <answer>, ...) that ECHO emits densely
+# repeated format tokens (<tool>, <think>, <answer>, ...) that ECHO emits densely
 # and was never exposed to under that penalty during training. Keep TEMPERATURE
 # below the training value (1.0) for sharper single-rollout eval.
 TOP_P="1.0"

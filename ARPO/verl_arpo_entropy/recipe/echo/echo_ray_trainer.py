@@ -37,8 +37,6 @@ from .echo_core_algos import agg_loss, apply_kl_penalty, compute_advantage, filt
 from verl.trainer.ppo.reward import compute_reward, compute_reward_async
 from verl.utils.metric import reduce_metrics
 
-from verl.utils.reward_score.deep_research_echo import resolve_validator_profile
-
 _ARPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 _VERL_TO_HF_SCRIPT = os.path.join(_ARPO_ROOT, "merge_ckpt", "convert_checkpoint_from_verl_to_hf.py")
 
@@ -55,8 +53,7 @@ class RayECHOTrainer(RayPPOTrainer):
             ("entropy_reg_loss.jsonl", "actor/entropy_reg_loss"),
             ("grad_norm.jsonl", "actor/grad_norm"),
             ("entropy_old_policy.jsonl", "actor/entropy_old_policy"),
-            ("high_level_valid_rate.jsonl", "reward/high_level_valid_rate"),
-            ("low_level_valid_rate.jsonl", "reward/low_level_valid_rate"),
+            ("format_valid_rate.jsonl", "reward/format_valid_rate"),
             ("tools_total_calls.jsonl", "tools/total_calls"),
             ("tools_successful_calls.jsonl", "tools/successful_calls"),
         ],
@@ -67,8 +64,7 @@ class RayECHOTrainer(RayPPOTrainer):
             ("entropy_reg_loss.jsonl", "actor/entropy_reg_loss"),
             ("grad_norm.jsonl", "actor/grad_norm"),
             ("entropy_old_policy.jsonl", "actor/entropy_old_policy"),
-            ("high_level_valid_rate.jsonl", "reward/high_level_valid_rate"),
-            ("low_level_valid_rate.jsonl", "reward/low_level_valid_rate"),
+            ("format_valid_rate.jsonl", "reward/format_valid_rate"),
             ("tools_total_calls.jsonl", "tools/total_calls"),
             ("tools_successful_calls.jsonl", "tools/successful_calls"),
         ],
@@ -149,13 +145,9 @@ class RayECHOTrainer(RayPPOTrainer):
             no_tool = torch.tensor(reward_extra_info["no_tool_calls"], dtype=torch.float32)
             metrics["reward/no_tool_rate"] = no_tool.mean().item()
 
-        if "high_level_valid" in reward_extra_info:
-            hl_valid = torch.tensor(reward_extra_info["high_level_valid"], dtype=torch.float32)
-            metrics["reward/high_level_valid_rate"] = hl_valid.mean().item()
-
-        if "low_level_valid" in reward_extra_info:
-            ll_valid = torch.tensor(reward_extra_info["low_level_valid"], dtype=torch.float32)
-            metrics["reward/low_level_valid_rate"] = ll_valid.mean().item()
+        if "format_valid" in reward_extra_info:
+            fmt_valid = torch.tensor(reward_extra_info["format_valid"], dtype=torch.float32)
+            metrics["reward/format_valid_rate"] = fmt_valid.mean().item()
 
         return metrics
 
@@ -269,13 +261,9 @@ class RayECHOTrainer(RayPPOTrainer):
             # doesn't drift just because the bad-format share moves.
             keep = (~bad) & (~no_tool)
             entropy_scalar_mean_good = per_sample[keep].mean().detach().item() if keep.any() else 0.0
-            if "high_level_valid" in reward_extra:
-                metrics["reward/high_level_valid_rate"] = (
-                    torch.tensor(reward_extra["high_level_valid"], dtype=torch.float32).mean().item()
-                )
-            if "low_level_valid" in reward_extra:
-                metrics["reward/low_level_valid_rate"] = (
-                    torch.tensor(reward_extra["low_level_valid"], dtype=torch.float32).mean().item()
+            if "format_valid" in reward_extra:
+                metrics["reward/format_valid_rate"] = (
+                    torch.tensor(reward_extra["format_valid"], dtype=torch.float32).mean().item()
                 )
             if bad_format_penalty != 0:
                 per_sample = torch.where(
@@ -466,7 +454,6 @@ class RayECHOTrainer(RayPPOTrainer):
             meta_info=deepcopy(prompt_batch.meta_info) if prompt_batch.meta_info else {},
         )
         phase_batch.meta_info["phase"] = phase_name
-        phase_batch.meta_info["validator_profile"] = self._validator_profile
 
         with _timer(f"{phase_name}_gen", timing_raw):
             phase_gen_batch = deepcopy(gen_batch)
@@ -691,13 +678,6 @@ class RayECHOTrainer(RayPPOTrainer):
         self._best_metric_value = float("-inf")
         self._best_metric_step = -1
         self._best_metric_key = None
-
-        # Resolve validator profile once from the rollout mask_categories so the
-        # format validator's HL/LL routing matches the phase mask layout.
-        # Fails fast if mask_categories does not match any supported profile.
-        self._validator_profile = resolve_validator_profile(
-            self.config.actor_rollout_ref.rollout.mask_categories
-        )
 
         self._init_logging_data()
 

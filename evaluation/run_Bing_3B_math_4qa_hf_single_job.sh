@@ -61,10 +61,6 @@ ECHO_SYSTEM_PROMPT_YAML="${SCRIPT_DIR}/../ARPO/verl_arpo_entropy/recipe/echo/con
 ECHO_ACTIVE_SYSTEM_PROMPT="1"
 # Combined per-sample tool budget (matches vLLMRolloutECHO.tool_call_limit, default 5).
 ECHO_TOOL_CALL_LIMIT="5"
-# Validator profile id (c1..c5) matching the trainer's mask_categories signature;
-# routes which format checks gate HL vs LL inside deep_research_echo.compute_score.
-# c1 = plan/reason/answer HL; tool choice + payload LL (the v1_ll_hl recipes).
-ECHO_VALIDATOR_PROFILE="c1"
 
 # Conda root and env used by the Python tool executor.
 CONDA_PATH="/scratch/user/saratb_tamu.edu/miniconda3"
@@ -319,7 +315,6 @@ USE_LLM="$USE_LLM" \
 API_BASE_URL="$API_BASE_URL" \
 MODEL_NAME="$JUDGE_MODEL_NAME" \
 PROMPT_TYPE="$PROMPT_TYPE" \
-VALIDATOR_PROFILE="$ECHO_VALIDATOR_PROFILE" \
 bash echo_evaluate_passk_math_4qa.sh | tee "logs/run_eval_math_4qa_hf${RUN_TAG:+_$RUN_TAG}.log"
 
 echo "Run completed successfully. Outputs: $OUTPUT_PATH"

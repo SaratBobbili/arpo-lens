@@ -58,8 +58,7 @@ class RayECHOTrainer(RayPPOTrainer):
             ("entropy_reg_loss.jsonl", "actor/entropy_reg_loss"),
             ("grad_norm.jsonl", "actor/grad_norm"),
             ("entropy_old_policy.jsonl", "actor/entropy_old_policy"),
-            ("high_level_valid_rate.jsonl", "reward/high_level_valid_rate"),
-            ("low_level_valid_rate.jsonl", "reward/low_level_valid_rate"),
+            ("format_valid_rate.jsonl", "reward/format_valid_rate"),
             ("tools_total_calls.jsonl", "tools/total_calls"),
             ("tools_successful_calls.jsonl", "tools/successful_calls"),
         ],
@@ -71,8 +70,7 @@ class RayECHOTrainer(RayPPOTrainer):
             ("entropy_reg_loss.jsonl", "actor/entropy_reg_loss"),
             ("grad_norm.jsonl", "actor/grad_norm"),
             ("entropy_old_policy.jsonl", "actor/entropy_old_policy"),
-            ("high_level_valid_rate.jsonl", "reward/high_level_valid_rate"),
-            ("low_level_valid_rate.jsonl", "reward/low_level_valid_rate"),
+            ("format_valid_rate.jsonl", "reward/format_valid_rate"),
             ("tools_total_calls.jsonl", "tools/total_calls"),
             ("tools_successful_calls.jsonl", "tools/successful_calls"),
         ],
@@ -144,13 +142,9 @@ class RayECHOTrainer(RayPPOTrainer):
             no_tool = torch.tensor(reward_extra_info["no_tool_calls"], dtype=torch.float32)
             metrics["reward/no_tool_rate"] = no_tool.mean().item()
 
-        if "high_level_valid" in reward_extra_info:
-            hl_valid = torch.tensor(reward_extra_info["high_level_valid"], dtype=torch.float32)
-            metrics["reward/high_level_valid_rate"] = hl_valid.mean().item()
-
-        if "low_level_valid" in reward_extra_info:
-            ll_valid = torch.tensor(reward_extra_info["low_level_valid"], dtype=torch.float32)
-            metrics["reward/low_level_valid_rate"] = ll_valid.mean().item()
+        if "format_valid" in reward_extra_info:
+            fmt_valid = torch.tensor(reward_extra_info["format_valid"], dtype=torch.float32)
+            metrics["reward/format_valid_rate"] = fmt_valid.mean().item()
 
         return metrics
 

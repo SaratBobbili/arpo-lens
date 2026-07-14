@@ -17,26 +17,27 @@ BING_ZONE="serp_api1"
 # Bright Data proxy country code for Bing search (cc URL parameter).
 BING_LOCATION="us"
 
-# Main reasoning model checkpoint/HF id served on ports 8002/8003.
+# Main reasoning model checkpoint/HF id served on configurable reasoning ports.
 CHECKPOINT_DIR="/scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ECHO"
-# Raw VERL actor checkpoint directory to convert before serving.
+# Optional raw VERL actor checkpoint directory to convert before serving.
+# Leave empty to disable conversion and serve ACTOR_MODEL_PATH directly.
 # Layout expected by run_layout.sh: <root>/<experiment>/<step>/actor, so the
-# two parents define TRAINING_EXPERIMENT (echo3BInstruct) and CHECKPOINT_STEP
-# (global_step_40) used in OUTPUT_PATH and run_config.yaml.
-RAW_ACTOR_CHECKPOINT_PATH="${CHECKPOINT_DIR}/checkpoints/echo3B-high4-low12/global_step_10/actor"
+# two parents define TRAINING_EXPERIMENT (echo7BInstruct) and CHECKPOINT_STEP
+# (global_step_35) used in OUTPUT_PATH and run_config.yaml.
+RAW_ACTOR_CHECKPOINT_PATH="${CHECKPOINT_DIR}/checkpoint_snapshots/echo7BInstruct/global_step_35/actor"
 # Base HF model used as the config/template during VERL->HF merge.
-REASON_BASE_MODEL_PATH="Qwen/Qwen2.5-3B-Instruct"
-# Converted HF model directory served by vLLM.
-ACTOR_MODEL_PATH="${CHECKPOINT_DIR}/checkpoints/echo3B-high4-low12/global_step_10/hf"
+REASON_BASE_MODEL_PATH="Qwen/Qwen2.5-7B-Instruct"
+# Converted or directly served HF model directory/repo id used by vLLM.
+ACTOR_MODEL_PATH="${CHECKPOINT_DIR}/checkpoint_snapshots/echo7BInstruct/global_step_35/hf"
 REASON_MODEL_PATH="${ACTOR_MODEL_PATH}"
 # Served model alias for reasoning endpoints; must match infer DEFAULT_MODEL.
-REASON_MODEL_NAME="Qwen2.5-3B-Instruct"
+REASON_MODEL_NAME="Qwen2.5-7B-Instruct"
 # Optional pointer to the training recipe .sh that produced the checkpoint
 # above. Recorded verbatim into run_config.yaml so eval folders stay traceable
 # back to the exact training config; leave empty to skip.
-TRAINING_RECIPE_PATH="${SCRIPT_DIR}/../ARPO/verl_arpo_entropy/recipe/echo/ECHO_2.5_3B_Reasoning_1node_v1_ll_hl.sh"
+TRAINING_RECIPE_PATH="${SCRIPT_DIR}/../ARPO/verl_arpo_entropy/recipe/echo/ECHO_2.5_7B_Reasoning_1node_v1_ll_hl.sh"
 
-# Summarization helper checkpoint/HF id served on ports 8004/8005.
+# Summarization helper checkpoint/HF id served on configurable summarization ports.
 SUMM_MODEL_PATH="Qwen/Qwen2.5-7B-Instruct"
 # Served model alias for summarization endpoints; must match infer SUMM_MODEL_NAME.
 SUMM_MODEL_NAME="Qwen2.5-7B-Instruct"
@@ -57,8 +58,8 @@ PROMPT_TYPE="echo"
 # When PROMPT_TYPE=echo these are overridden below to the combined ECHO budget so
 # the combined-budget gate in SampleProcessorCompletion fires before the per-tool
 # gate (which would inject an OOD "limit exceeded" feedback message ECHO never saw).
-MAX_PYTHON_TIMES="5"
-MAX_SEARCH_TIMES="5"
+MAX_PYTHON_TIMES="3"
+MAX_SEARCH_TIMES="3"
 
 # ---- ECHO-only config (consumed only when PROMPT_TYPE=echo) ----
 # Single source of truth for the ECHO system prompt: shared with the trainer at
@@ -68,7 +69,7 @@ ECHO_SYSTEM_PROMPT_YAML="${SCRIPT_DIR}/../ARPO/verl_arpo_entropy/recipe/echo/con
 # used during ECHO training (echo_trainer.yaml).
 ECHO_ACTIVE_SYSTEM_PROMPT="1"
 # Combined per-sample tool budget (matches vLLMRolloutECHO.tool_call_limit, default 5).
-ECHO_TOOL_CALL_LIMIT="8"
+ECHO_TOOL_CALL_LIMIT="10"
 
 # Conda root and env used by the Python tool executor.
 CONDA_PATH="/scratch/user/saratb_tamu.edu/miniconda3"
@@ -87,24 +88,13 @@ COUNTS="1000000"
 DATASET_GROUP="math_qa_all"
 
 # Pass@k turns (one output file per turn); space separated list.
-TURNS="1"
+TURNS="3"
 
 # Sampling temperature (0.0 => greedy decoding).
 TEMPERATURE="0.6"
 
 # Max new tokens per model call; raise for long reasoning traces.
 MAX_TOKENS="4096"
-
-# Sampling-distribution shape pinned to vLLMRolloutECHO + ppo_trainer.yaml defaults
-# (top_p=1.0, top_k=-1, repetition_penalty=1.0). Eval was previously running with
-# the Qwen-Instruct-style profile (top_p=0.95/top_k=20/rep_pen=1.1), which deflates
-# repeated format tokens (<select>, <think>, <answer>, ...) that ECHO emits densely
-# and was never exposed to under that penalty during training. Keep TEMPERATURE
-# below the training value (1.0) for sharper single-rollout eval.
-TOP_P="1.0"
-TOP_K="-1"
-MIN_P="0.0"
-REPETITION_PENALTY="1.0"
 
 # End-to-end timeout for a single sample, in seconds.
 SAMPLE_TIMEOUT="900"
@@ -123,8 +113,14 @@ USE_LLM="true"
 JUDGE_MODEL_PATH="Qwen/Qwen2.5-72B-Instruct"
 # Served alias for the judge endpoint; must match --model_name passed to evaluate.py.
 JUDGE_MODEL_NAME="Qwen2.5-72B-Instruct"
-# Endpoint URL the evaluator queries; matches the judge launcher PORT.
-API_BASE_URL="http://localhost:8001/v1"
+# Port layout for this run (chosen to avoid collisions with other launchers).
+REASON_PORT_1="8102"
+REASON_PORT_2="8103"
+SUMM_PORT_1="8104"
+SUMM_PORT_2="8105"
+JUDGE_PORT="8101"
+# Endpoint URL the evaluator queries; must match JUDGE_PORT.
+API_BASE_URL="http://localhost:${JUDGE_PORT}/v1"
 
 # Warmup wait time before starting inference.
 SERVER_BOOT_WAIT_SECONDS="60"
@@ -177,7 +173,8 @@ source "${SCRIPT_DIR}/run_layout.sh"
 init_run_layout
 
 # Convert VERL/FSDP actor shards into a vLLM-loadable HF directory once.
-if [[ -d "$RAW_ACTOR_CHECKPOINT_PATH" ]]; then
+# When RAW_ACTOR_CHECKPOINT_PATH is empty, conversion is skipped.
+if [[ -n "$RAW_ACTOR_CHECKPOINT_PATH" && -d "$RAW_ACTOR_CHECKPOINT_PATH" ]]; then
   if [[ ! -f "${ACTOR_MODEL_PATH}/config.json" ]]; then
     echo "[0/5] Converting VERL actor checkpoint to HF format..."
     python ../ARPO/merge_ckpt/convert_checkpoint_from_verl_to_hf.py merge \
@@ -252,6 +249,7 @@ wait_for_endpoint() {
 if [[ "$RESUME_FROM_EVAL" != "true" ]]; then
   echo "[1/5] Starting reasoning servers..."
   setsid env MODEL_PATH="$REASON_MODEL_PATH" MODEL_NAME="$REASON_MODEL_NAME" \
+    REASON_PORT_1="$REASON_PORT_1" REASON_PORT_2="$REASON_PORT_2" \
     bash vllm_scripts/echo_vllm_launch_reasoning_model_hf_cuda4-7.sh \
     > "$RUN_LOG_DIR/run_reasoning_wrapper.log" 2>&1 < /dev/null &
   REASON_PID=$!
@@ -259,6 +257,7 @@ if [[ "$RESUME_FROM_EVAL" != "true" ]]; then
   if [[ "$NEEDS_SUMM" == "true" ]]; then
     echo "[2/5] Starting summarization servers (SDS mode)..."
     setsid env MODEL_PATH="$SUMM_MODEL_PATH" MODEL_NAME="$SUMM_MODEL_NAME" \
+      SUMM_PORT_1="$SUMM_PORT_1" SUMM_PORT_2="$SUMM_PORT_2" \
       bash vllm_scripts/echo_vllm_launch_summarize_model_hf_cuda0-3.sh \
       > "$RUN_LOG_DIR/run_summarization_wrapper.log" 2>&1 < /dev/null &
     SUMM_PID=$!
@@ -269,11 +268,11 @@ if [[ "$RESUME_FROM_EVAL" != "true" ]]; then
   echo "Waiting $SERVER_BOOT_WAIT_SECONDS seconds for server warmup..."
   sleep "$SERVER_BOOT_WAIT_SECONDS"
 
-  wait_for_endpoint "http://localhost:8002/v1" "$ENDPOINT_READY_TIMEOUT_SECONDS"
-  wait_for_endpoint "http://localhost:8003/v1" "$ENDPOINT_READY_TIMEOUT_SECONDS"
+  wait_for_endpoint "http://localhost:${REASON_PORT_1}/v1" "$ENDPOINT_READY_TIMEOUT_SECONDS"
+  wait_for_endpoint "http://localhost:${REASON_PORT_2}/v1" "$ENDPOINT_READY_TIMEOUT_SECONDS"
   if [[ "$NEEDS_SUMM" == "true" ]]; then
-    wait_for_endpoint "http://localhost:8004/v1" "$ENDPOINT_READY_TIMEOUT_SECONDS"
-    wait_for_endpoint "http://localhost:8005/v1" "$ENDPOINT_READY_TIMEOUT_SECONDS"
+    wait_for_endpoint "http://localhost:${SUMM_PORT_1}/v1" "$ENDPOINT_READY_TIMEOUT_SECONDS"
+    wait_for_endpoint "http://localhost:${SUMM_PORT_2}/v1" "$ENDPOINT_READY_TIMEOUT_SECONDS"
   fi
 
   echo "[3/5] Running inference on math benchmarks..."
@@ -294,13 +293,11 @@ if [[ "$RESUME_FROM_EVAL" != "true" ]]; then
   BING_API_KEY="$BING_API_KEY" \
   BING_ZONE="$BING_ZONE" \
   BING_LOCATION="$BING_LOCATION" \
+  ENDPOINTS="http://localhost:${REASON_PORT_1}/v1 http://localhost:${REASON_PORT_2}/v1" \
+  SUMM_MODEL_URLS="http://localhost:${SUMM_PORT_1}/v1 http://localhost:${SUMM_PORT_2}/v1" \
   DATASET_GROUP="$DATASET_GROUP" \
   TURNS="$TURNS" \
   TEMPERATURE="$TEMPERATURE" \
-  TOP_P="$TOP_P" \
-  TOP_K="$TOP_K" \
-  MIN_P="$MIN_P" \
-  REPETITION_PENALTY="$REPETITION_PENALTY" \
   MAX_TOKENS="$MAX_TOKENS" \
   SAMPLE_TIMEOUT="$SAMPLE_TIMEOUT" \
   bash echo_infer_math_4qa_hf.sh | tee "$RUN_LOG_DIR/run_infer_math_4qa_hf.log"
@@ -319,7 +316,7 @@ if [[ "$USE_LLM" == "true" ]]; then
     stop_server SUMM_PID
     sleep "$SERVER_TEARDOWN_WAIT_SECONDS"
   fi
-  setsid env MODEL_PATH="$JUDGE_MODEL_PATH" MODEL_NAME="$JUDGE_MODEL_NAME" \
+  setsid env MODEL_PATH="$JUDGE_MODEL_PATH" MODEL_NAME="$JUDGE_MODEL_NAME" PORT="$JUDGE_PORT" \
     bash vllm_scripts/echo_vllm_launch_judge_model_hf_cuda0-3.sh \
     > "$RUN_LOG_DIR/run_judge_wrapper.log" 2>&1 < /dev/null &
   JUDGE_PID=$!

@@ -59,10 +59,8 @@ PLOT_LL_ENTROPY_OLD_POLICY = False # LL diagnostic: old-policy entropy on loss_m
 PLOT_HL_ENTROPY_OLD_POLICY = False
 
 # --- Validity / tool diagnostics ------------------------------------------------
-PLOT_LL_HL_VALID_RATE = False      # LL phase: high-level validator pass rate
-PLOT_HL_HL_VALID_RATE = False      # HL phase: high-level validator pass rate
-PLOT_LL_LL_VALID_RATE = False      # LL phase: low-level validator pass rate
-PLOT_HL_LL_VALID_RATE = False
+PLOT_LL_FORMAT_VALID_RATE = False  # LL phase: shared format_valid rate
+PLOT_HL_FORMAT_VALID_RATE = False  # HL phase: shared format_valid rate
 PLOT_LL_TOOLS_TOTAL_CALLS = False
 PLOT_HL_TOOLS_TOTAL_CALLS = False
 PLOT_LL_TOOLS_SUCCESSFUL_CALLS = False
@@ -89,10 +87,8 @@ SERIES = [
     (PLOT_HL_GRAD_NORM,              "high_level/grad_norm.jsonl",              "HL grad_norm",               "value"),
     (PLOT_LL_ENTROPY_OLD_POLICY,     "low_level/entropy_old_policy.jsonl",      "LL entropy_old_policy",      "value"),
     (PLOT_HL_ENTROPY_OLD_POLICY,     "high_level/entropy_old_policy.jsonl",     "HL entropy_old_policy",      "value"),
-    (PLOT_LL_HL_VALID_RATE,          "low_level/high_level_valid_rate.jsonl",   "LL hl_valid_rate",           "value"),
-    (PLOT_HL_HL_VALID_RATE,          "high_level/high_level_valid_rate.jsonl",  "HL hl_valid_rate",           "value"),
-    (PLOT_LL_LL_VALID_RATE,          "low_level/low_level_valid_rate.jsonl",    "LL ll_valid_rate",           "value"),
-    (PLOT_HL_LL_VALID_RATE,          "high_level/low_level_valid_rate.jsonl",   "HL ll_valid_rate",           "value"),
+    (PLOT_LL_FORMAT_VALID_RATE,      "low_level/format_valid_rate.jsonl",       "LL format_valid_rate",       "value"),
+    (PLOT_HL_FORMAT_VALID_RATE,      "high_level/format_valid_rate.jsonl",      "HL format_valid_rate",       "value"),
     (PLOT_LL_TOOLS_TOTAL_CALLS,      "low_level/tools_total_calls.jsonl",       "LL tools/total_calls",       "value"),
     (PLOT_HL_TOOLS_TOTAL_CALLS,      "high_level/tools_total_calls.jsonl",      "HL tools/total_calls",       "value"),
     (PLOT_LL_TOOLS_SUCCESSFUL_CALLS, "low_level/tools_successful_calls.jsonl",  "LL tools/successful_calls",  "value"),

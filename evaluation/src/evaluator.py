@@ -28,8 +28,8 @@ def _load_echo_format_validator():
     verl_path = os.path.join(repo_root, "ARPO", "verl_arpo_entropy")
     if verl_path not in sys.path:
         sys.path.insert(0, verl_path)
-    from verl.utils.reward_score.deep_research_echo import validate_format_echo, mask_categories_for_profile
-    return validate_format_echo, mask_categories_for_profile
+    from verl.utils.reward_score.deep_research_echo import validate_format
+    return validate_format
 
 
 class Evaluator:
@@ -44,8 +44,6 @@ class Evaluator:
         concurrent_limit: int = 50,
         sigma: float = 0.1,
         prompt_type: Optional[str] = None,
-        validator_profile: str = "c1",
-        mask_categories: Optional[dict] = None,
     ):
         """
         Initialize evaluator.
@@ -60,15 +58,7 @@ class Evaluator:
             concurrent_limit: Concurrency limit
             sigma: Smoothing factor
             prompt_type: Prompt schema used during inference. When set to 'echo',
-                run the trainer's format validator and report HL/LL pass rates.
-            validator_profile: Legacy ECHO validator profile id (c1..c4) used only
-                as a fallback when `mask_categories` is not supplied. Profiles only
-                encode high/low-only layouts and cannot express `both`/`none`.
-            mask_categories: The checkpoint's real
-                actor_rollout_ref.rollout.mask_categories dict. When provided it is
-                passed straight to the format validator (which supports
-                high/low/both/none), making the format pass rate faithful even when
-                phases overlap. Takes precedence over `validator_profile`.
+                run the trainer's format validator and report format_valid rate.
         """
         self.task_type = task_type
         self.output_path = output_path
@@ -76,17 +66,10 @@ class Evaluator:
         self.concurrent_limit = concurrent_limit
         self.sigma = sigma
         self.prompt_type = prompt_type
-        self.validator_profile = validator_profile
         if prompt_type == "echo":
-            _validate_format_echo, _mask_categories_for_profile = _load_echo_format_validator()
-            self._echo_validator = _validate_format_echo
-            if mask_categories:
-                self.mask_categories = dict(mask_categories)
-            else:
-                self.mask_categories = _mask_categories_for_profile(validator_profile)
+            self._echo_validator = _load_echo_format_validator()
         else:
             self._echo_validator = None
-            self.mask_categories = None
 
         # Output paths
         base_path, ext = os.path.splitext(output_path)
@@ -115,8 +98,7 @@ class Evaluator:
             "category": classify_question(question),
         }
         if self._echo_validator is not None:
-            metrics.update({"echo_format_valid": 0, "echo_high_level_valid": 0,
-                            "echo_low_level_valid": 0, "echo_format_reason": reason})
+            metrics.update({"echo_format_valid": 0, "echo_format_reason": reason})
         return metrics
 
     async def evaluate_sample(self, item: Dict[str, Any]) -> Dict[str, Any]:
@@ -176,10 +158,8 @@ class Evaluator:
         # Runs the trainer's validator on the raw rollout text; reported as a
         # standalone metric and never gates the F1/EM/LLM-judge score.
         if self._echo_validator is not None:
-            ok, reason, hl_ok, ll_ok = self._echo_validator(output, self.mask_categories)
+            ok, reason = self._echo_validator(output)
             metrics["echo_format_valid"] = int(ok)
-            metrics["echo_high_level_valid"] = int(hl_ok)
-            metrics["echo_low_level_valid"] = int(ll_ok)
             metrics["echo_format_reason"] = reason
 
         # Evaluate based on task type
@@ -328,15 +308,9 @@ class Evaluator:
             for cat, s in cat_stats.items()
         }
 
-        # ECHO format pass rates: report only when the validator ran (i.e.
-        # prompt_type=='echo'); aggregated over all samples that have the keys.
         if self._echo_validator is not None:
             avg_fmt = [item['metrics'].get('echo_format_valid', 0) for item in data]
-            avg_hl = [item['metrics'].get('echo_high_level_valid', 0) for item in data]
-            avg_ll = [item['metrics'].get('echo_low_level_valid', 0) for item in data]
             overall_metrics['echo_format_pass_rate'] = float(np.mean(avg_fmt)) if avg_fmt else 0.0
-            overall_metrics['echo_high_level_pass_rate'] = float(np.mean(avg_hl)) if avg_hl else 0.0
-            overall_metrics['echo_low_level_pass_rate'] = float(np.mean(avg_ll)) if avg_ll else 0.0
         return overall_metrics
 
     def save_results(self, data: List[Dict[str, Any]]):
@@ -373,9 +347,7 @@ class Evaluator:
         print(f"Tool productivity (M1*M2): {self.overall_metrics.get('tool_productivity', 0):.2f}")
 
         if 'echo_format_pass_rate' in self.overall_metrics:
-            print(f"ECHO format pass rate: {self.overall_metrics['echo_format_pass_rate']:.4f}"
-                  f" (HL={self.overall_metrics['echo_high_level_pass_rate']:.4f},"
-                  f" LL={self.overall_metrics['echo_low_level_pass_rate']:.4f})")
+            print(f"ECHO format pass rate: {self.overall_metrics['echo_format_pass_rate']:.4f}")
 
 
 def count_valid_tags(text: str, tag: str) -> int:

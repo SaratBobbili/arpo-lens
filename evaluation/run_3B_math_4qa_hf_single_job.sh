@@ -18,18 +18,18 @@ BING_ZONE="serp_api1"
 BING_LOCATION="us"
 
 # Set true to eval Qwen/Qwen2.5-3B-Instruct from Hugging Face Hub.
-USE_HF_HUB_MODEL="true"
+USE_HF_HUB_MODEL="false"
 
 # Main reasoning model checkpoint/HF id served on ports 8002/8003.
 CHECKPOINT_DIR="/scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ECHO"
-TRAINING_RUN_DIR="${CHECKPOINT_DIR}/checkpoints/echo3BInst_hl_scorer_ll_entropy_sign_cond_clip_true"
+TRAINING_RUN_DIR="${CHECKPOINT_DIR}/sft/checkpoints/Qwen2.5-7B-Instruct"
 # HF best checkpoint written by ECHO training (best_checkpoint/hf).
-ACTOR_MODEL_PATH="${TRAINING_RUN_DIR}/best_checkpoint/hf"
+ACTOR_MODEL_PATH="${TRAINING_RUN_DIR}/"
 REASON_MODEL_PATH="${ACTOR_MODEL_PATH}"
 # run_layout.sh: parent of ACTOR_MODEL_PATH is best_checkpoint -> CHECKPOINT_STEP.
 RAW_ACTOR_CHECKPOINT_PATH="${ACTOR_MODEL_PATH}"
 # Served model alias for reasoning endpoints; must match infer DEFAULT_MODEL.
-REASON_MODEL_NAME="Qwen2.5-3B-Instruct"
+REASON_MODEL_NAME="Qwen2.5-7B-Instruct"
 # Optional pointer to the training recipe .sh that produced the checkpoint
 # above. Recorded verbatim into run_config.yaml so eval folders stay traceable
 # back to the exact training config; leave empty to skip.
@@ -37,11 +37,11 @@ REASON_MODEL_NAME="Qwen2.5-3B-Instruct"
 TRAINING_RECIPE_PATH=""
 
 if [[ "$USE_HF_HUB_MODEL" == "true" ]]; then
-  ACTOR_MODEL_PATH="Qwen/Qwen2.5-3B-Instruct"
+  ACTOR_MODEL_PATH="Qwen/Qwen2.5-7B-Instruct"
   REASON_MODEL_PATH="${ACTOR_MODEL_PATH}"
-  REASON_BASE_MODEL_PATH="Qwen/Qwen2.5-3B-Instruct"
+  REASON_BASE_MODEL_PATH="Qwen/Qwen2.5-7B-Instruct"
   RAW_ACTOR_CHECKPOINT_PATH=""
-  REASON_MODEL_NAME="Qwen2.5-3B-Instruct"
+  REASON_MODEL_NAME="Qwen2.5-7B-Instruct"
 fi
 
 # Summarization helper checkpoint/HF id served on ports 8004/8005.
@@ -59,7 +59,7 @@ INFER_MODE="completion"
 #   code_search -> python + search (default for ARPO/AEPO trained checkpoints)
 #   echo        -> ECHO <select>/<tool> schema; loads system prompt from
 #                  ECHO_SYSTEM_PROMPT_YAML below instead of a hardcoded literal.
-PROMPT_TYPE="echo"
+PROMPT_TYPE="base"
 
 # Per-sample tool-call budgets enforced by the SampleProcessor; set to 0 to disable a tool entirely.
 # When PROMPT_TYPE=echo these are overridden below to the combined ECHO budget so
@@ -74,13 +74,9 @@ MAX_SEARCH_TIMES="3"
 ECHO_SYSTEM_PROMPT_YAML="${SCRIPT_DIR}/../ARPO/verl_arpo_entropy/recipe/echo/config/echo_system_prompts.yaml"
 # Selects system_prompt_N inside the YAML; must equal data.active_system_prompt
 # used during ECHO training (echo_trainer.yaml).
-ECHO_ACTIVE_SYSTEM_PROMPT="1"
+ECHO_ACTIVE_SYSTEM_PROMPT="4"
 # Combined per-sample tool budget (matches vLLMRolloutECHO.tool_call_limit, default 5).
 ECHO_TOOL_CALL_LIMIT="8"
-# Validator profile id (c1..c5) matching the trainer's mask_categories signature;
-# routes which format checks gate HL vs LL inside deep_research_echo.compute_score.
-# c1 = plan/reason/answer HL; tool choice + payload LL (the v1_ll_hl recipes).
-ECHO_VALIDATOR_PROFILE="c1"
 
 # Conda root and env used by the Python tool executor.
 CONDA_PATH="/scratch/user/saratb_tamu.edu/miniconda3"
@@ -99,7 +95,7 @@ COUNTS="1000000"
 DATASET_GROUP="math_all"
 
 # Pass@k turns (one output file per turn); space separated list.
-TURNS="3"
+TURNS="1"
 
 # Sampling temperature (0.0 => greedy decoding).
 TEMPERATURE="0.6"
@@ -351,7 +347,6 @@ USE_LLM="$USE_LLM" \
 API_BASE_URL="$API_BASE_URL" \
 MODEL_NAME="$JUDGE_MODEL_NAME" \
 PROMPT_TYPE="$PROMPT_TYPE" \
-VALIDATOR_PROFILE="$ECHO_VALIDATOR_PROFILE" \
 bash echo_evaluate_passk_math_4qa.sh | tee "$RUN_LOG_DIR/run_eval_math_4qa_hf.log"
 
 echo "Run completed successfully. Outputs: $OUTPUT_PATH"

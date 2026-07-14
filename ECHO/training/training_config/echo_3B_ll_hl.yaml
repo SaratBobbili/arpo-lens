@@ -1,3 +1,4 @@
+# shared
 project_name: qwen3BInst
 experiment_name: echo3BInst_hierarchical_with_low_level_aepo
 active_system_prompt: 5
@@ -16,8 +17,6 @@ actor_model_subpath: checkpoints/Qwen2.5-3B-Instruct
 reward_manager: echo
 
 rollout_n: 16
-high_level_budget: 16
-low_level_budget: 16
 reuse_phase_rollouts: false
 enable_multi_turn: false
 tensor_model_parallel_size: 1
@@ -39,10 +38,6 @@ max_actor_ckpt_to_keep: 1
 resume_mode: auto
 
 phase_order: '["high_level", "low_level"]'
-high_level_update_repeats: 1
-low_level_update_repeats: 1
-high_level_advantage_algorithm: grpo
-low_level_advantage_algorithm: aepo
 norm_adv_by_std_in_grpo: True
 
 mask_tool: low
@@ -51,8 +46,6 @@ mask_answer: high
 mask_search: low
 mask_python: low
 
-high_level_use_sign_cond_clip: true
-low_level_use_sign_cond_clip: true
 clip_ratio_low: 0.2
 clip_ratio_high: 0.2
 clip_ratio_c: 3.0
@@ -61,18 +54,27 @@ clip_ratio_high_pos: 0.4
 clip_ratio_low_neg: 0.2
 clip_ratio_high_neg: 0.2
 
+# --- high_level ---
+high_level_budget: 16
+high_level_update_repeats: 1
+high_level_advantage_algorithm: grpo
+high_level_use_sign_cond_clip: true
 hl_kl_loss_coef: 0.0
-ll_kl_loss_coef: 0.0
 hl_use_aepo_clip: false
-ll_use_aepo_clip: true
-
 hl_entropy_reg_coeff: 0.0
-ll_entropy_reg_coeff: 0.0
 hl_entropy_normalization: token_pool
-ll_entropy_normalization: group
 hl_entropy_alpha: 0.2
-ll_entropy_alpha: 0.2
 
+# --- low_level ---
+low_level_budget: 16
+low_level_update_repeats: 1
+low_level_advantage_algorithm: aepo
+low_level_use_sign_cond_clip: true
+ll_kl_loss_coef: 0.0
+ll_use_aepo_clip: true
+ll_entropy_reg_coeff: 0.0
+ll_entropy_normalization: group
+ll_entropy_alpha: 0.2
 low_level_rollout_strategy: aepo
 ll_aepo_initial_rollouts: 8
 ll_aepo_beam_size: 2

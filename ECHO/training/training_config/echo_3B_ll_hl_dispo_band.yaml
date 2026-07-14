@@ -1,3 +1,4 @@
+# shared
 project_name: qwen3BInst
 experiment_name: echo3BInst_hl_scorer_ll_hybrid_band_frozen_hinit_kl_on
 active_system_prompt: 5
@@ -16,7 +17,6 @@ actor_model_subpath: checkpoints/Qwen2.5-3B-Instruct
 reward_manager: echo
 
 rollout_n: 16
-high_level_budget: 8
 enable_multi_turn: false
 tensor_model_parallel_size: 1
 gpu_memory_utilization: 0.7
@@ -37,10 +37,6 @@ max_actor_ckpt_to_keep: 1
 resume_mode: auto
 
 phase_order: '["high_level", "low_level"]'
-high_level_update_repeats: 1
-low_level_update_repeats: 1
-high_level_advantage_algorithm: grpo
-low_level_advantage_algorithm: entropy
 norm_adv_by_std_in_grpo: False
 
 mask_tool: low
@@ -49,8 +45,6 @@ mask_answer: high
 mask_search: low
 mask_python: low
 
-high_level_use_sign_cond_clip: True
-low_level_use_sign_cond_clip: True
 clip_ratio_low: 0.2
 clip_ratio_high: 0.2
 clip_ratio_c: 3.0
@@ -59,12 +53,21 @@ clip_ratio_high_pos: 0.2
 clip_ratio_low_neg: 0.0
 clip_ratio_high_neg: 0.1
 
+# --- high_level ---
+high_level_budget: 8
+high_level_update_repeats: 1
+high_level_advantage_algorithm: grpo
+high_level_use_sign_cond_clip: True
 hl_kl_loss_coef: 0.001
-ll_kl_loss_coef: 0.001
-
 hl_entropy_reg_coeff: 0.0
-ll_entropy_reg_coeff: 0.01
 hl_entropy_normalization: token_pool
-ll_entropy_normalization: token_pool
 hl_entropy_alpha: 0.2
+
+# --- low_level ---
+low_level_update_repeats: 1
+low_level_advantage_algorithm: entropy
+low_level_use_sign_cond_clip: True
+ll_kl_loss_coef: 0.001
+ll_entropy_reg_coeff: 0.01
+ll_entropy_normalization: token_pool
 ll_entropy_alpha: 0.2

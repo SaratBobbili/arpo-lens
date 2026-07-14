@@ -1,3 +1,4 @@
+# shared
 project_name: qwen3B
 experiment_name: echo3B_ll_hl_rag
 active_system_prompt: 5
@@ -14,23 +15,21 @@ valid_files: rl_datasets/valid.parquet
 actor_model_subpath: checkpoints/Qwen2.5-3B-Instruct
 
 rollout_n: 16
-high_level_budget: 8
 enable_multi_turn: false
 tensor_model_parallel_size: 1
 gpu_memory_utilization: 0.7
 search_cache_file: search_cache_echo_3B_rag.json
 search_class_path: verl.workers.agent.tools.search_tool.BingSearchToolRAG
 brightdata_timeout: 45
+tool_call_limit: ""
 
 total_epochs: 2
 save_freq: 5
 test_freq: 5
 max_actor_ckpt_to_keep: 1
 resume_mode: ""
-tool_call_limit: ""
 
 phase_order: '["low_level", "high_level"]'
-high_level_advantage_algorithm: grpo
 
 mask_tool: low
 mask_think: high
@@ -38,8 +37,12 @@ mask_answer: high
 mask_search: low
 mask_python: low
 
-low_level_advantage_algorithm: entropy
+# --- high_level ---
+high_level_budget: 8
+high_level_advantage_algorithm: grpo
 
+# --- low_level ---
+low_level_advantage_algorithm: entropy
 ll_entropy_reg_coeff: 0
 ll_entropy_normalization: token_pool
 ll_entropy_alpha: 0.2

@@ -22,7 +22,7 @@ todos:
     status: completed
   - id: S7-regroup-configs
     content: "S7: Regroup training_config YAMLs (start echo_3B_ll_hl_grpo.yaml) into contiguous HL/LL blocks with cleaned knobs"
-    status: pending
+    status: completed
   - id: S8-eval-prompt5
     content: "S8: Eval launchers/defaults to prompt 5. evaluation/xmix/ is out of scope (leave untouched)"
     status: pending
@@ -45,7 +45,7 @@ You are continuing the ECHO cleanup tracked in **`projectplan.md`** (workspace r
 6. Do not commit unless asked. Give `git add` paths when the user accepts changes.
 7. Before ending: mark the todo completed (or leave pending + blocker), append a Progress log entry, hand off next pending id.
 
-**Active subtask right now:** `S7-regroup-configs`
+**Active subtask right now:** `S8-eval-prompt5`
 
 ---
 
@@ -87,10 +87,9 @@ SFT reference: [`scripts/sft_refactor/trajectory.py`](scripts/sft_refactor/traje
 
 ### Still select-era / obsolete surfaces (later subtasks)
 
-- Launch YAMLs still mixed layout after key renames (S7).
 - Eval launchers may still default to prompt 1 (S8).
 
-Depends-on: S7 → S8 last.
+Depends-on: S8 last.
 
 ---
 
@@ -130,23 +129,9 @@ See Progress log. Touchstone: [`vllm_rollout_echo.py`](ARPO/verl_arpo_entropy/ve
 
 ---
 
-### S7 — Regroup launch YAMLs
+### S7 — Regroup launch YAMLs — COMPLETED
 
-**Goal:** Readable per-phase config layout after S3–S6 key renames.
-
-**Primary file:** [`echo_3B_ll_hl_grpo.yaml`](ECHO/training/training_config/echo_3B_ll_hl_grpo.yaml), then other live configs under `training_config/`.
-
-**Layout:**
-
-```yaml
-# shared: project/data/rollout infra, phase_order, active_system_prompt, masks, clip ratios, norm_adv …
-# --- high_level ---  (budget, updates, advantage algo, rollout strategy, sign_cond clip bool, hl_kl/entropy, …)
-# --- low_level ---   (same family + ll_aepo_* only if rollout_strategy=aepo)
-```
-
-No filter_groups / reward_strategy / sign_cond_strategy / mask_first_select leftovers.
-
-**Done when:** `echo_3B_ll_hl_grpo.yaml` (and touched siblings) match the layout and `train.sh` still accepts all keys via `VALID_LAUNCH_KEYS`.
+See Progress log. All 10 live `training_config/*.yaml` use shared → `# --- high_level ---` → `# --- low_level ---`.
 
 ---
 
@@ -262,3 +247,13 @@ _Agents append here after each session._
 - Verified: char-token smoke on prompt-5 trajectory — `<tool>` content follows `mask_tool` into HL/LL; results excluded; launch key check on `echo_3B_ll_hl_grpo.yaml` passes.
 - Follow-ups: **S7** regroup launch YAMLs into contiguous HL/LL blocks; left `scripts/old/` + analysis report select naming untouched.
 - Next: S7-regroup-configs
+
+### 2026-07-14 — S7-regroup-configs — completed
+- Changes: Regrouped all 10 live [`ECHO/training/training_config/*.yaml`](ECHO/training/training_config/) into contiguous layout:
+  - `# shared` (project/data/rollout infra, phase_order, masks, clip ratios, norm_adv)
+  - `# --- high_level ---` (budget, updates, advantage_algorithm, sign_cond clip, hl_kl/entropy/aepo_clip)
+  - `# --- low_level ---` (same family + `ll_aepo_*` only when `low_level_rollout_strategy=aepo`)
+  - Values preserved; no obsolete keys (`filter_groups` / `reward_strategy` / `sign_cond_strategy` / `mask_first_select`).
+- Verified: all 10 pass `train.sh` `VALID_LAUNCH_KEYS` check.
+- Follow-ups: **S8** eval launchers/defaults → prompt 5; leave `evaluation/xmix/` untouched. ARPO recipe `training_config/` not synced (live-only this subtask).
+- Next: S8-eval-prompt5

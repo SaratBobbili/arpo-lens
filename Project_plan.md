@@ -7,7 +7,7 @@ todos:
     status: completed
   - id: S2-purge-stale-live
     content: "S2: Inventory and remove stale code/vars/docs/config keys in live ECHO/training (and related analysis) that belong to pre-advantage_algorithm / pre-prompt-5 APIs; leave shared verl untouched unless a later subtask says so"
-    status: pending
+    status: completed
 ---
 
 # ECHO single-tree cleanup plan
@@ -27,7 +27,7 @@ You are continuing the ECHO cleanup tracked in **`Project_plan.md`** (workspace 
 7. Do not commit unless asked. Give `git add` paths when the user accepts changes.
 8. Before ending: mark the todo completed (or leave pending + blocker), append a Progress log entry, hand off next pending id.
 
-**Active subtask right now:** `S2-purge-stale-live`
+**Active subtask right now:** _(none pending — add S3+ when named)_
 
 **Later subtasks:** Further S3+ only when the user names them.
 
@@ -136,7 +136,7 @@ rg -n 'recipe/echo|recipe\.echo' -g '!Project_plan.md'
 
 ---
 
-### S2 — Purge stale live leftovers — PENDING
+### S2 — Purge stale live leftovers — COMPLETED
 
 **Goal:** Against today's live API (`advantage_algorithm` + prompt-5 + always-on scorer reward), inventory then remove dead code, unused variables/fields, obsolete config keys, and docs that still describe retired surfaces as current.
 
@@ -247,3 +247,30 @@ _Agents append here after each session._
 - Kept on purpose (not live refs): `recipe.echo.main_echo` inside provenance `scripts/old/*maxent.sh`; frozen historical strings under `evaluation/outputs/**/run_config.yaml`.
 - Follow-ups for later subtasks: S2 inventory/purge of stale live leftovers (`reward_strategy`, `entropy-hybrid`, `non_border`, `first_select`, etc.) under `ECHO/training/` excluding `scripts/old/`.
 - Next: `S2-purge-stale-live`
+
+### 2026-07-14 — S2-purge-stale-live — completed
+
+**Inventory (then removed / rewritten):**
+
+| Item | Why dead vs today's call graph |
+|------|--------------------------------|
+| `docs/Notes.md` (entire prior writeup) | Documented `low_level_reward_strategy` / `entropy-hybrid` / `ll_no_tool_penalty` as current. Live path has always-on scorer reward + `advantage_algorithm` only. |
+| `docs/logging_readme.md` rows/sections for `entropy_scalar_*`, `entropy_reduced_mean`, `non_border_loss_mask`, `high_level_valid`/`low_level_valid`, `<select>` structure, "valid across scorer/entropy/entropy-hybrid" | Trainer `_build_scorer_metrics` logs score/f1/format_pass/format_valid/no_tool only; scorer is `deep_research_echo` (prompt-5 + `format_valid`). |
+| `analysis/plot_monotonic_trend.py` + `scripts/run_monotonic_trend_sweep.sh` defaults | Defaulted y/x to `entropy_scalar_mean` / `entropy_loss` (retired reward channel / ARPO-named key). Live: `effective_reward_mean` / `entropy_old_policy`. |
+| `analysis/plot_training_log.py` reward comments | Still described LL reward as "pre-gate entropy". |
+| `analysis/generate_echo3binst_report.py` `_config_signature` | Read retired `strategy` / `algorithm` / `no_tool_penalty` / `mask_categories.first_select`. Live: `advantage_algorithm` + prompt-5 mask keys. |
+| `config/echo_trainer.yaml` `gen_batch_size` comment | Referenced DAPO dynamic sampling (locked out). |
+| `echo_ray_trainer.py` dump-skip comment | Said "scorer phase" for missing entropy_reg. |
+
+**Live hot path checked, no dead branches found:** `echo_ray_trainer.py`, `echo_dp_actor.py`, `echo_core_algos.py`, `echo_reward_manager.py`, `echo_fsdp_workers.py`, `main_echo.py`, `scripts/train.sh`, `training_config/*.yaml` already on `advantage_algorithm` / prompt-5 surface.
+
+**Kept on purpose:**
+- `ECHO/training/scripts/old/**` — provenance archives (still use reward_strategy / first_select).
+- `echo_system_prompts.yaml` system_prompt_1–4 — inactive `<select>`-era candidates; default remains prompt 5.
+- Experiment-name strings in launch YAMLs that only historically mention hybrid/scorer.
+- `generate_echo3binst_report.py`: optional legacy `entropy_scalar_*` metric fallbacks + run-name group buckets for old checkpoint folders; signature now prefers live keys.
+- `echo_core_algos.py` unused advantage estimators (RLOO/OPO/…) — shared PPO surface, not retired ECHO reward API; out of "confirmed staleness" scope.
+
+- Changes: Rewrote Notes + logging cheatsheet; retargeted analysis defaults to live metrics; fixed report config signature; cleared DAPO/scorer-phase comments. Shared `verl/` untouched. Launch-key check on `echo_3B_ll_hl.yaml` OK. Seed rg clean under `ECHO/training` excluding `scripts/old/`.
+- Follow-ups for later subtasks: (none pending unless user names S3 — e.g. shared-verl dead code, or prune inactive system_prompt_1–4).
+- Next: _(none)_

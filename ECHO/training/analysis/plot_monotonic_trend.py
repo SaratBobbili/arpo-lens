@@ -30,21 +30,21 @@ across:
   - newer ECHO runs *with* `logging_data/<phase>/<metric>.jsonl` traces;
   - non-ECHO baselines (ARPO, GRPO) that emit a single-phase metric set.
 The new JSONL dumps are a strict subset of run.log keys (just under different
-naming, e.g. `low_level/reward.jsonl` ↔ `low_level/reward/entropy_scalar_mean`),
+naming, e.g. `low_level/reward.jsonl` ↔ `low_level/reward/effective_reward_mean`),
 so we don't need a second loader.
 
 Usage
 -----
-ECHO dual-phase (default — LL entropy reward + HL F1):
+ECHO dual-phase (default — LL + HL scorer reward):
   python ECHO/training/analysis/plot_monotonic_trend.py \\
       --run-dir /scratch/.../checkpoints/echo3BInstruct \\
-      --x-metric low_level/actor/entropy_loss
+      --x-metric low_level/actor/entropy_old_policy
 
 ECHO with custom phase pair (e.g. raw HL score instead of F1):
   python ECHO/training/analysis/plot_monotonic_trend.py \\
       --run-dir .../checkpoints/echo3BInstruct \\
       --x-metric high_level/actor/kl_loss \\
-      --y-metrics LL:low_level/reward/entropy_scalar_mean \\
+      --y-metrics LL:low_level/reward/effective_reward_mean \\
                   HL:high_level/reward/score_mean
 
 ARPO/GRPO single-phase baseline:
@@ -165,10 +165,10 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--run-dir", type=Path, required=True,
                    help="Checkpoint directory containing run.log (e.g. .../checkpoints/echo3BInstruct).")
-    p.add_argument("--x-metric", default="low_level/actor/entropy_loss",
+    p.add_argument("--x-metric", default="low_level/actor/entropy_old_policy",
                    help="Metric to plot on the x-axis of every subplot (one of run.log keys).")
     p.add_argument("--y-metrics", nargs="+",
-                   default=["LL:low_level/reward/entropy_scalar_mean",
+                   default=["LL:low_level/reward/effective_reward_mean",
                             "HL:high_level/reward/f1_mean"],
                    help="One or more LABEL:metric_name pairs. Each defines a Δ-reward panel "
                         "and a DP axis. Default = ECHO dual-phase. For ARPO/GRPO baselines: "

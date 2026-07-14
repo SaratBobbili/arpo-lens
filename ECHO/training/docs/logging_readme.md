@@ -37,9 +37,8 @@ the cleanest "how good is the current checkpoint?" numbers.
 |---|---|
 | `val-core/<dataset>/reward/mean@1` | Average task score on the val set (one greedy answer per prompt). For ECHO this is F1, with `-1` for any malformed response. **Primary quality dial.** |
 | `val-aux/<dataset>/f1_score/mean@1` | Same idea but averaged over only the F1 component (no `-1` penalty for bad format — bad-format samples just contribute 0). Slightly more lenient than `val-core/.../reward`. |
-| `val-aux/<dataset>/high_level_valid/mean@1` | **ECHO only.** Fraction of greedy responses whose high-level structure (`<select>` / `<think>` / `<answer>` / `\boxed{}`) is well-formed. |
-| `val-aux/<dataset>/low_level_valid/mean@1` | **ECHO only.** Same for low-level structure (tool selection + tool payloads). |
-| `val-aux/<dataset>/no_tool_calls/mean@1` | **ECHO only.** Fraction of valid responses that never called `<search>` or `<python>` (degenerate "answer-from-prior" behavior). Want this low. |
+| `val-aux/<dataset>/format_valid/mean@1` | Fraction of greedy responses that pass the shared prompt-5 format gate (`think` / `tool` / tool call or direct answer / `answer`+`\\boxed{}`). |
+| `val-aux/<dataset>/no_tool_calls/mean@1` | Fraction of scored responses that never called `<search>` or `<python>` (degenerate "answer-from-prior" behavior). Want this low. |
 
 > Why validation looks higher than training rewards: training rolls out at
 > temperature 1 with 8–16 noisy samples per prompt; validation is a single
@@ -58,29 +57,19 @@ will do at eval time.
 
 | Metric | What it means |
 |---|---|
-| `<phase>/reward/effective_reward_mean` | Mean per-sample reward actually used by GRPO for that phase/strategy. This is the source for `<save_path>/logging_data/<phase>/reward.jsonl`. |
-| `<phase>/reward/score_mean` | Mean scorer output for scorer-based paths (`scorer`). |
+| `<phase>/reward/effective_reward_mean` | Mean per-sample scorer reward used by GRPO for that phase. Source for `<save_path>/logging_data/<phase>/reward.jsonl`. |
+| `<phase>/reward/score_mean` | Same as `effective_reward_mean` (always-on scorer). |
 | `<phase>/reward/f1_mean` | Mean F1 component from scorer output (zeros on non-matching answers). |
-| `high_level/reward/format_pass_rate` | Fraction of HL rollouts that passed all format checks. Want this climbing toward 1.0. |
-| `high_level/reward/bad_format_rate` | `1 − format_pass_rate`. |
-| `high_level/reward/no_tool_rate` | Fraction of HL rollouts that produced a valid answer without ever calling a tool. |
-| `<phase>/reward/entropy_scalar_mean_good` | Entropy reward mean over good-format and tool-using samples when entropy overrides are active; otherwise equals `entropy_scalar_mean`. |
-| `<phase>/reward/entropy_scalar_mean` | Entropy-channel reward mean over all samples (for `entropy` and `entropy-hybrid`). |
-| `<phase>/reward/entropy_reduced_mean` | Pre-scale mean of masked entropy over `m^phase ∩ non_border_loss_mask`. |
-| `low_level/reward/bad_format_rate` | LL-side format failure rate (defined by the LL validator). |
-| `low_level/reward/no_tool_rate` | Fraction of valid LL rollouts that never invoked a tool. Should drift toward 0 as training pushes the model to actually use tools. |
+| `<phase>/reward/format_pass_rate` | Fraction of rollouts with `score >= 0`. Want this climbing toward 1.0. |
+| `<phase>/reward/bad_format_rate` | `1 − format_pass_rate` (share with `score < 0`). |
+| `<phase>/reward/format_valid_rate` | Mean of scorer `format_valid` (prompt-5 structure OK). |
+| `<phase>/reward/no_tool_rate` | Fraction of rollouts that never called `<search>` or `<python>`. |
 
-### 2.2 Format validity (ECHO only)
+### 2.2 Format validity
 
-| Metric | What it means |
-|---|---|
-| `high_level/reward/high_level_valid_rate` | Fraction of HL rollouts that pass HL-side format checks. |
-| `high_level/reward/low_level_valid_rate` | Fraction of HL rollouts that *also* pass LL-side checks (diagnostic — HL only gates on the HL side). |
-| `low_level/reward/high_level_valid_rate` | Same diagnostic in reverse — fraction of LL rollouts that also have valid HL structure. |
-| `low_level/reward/low_level_valid_rate` | Fraction of LL rollouts that pass LL-side checks. |
-
-ARPO doesn't log these because its scorer applies one combined format check
-(`bad_format_rate` already covers it).
+Same shared scorer for both phases: `format_pass_rate` / `bad_format_rate` /
+`format_valid_rate` cover format health. There is no separate HL vs LL
+validator channel anymore.
 
 ### 2.3 Actor / optimizer health
 
@@ -174,39 +163,29 @@ Compared to ECHO:
 - **No phase-budget knobs.** `training/high_level_rollout_budget` and
   `training/low_level_rollout_budget` don't exist; every rollout goes
   through the one update. The total count is just `rollout.n`.
-- **One combined format check, no validity sub-axes.** The ARPO scorer
-  reports `score` and `f1_score` only — there is no `high_level_valid`,
-  `low_level_valid`, or `no_tool_calls`. Consequently ARPO logs only
-  `reward/f1_mean` + `reward/bad_format_rate` (no
-  `format_pass_rate`, `high_level_valid_rate`, `low_level_valid_rate`,
-  `no_tool_rate`).
+- **Scorer fields.** ARPO's scorer reports a smaller set; ECHO's
+  `deep_research_echo` emits `score`, `f1_score`, `format_valid`, and
+  `no_tool_calls`. Both share the same F1 (+ optional multi-tool bonus) scale.
 - **Scorer scale.** Both ARPO and ECHO add a **+0.1 multi-tool bonus** when
   the answer is correct and both `</search>` and `</python>` are present, so
   `score` can exceed `1.0` (up to `1.1`) per sample.
-- **No entropy reward channel.** ARPO has no
-  `reward/entropy_scalar_mean*`. There's only the standard
-  `actor/entropy_loss` (the ECHO equivalent of which is renamed —
-  see below).
+- **Entropy is an advantage / regularizer knob, not a reward channel.**
+  ECHO `advantage_algorithm ∈ {grpo, entropy, aepo}` reshapes advantages in
+  the actor; optional `entropy.reg_coeff` adds a direct entropy term.
+  Reward scores remain scorer-based.
 - **Entropy regularizer naming.** ARPO drives the entropy regularizer via
   `actor.entropy_coeff` directly inside `update_policy`; the resulting
   term is logged under `actor/entropy_loss` (it overloads the old-policy
   entropy diagnostic). ECHO splits these cleanly: `actor/entropy_old_policy`
   is the diagnostic, `actor/entropy_reg_loss` is the gradient term.
-- **Validation metrics are identical in shape** (both go through the same
-  `_validate` / `process_validation_metrics` machinery), but the *set* of
-  `val-aux/<dataset>/<var>/mean@1` keys is smaller for ARPO because the
-  scorer returns fewer numeric fields. ARPO emits `f1_score`, `score`,
-  `reward`. ECHO additionally emits `high_level_valid`, `low_level_valid`,
-  `no_tool_calls`.
+- **Validation metrics** share `_validate` / `process_validation_metrics`.
+  ECHO's extra numeric fields show up as `val-aux/.../format_valid` and
+  `val-aux/.../no_tool_calls` when present.
 
 The launch-script-level JSONL dumps under `logging_data/` reflect the same
-split: ARPO writes one set of files at the top level (`reward.jsonl`,
-`format_penalty.jsonl`, `score_mean.jsonl`, `pg_loss.jsonl`,
-`grad_norm.jsonl`, `entropy_old_policy.jsonl`, `entropy_reg_loss.jsonl`,
-`tools_total_calls.jsonl`, `tools_successful_calls.jsonl`); ECHO writes the
-same set under `logging_data/high_level/` *and* `logging_data/low_level/`,
-where `reward.jsonl` reads `<phase>/reward/effective_reward_mean` so files stay
-valid across scorer, entropy, and entropy-hybrid.
+split: ARPO writes one set of files at the top level; ECHO writes under
+`logging_data/high_level/` and `logging_data/low_level/`, where
+`reward.jsonl` is `<phase>/reward/effective_reward_mean` (scorer mean).
 
 ## 6. ECHO ↔ ARPO term map
 
@@ -236,16 +215,15 @@ have no ARPO counterpart at all.
 | Throughput / MFU / GPU memory | `perf/{throughput, mfu/actor, max_memory_allocated_gb, …}` | same (not phase-prefixed; reported once per step) |
 | Validation core score | `val-core/<dataset>/reward/mean@1` | `val-core/<dataset>/reward/mean@1` |
 | Validation F1 (no `-1` penalty) | `val-aux/<dataset>/f1_score/mean@1` | `val-aux/<dataset>/f1_score/mean@1` |
-| HL / LL format pass rates on training rollouts | — (combined) | `<phase>/reward/{format_pass_rate, high_level_valid_rate, low_level_valid_rate}` (ECHO-only) |
-| LL "valid format but no tool used" rate | — | `low_level/reward/no_tool_rate` (ECHO-only) |
-| LL entropy reward axis (clean, on good-format∧tool-using samples) | — | `low_level/reward/entropy_scalar_mean_good` (ECHO-only) |
+| Format pass / fail rates on training rollouts | `reward/bad_format_rate` | `<phase>/reward/{format_pass_rate, bad_format_rate, format_valid_rate}` |
+| No-tool rate | — (if emitted) | `<phase>/reward/no_tool_rate` |
 | Per-phase rollout budgets | — (single budget = `rollout.n`) | `training/{high_level,low_level}_rollout_budget` (ECHO-only) |
 | Multi-tool +0.1 bonus baked into score | yes (shifts `score` up to `1.1`) | yes (same rule as ARPO) |
 
 ## TL;DR — which metrics to watch
 
 - **Is the model getting better?** → `val-core/<dataset>/reward/mean@1`.
-- **Is the format collapsing?** → `<phase>/reward/format_pass_rate` (ECHO; want ↑) and `<phase>/reward/bad_format_rate` (both; want ↓).
-- **Is the LL phase actually using tools?** (ECHO) → `low_level/reward/no_tool_rate` (want ↓) and `low_level/tools/total_calls` (want > 0 and stable).
-- **Is the entropy regularizer doing anything?** → ECHO: compare `low_level/actor/entropy_reg_loss × reg_coeff` to `low_level/actor/pg_loss`, and watch `<phase>/actor/entropy_old_policy`. ARPO: just watch `actor/entropy_loss` (it doubles as both the diagnostic and the regularizer term).
+- **Is the format collapsing?** → `<phase>/reward/format_pass_rate` (want ↑) and `<phase>/reward/bad_format_rate` (want ↓).
+- **Is the LL phase actually using tools?** → `low_level/reward/no_tool_rate` (want ↓) and `low_level/tools/total_calls` (want > 0 and stable).
+- **Is the entropy regularizer / advantage reshape doing anything?** → Compare `<phase>/actor/entropy_reg_loss × reg_coeff` to `<phase>/actor/pg_loss` when `reg_coeff > 0`, and watch `<phase>/actor/entropy_old_policy`. ARPO: `actor/entropy_loss`.
 - **Is training stable?** → `<phase>/actor/grad_norm` and `<phase>/training/rollout_probs_diff_mean` (drop `<phase>/` for ARPO).

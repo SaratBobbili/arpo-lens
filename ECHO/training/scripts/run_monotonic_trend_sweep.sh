@@ -10,7 +10,7 @@
 #
 # Auto-detected layouts (no profile flag — point RUN_DIR and go):
 #   ECHO 2-phase    : run.log has both `low_level/` and `high_level/` keys
-#                     → y = (LL entropy reward, HL F1)
+#                     → y = (LL effective reward, HL F1)
 #   single-phase HL : only `high_level/` keys (e.g. ARPO trainer)
 #                     → y = (high_level/reward/f1_mean)
 #   single-phase    : bare `actor/` / `critic/` keys (e.g. GRPO)
@@ -27,7 +27,7 @@
 #       bash ECHO/training/scripts/run_monotonic_trend_sweep.sh
 #
 # Override y-metrics manually (e.g. ECHO with raw HL score, not F1):
-#   Y_METRICS=("LL:low_level/reward/entropy_scalar_mean" "HL:high_level/reward/score_mean") \
+#   Y_METRICS=("LL:low_level/reward/effective_reward_mean" "HL:high_level/reward/score_mean") \
 #       bash ECHO/training/scripts/run_monotonic_trend_sweep.sh
 #
 # Override x-candidate list (space-separated single string):
@@ -101,10 +101,9 @@ fi
 if [[ -z "${Y_METRICS:-}" ]]; then
     case "$LAYOUT" in
         echo)
-            # ECHO dual-phase: LL pre-gate entropy reward (the channel feeding
-            # the LL critic) + HL F1 (the actual task reward).
+            # ECHO dual-phase: always-on scorer reward for both phases.
             Y_METRICS=(
-                "LL:low_level/reward/entropy_scalar_mean"
+                "LL:low_level/reward/effective_reward_mean"
                 "HL:high_level/reward/f1_mean"
             )
             ;;
@@ -122,29 +121,29 @@ fi
 
 if [[ -z "${X_METRICS_OVERRIDE:-}" ]]; then
     # Note on aliases: deliberately exclude metrics bit-identical to a y-level
-    # (e.g. low_level/critic/rewards/mean ≡ low_level/reward/entropy_scalar_mean
-    # for ECHO; critic/rewards/mean ≡ critic/score/mean for bare). Including
-    # those would make the joint-monotone selection partly tautological. The
-    # python script also prints a warning if |ρ(x, y_level)| > 0.95.
+    # (e.g. low_level/reward/score_mean ≡ low_level/reward/effective_reward_mean;
+    # critic/rewards/mean ≡ critic/score/mean for bare). Including those would
+    # make the joint-monotone selection partly tautological. The python script
+    # also prints a warning if |ρ(x, y_level)| > 0.95.
     case "$LAYOUT" in
         echo)
             X_METRICS=(
                 # --- policy / actor diagnostics --------------------------------------
-                "low_level/actor/entropy_loss"           # LL policy entropy after the LL update (HL has no entropy_loss field; only LL phase tracks policy entropy in this trainer)
+                "low_level/actor/entropy_old_policy"     # LL old-policy entropy on phase mask
                 "low_level/actor/grad_norm"              # LL pre-step gradient norm
                 "high_level/actor/grad_norm"             # HL pre-step gradient norm
                 "low_level/actor/pg_loss"                # LL PPO clipped policy-gradient loss
                 "high_level/actor/pg_loss"               # HL PPO clipped policy-gradient loss
-                "low_level/actor/kl_loss"                # LL KL-to-reference (low_var_kl); proxy for how far policy drifted from ref this step
+                "low_level/actor/kl_loss"                # LL KL-to-reference (low_var_kl)
                 "high_level/actor/kl_loss"               # HL KL-to-reference
                 # --- reward / format diagnostics --------------------------------------
-                "high_level/reward/format_pass_rate"     # HL valid-format share (the "valid format rate" axis)
-                "high_level/reward/bad_format_rate"      # HL bad-format share (= 1 - format_pass_rate up to soft fails)
+                "high_level/reward/format_pass_rate"     # HL valid-format share
+                "high_level/reward/bad_format_rate"      # HL bad-format share
                 "low_level/reward/bad_format_rate"       # LL bad-format share
-                "low_level/reward/no_tool_rate"          # LL no-tool-call share (signal of degenerate policy)
+                "low_level/reward/no_tool_rate"          # LL no-tool-call share
                 # --- response-length / behaviour diagnostics --------------------------
-                "low_level/response_length/mean"         # mean LL response length (proxy for tool-call density)
-                "high_level/response_length/mean"        # mean HL response length
+                "low_level/response_length/mean"
+                "high_level/response_length/mean"
             )
             ;;
         single_hl)

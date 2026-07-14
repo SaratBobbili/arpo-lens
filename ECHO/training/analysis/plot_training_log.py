@@ -40,11 +40,11 @@ OUTPUT_PNG = Path("./echo_training_plot.png")
 # =============================================================================
 
 # --- Reward channels (the headline gain metric) ---------------------------------
-PLOT_LL_REWARD = True              # LL pre-gate entropy mean over good-format ∧ has-tool
+PLOT_LL_REWARD = True              # LL effective_reward_mean (scorer score used by GRPO)
 PLOT_LL_REWARD_GAIN = True         # Δ of LL reward vs previous step
-PLOT_LL_FORMAT_PENALTY = False     # LL bad_format_rate (share of samples failing phase-local format)
+PLOT_LL_FORMAT_PENALTY = False     # LL bad_format_rate (share of samples with score < 0)
 PLOT_LL_FORMAT_PENALTY_GAIN = False
-PLOT_HL_REWARD = False             # HL f1_mean (task reward; -1 axis already excluded)
+PLOT_HL_REWARD = False             # HL effective_reward_mean (same scorer)
 PLOT_HL_REWARD_GAIN = False
 PLOT_HL_FORMAT_PENALTY = False     # HL bad_format_rate
 PLOT_HL_FORMAT_PENALTY_GAIN = False

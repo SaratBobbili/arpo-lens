@@ -119,6 +119,10 @@ def _extract_series(metrics: dict[str, dict[int, float]]) -> dict[str, tuple[np.
     out["ll_score"] = _pick_metric(
         metrics,
         [
+            "low_level/reward/f1_mean",
+            "low_level/reward/score_mean",
+            "low_level/reward/effective_reward_mean",
+            # Fallback for pre-advantage_algorithm runs that logged entropy-as-reward.
             "low_level/reward/entropy_scalar_mean_good",
             "low_level/reward/entropy_scalar_mean",
         ],
@@ -141,9 +145,9 @@ def _assign_group(name: str) -> str:
     if name.startswith("echo3BInst_hl_ll_entropy_grpo"):
         return "HL/LL entropy GRPO ablations"
     if name.startswith("echo3BInst_hl_ll_entropy_hybrid"):
-        return "HL/LL entropy-hybrid ablations"
+        return "HL/LL legacy entropy-as-reward hybrid ablations"
     if "entropy_hybrid" in name:
-        return "LL→HL entropy-hybrid sweeps"
+        return "LL→HL legacy entropy-as-reward hybrid sweeps"
     if "ll_hl" in name:
         return "LL→HL GRPO baselines"
     return "Other"
@@ -158,6 +162,8 @@ def _load_config(run_dir: Path) -> dict:
 
 
 def _config_signature(cfg: dict) -> dict[str, str]:
+    hl = _nested_get(cfg, ["reward_model", "phase_rewards", "high_level"], {}) or {}
+    ll = _nested_get(cfg, ["reward_model", "phase_rewards", "low_level"], {}) or {}
     return {
         "norm_adv": str(_nested_get(cfg, ["algorithm", "norm_adv_by_std_in_grpo"])),
         "phase_order": str(_nested_get(cfg, ["reward_model", "phase_order"])),
@@ -167,31 +173,13 @@ def _config_signature(cfg: dict) -> dict[str, str]:
         "phase_repeat_ll": str(
             _nested_get(cfg, ["reward_model", "phase_update_repeats", "low_level"])
         ),
-        "hl_alg": str(
-            _nested_get(cfg, ["reward_model", "phase_rewards", "high_level", "algorithm"])
-        ),
-        "ll_alg": str(
-            _nested_get(cfg, ["reward_model", "phase_rewards", "low_level", "algorithm"])
-        ),
-        "ll_strategy": str(
-            _nested_get(cfg, ["reward_model", "phase_rewards", "low_level", "strategy"])
-        ),
-        "hl_kl_coef": str(
-            _nested_get(cfg, ["reward_model", "phase_rewards", "high_level", "kl_loss_coef"])
-        ),
-        "ll_kl_coef": str(
-            _nested_get(cfg, ["reward_model", "phase_rewards", "low_level", "kl_loss_coef"])
-        ),
-        "ll_entropy_reg": str(
-            _nested_get(cfg, ["reward_model", "phase_rewards", "low_level", "entropy", "reg_coeff"])
-        ),
-        "ll_no_tool_penalty": str(
-            _nested_get(
-                cfg, ["reward_model", "phase_rewards", "low_level", "entropy", "no_tool_penalty"]
-            )
-        ),
-        "mask_first_select": str(
-            _nested_get(cfg, ["actor_rollout_ref", "mask_categories", "first_select"])
+        "hl_adv": str(hl.get("advantage_algorithm", hl.get("algorithm"))),
+        "ll_adv": str(ll.get("advantage_algorithm", ll.get("algorithm"))),
+        "hl_kl_coef": str(hl.get("kl_loss_coef")),
+        "ll_kl_coef": str(ll.get("kl_loss_coef")),
+        "ll_entropy_reg": str(_nested_get(ll, ["entropy", "reg_coeff"])),
+        "mask_tool": str(
+            _nested_get(cfg, ["actor_rollout_ref", "rollout", "mask_categories", "tool"])
         ),
     }
 
@@ -401,13 +389,12 @@ def _common_hyperparams(runs: list[RunData]) -> list[tuple[str, str]]:
         "phase_order",
         "phase_repeat_hl",
         "phase_repeat_ll",
-        "hl_alg",
-        "ll_alg",
-        "ll_strategy",
+        "hl_adv",
+        "ll_adv",
         "hl_kl_coef",
         "ll_kl_coef",
         "ll_entropy_reg",
-        "ll_no_tool_penalty",
+        "mask_tool",
     ]:
         if counters[k]:
             top, cnt = counters[k].most_common(1)[0]
@@ -468,8 +455,8 @@ def _build_html(runs: list[RunData]) -> str:
   <section>
     <h2>Introduction: ECHO objective (compact)</h2>
     <p>At each phase <code>p ∈ {{LL, HL}}</code>, the optimization signal can be read as:</p>
-    <p><code>J_p(θ) = E[A_p · log π_θ(a|s)] + λ_ent,p · H_p(π_θ) - λ_kl,p · KL(π_θ || π_ref) - λ_no_tool,p · R_no_tool</code></p>
-    <p>Operationally, LL is expected to preserve useful exploration while HL should consolidate toward correctness.</p>
+    <p><code>J_p(θ) = E[A_p · log π_θ(a|s)] + λ_ent,p · H_p(π_θ) - λ_kl,p · KL(π_θ || π_ref)</code></p>
+    <p>Reward is always scorer F1 (+ format gate). Per-phase <code>advantage_algorithm</code> chooses how A_p is formed (<code>grpo</code> / <code>entropy</code> / <code>aepo</code>). LL explores under its phase mask; HL consolidates under its own.</p>
     <h3>Insights</h3>
     {_insights_placeholder()}
   </section>

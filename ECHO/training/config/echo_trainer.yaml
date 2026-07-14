@@ -10,7 +10,7 @@ defaults:
   - _self_
 
 data:
-  # Dataloader read size per fetch; set > train_batch_size when using per-phase DAPO dynamic sampling.
+  # Dataloader read size per fetch; keep equal to train_batch_size unless you intentionally over-fetch.
   gen_batch_size: ${data.train_batch_size}
   # Which system prompt candidate to inject at runtime (via rl_dataset.py).
   # Set to the suffix number of the desired system_prompt_N key below, or null to skip.

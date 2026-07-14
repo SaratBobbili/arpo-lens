@@ -106,7 +106,7 @@ class RayECHOTrainer(RayPPOTrainer):
         # Append one line per metric file: {"step", "value", "gain"}. `gain` is
         # the difference vs the previous dumped step for the same key, or null
         # on the first dump. Keys absent from `metrics` (e.g. entropy_reg_loss
-        # on a scorer phase) are skipped without erroring.
+        # when reg_coeff=0) are skipped without erroring.
         for phase, specs in self._LOGGING_SPEC.items():
             phase_dir = os.path.join(self._logging_data_root, phase)
             for filename, metric_suffix in specs:

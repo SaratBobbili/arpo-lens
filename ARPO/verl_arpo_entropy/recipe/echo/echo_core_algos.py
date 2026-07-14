@@ -672,37 +672,6 @@ def compute_pf_ppo_reweight_data(
     return resampled_data
 
 
-_ECHO_FILTER_METRICS = frozenset({"score", "f1_score", "seq_reward", "seq_final_reward"})
-
-
-def filter_informative_groups(batch: DataProto, metric_name: str) -> tuple[DataProto, int]:
-    """Keep prompt groups whose rollout metric has std > 0 (singleton groups always kept)."""
-    from collections import defaultdict
-
-    if metric_name not in _ECHO_FILTER_METRICS:
-        raise ValueError(f"Unsupported filter_groups.metric={metric_name!r}; expected one of {sorted(_ECHO_FILTER_METRICS)}")
-    if metric_name == "seq_final_reward":
-        batch.non_tensor_batch["seq_final_reward"] = batch.batch["token_level_rewards"].sum(dim=-1).detach().cpu().numpy()
-    elif metric_name == "seq_reward":
-        batch.non_tensor_batch["seq_reward"] = batch.batch["token_level_scores"].sum(dim=-1).detach().cpu().numpy()
-    elif metric_name not in batch.non_tensor_batch:
-        raise KeyError(f"filter_groups.metric={metric_name!r} missing from batch.non_tensor_batch")
-
-    prompt_uid2metric_vals = defaultdict(list)
-    for uid, metric_val in zip(batch.non_tensor_batch["uid"], batch.non_tensor_batch[metric_name]):
-        prompt_uid2metric_vals[uid].append(metric_val)
-
-    kept_prompt_uids = [
-        uid
-        for uid, metric_vals in prompt_uid2metric_vals.items()
-        if np.std(metric_vals) > 0 or len(metric_vals) == 1
-    ]
-    kept_traj_idxs = [
-        idx for idx, traj_uid in enumerate(batch.non_tensor_batch["uid"]) if traj_uid in kept_prompt_uids
-    ]
-    return batch[kept_traj_idxs], len(kept_prompt_uids)
-
-
 def apply_kl_penalty(data: DataProto, kl_ctrl: AdaptiveKLController, kl_penalty="kl", multi_turn=False):
     responses = data.batch["responses"]
     response_length = responses.size(1)

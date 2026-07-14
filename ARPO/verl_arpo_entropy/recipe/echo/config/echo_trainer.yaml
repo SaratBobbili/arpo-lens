@@ -74,14 +74,8 @@ reward_model:
   #                     intersection drops it.
   phase_rewards:
     high_level:
-      # grpo: single rollout pass per step (shared prompts with other GRPO phases).
-      # dapo: dynamic sampling — keep prompt groups only if filter metric std > 0.
       algorithm: grpo
       kl_loss_coef: 0.0
-      filter_groups:
-        enable: false
-        metric: seq_reward
-        max_num_gen_batches: 10
       strategy: scorer
       # `entropy` block below is consulted only when strategy in
       # {"entropy", "entropy-hybrid"}.
@@ -116,10 +110,6 @@ reward_model:
     low_level:
       algorithm: grpo
       kl_loss_coef: 0.0
-      filter_groups:
-        enable: false
-        metric: seq_reward
-        max_num_gen_batches: 10
       strategy: entropy
       entropy:
         # LL uses mean so per-sample advantage reflects average entropy per LL

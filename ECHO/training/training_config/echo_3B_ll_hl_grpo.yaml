@@ -43,10 +43,6 @@ low_level_reward_strategy: scorer
 high_level_algorithm: grpo
 low_level_algorithm: grpo
 norm_adv_by_std_in_grpo: off
-high_level_filter_groups_enable: True
-low_level_filter_groups_enable: True
-high_level_filter_metric: seq_reward
-low_level_filter_metric: seq_reward
 
 mask_first_select: high
 mask_select: high
@@ -76,3 +72,10 @@ hl_entropy_normalization: token_pool
 ll_entropy_normalization: token_pool
 hl_entropy_alpha: 0.2
 ll_entropy_alpha: 0.2
+
+
+low_level_rollout_strategy: aepo
+ll_aepo_initial_rollouts: 8
+ll_aepo_beam_size: 2
+ll_aepo_branch_probability: 0.5
+ll_aepo_entropy_weight: 0.2

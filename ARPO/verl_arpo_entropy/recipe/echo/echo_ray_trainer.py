@@ -33,7 +33,7 @@ from tensordict import TensorDict
 from verl import DataProto
 from verl.trainer.ppo.metric_utils import compute_data_metrics, compute_throughout_metrics, compute_timing_metrics
 from verl.trainer.ppo.ray_trainer import AdvantageEstimator, ResourcePoolManager, Role, RayPPOTrainer, _timer
-from .echo_core_algos import agg_loss, apply_kl_penalty, compute_advantage, filter_informative_groups
+from .echo_core_algos import agg_loss, apply_kl_penalty, compute_advantage
 from verl.trainer.ppo.reward import compute_reward, compute_reward_async
 from verl.utils.metric import reduce_metrics
 
@@ -323,14 +323,7 @@ class RayECHOTrainer(RayPPOTrainer):
         for phase_name, _, _ in phase_specs:
             cfg = self._phase_reward_cfg(phase_name)
             algo = cfg.get("algorithm", "grpo")
-            assert algo in ("grpo", "dapo"), f"{phase_name}.algorithm must be grpo or dapo, got {algo!r}"
-            if algo == "dapo":
-                assert bool(cfg.filter_groups.enable), f"{phase_name} algorithm=dapo requires filter_groups.enable=true"
-                assert cfg.filter_groups.metric, f"{phase_name} algorithm=dapo requires filter_groups.metric"
-
-    @staticmethod
-    def _phase_algorithm(phase_reward_cfg) -> str:
-        return phase_reward_cfg.get("algorithm", "grpo")
+            assert algo == "grpo", f"{phase_name}.algorithm must be grpo, got {algo!r}"
 
     @staticmethod
     def _canonical_best_metric_selector(selector: str) -> str:
@@ -614,46 +607,6 @@ class RayECHOTrainer(RayPPOTrainer):
 
         return phase_batch, phase_reward_extra_infos_dict
 
-    def _collect_phase_batch_dapo(self, data_iter, phase_name, phase_rollout_n, phase_mask_key, timing_raw, metrics):
-        phase_prefix = f"{phase_name}/"
-        phase_reward_cfg = self._phase_reward_cfg(phase_name)
-        metric_name = phase_reward_cfg.filter_groups.metric
-        max_num_gen_batches = int(phase_reward_cfg.filter_groups.max_num_gen_batches)
-        prompt_bsz = self.config.data.train_batch_size
-
-        accumulator = None
-        num_prompt_in_batch = 0
-        num_gen_batches = 0
-        phase_reward_extra: dict = {}
-
-        while num_prompt_in_batch < prompt_bsz:
-            batch_dict, data_iter = self._next_batch_dict(data_iter)
-            batch = DataProto.from_single_dict(batch_dict)
-            gen_batch, prompt_batch = self._pop_gen_batch(batch)
-            num_gen_batches += 1
-            new_batch, phase_reward_extra = self._phase_rollout_to_scored_batch(
-                gen_batch, prompt_batch, phase_name, phase_rollout_n, phase_mask_key, timing_raw, metrics
-            )
-            new_batch, num_kept = filter_informative_groups(new_batch, metric_name)
-            num_prompt_in_batch += num_kept
-            accumulator = new_batch if accumulator is None else DataProto.concat([accumulator, new_batch])
-
-            if num_prompt_in_batch < prompt_bsz:
-                print(f"{phase_name} {num_prompt_in_batch=} < {prompt_bsz=}")
-                if max_num_gen_batches <= 0 or num_gen_batches < max_num_gen_batches:
-                    print(f"{phase_name} {num_gen_batches=}. Keep generating...")
-                    continue
-                raise ValueError(
-                    f"{phase_name} {num_gen_batches=} >= {max_num_gen_batches=}. Generated too many. "
-                    "Check data difficulty or set max_num_gen_batches=0 for no upper limit."
-                )
-
-        traj_bsz = prompt_bsz * phase_rollout_n
-        phase_batch = accumulator[:traj_bsz]
-        metrics[f"{phase_prefix}training/filter_groups_kept_prompts"] = num_prompt_in_batch
-        metrics[f"{phase_prefix}training/num_gen_batches"] = num_gen_batches
-        return phase_batch, phase_reward_extra, data_iter
-
     def fit(self):
         """
         The training loop of PPO.
@@ -744,17 +697,12 @@ class RayECHOTrainer(RayPPOTrainer):
                         phase_reward_cfg = self._phase_reward_cfg(phase_name)
                         phase_strategy = phase_reward_cfg.strategy
 
-                        if self._phase_algorithm(phase_reward_cfg) == "dapo":
-                            phase_batch, phase_reward_extra_infos_dict, data_iter = self._collect_phase_batch_dapo(
-                                data_iter, phase_name, phase_rollout_n, phase_mask_key, timing_raw, metrics
-                            )
-                        else:
-                            batch_dict, data_iter = self._next_batch_dict(data_iter)
-                            step_gen_batch, step_prompt_batch = self._pop_gen_batch(DataProto.from_single_dict(batch_dict))
-                            phase_batch, phase_reward_extra_infos_dict = self._phase_rollout_to_scored_batch(
-                                step_gen_batch, step_prompt_batch, phase_name, phase_rollout_n, phase_mask_key, timing_raw, metrics
-                            )
-                            metrics[f"{phase_prefix}training/num_gen_batches"] = 1
+                        batch_dict, data_iter = self._next_batch_dict(data_iter)
+                        step_gen_batch, step_prompt_batch = self._pop_gen_batch(DataProto.from_single_dict(batch_dict))
+                        phase_batch, phase_reward_extra_infos_dict = self._phase_rollout_to_scored_batch(
+                            step_gen_batch, step_prompt_batch, phase_name, phase_rollout_n, phase_mask_key, timing_raw, metrics
+                        )
+                        metrics[f"{phase_prefix}training/num_gen_batches"] = 1
 
                         with _timer(f"{phase_name}_adv", timing_raw):
                             self._apply_tool_failure_before_grpo(phase_batch)

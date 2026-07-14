@@ -49,17 +49,11 @@ reward_model:
   # whichever fixed bounds sign-cond or global clip selected; the two flags compose independently.
   phase_rewards:
     high_level:
-      # grpo: single rollout pass per step (shared prompts with other GRPO phases).
-      # dapo: dynamic sampling — keep prompt groups only if filter metric std > 0.
       algorithm: grpo
       kl_loss_coef: 0.0
       use_aepo_clip: false
       use_sign_cond_clip: false
       sign_cond_strategy: scorer
-      filter_groups:
-        enable: false
-        metric: seq_reward
-        max_num_gen_batches: 10
       strategy: scorer
       entropy:
         # How entropy is z-scored before use as an advantage signal:
@@ -78,10 +72,6 @@ reward_model:
       use_aepo_clip: false
       use_sign_cond_clip: false
       sign_cond_strategy: scorer
-      filter_groups:
-        enable: false
-        metric: seq_reward
-        max_num_gen_batches: 10
       strategy: entropy
       entropy:
         normalization: token_pool

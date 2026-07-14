@@ -10,7 +10,7 @@ todos:
     status: completed
   - id: S3-remove-dapo
     content: "S3: Remove DAPO/filter_groups machinery entirely (trainer, core_algos, reward_manager, train.sh, configs, delete dapo yaml)"
-    status: pending
+    status: completed
   - id: S4-simplify-phase-algos
     content: "S4: Drop reward_strategy + sign_cond_strategy; advantage algorithm + rollout strategy only; sign-cond clip uses advantage sign"
     status: pending
@@ -31,64 +31,193 @@ isProject: false
 
 # ECHO prompt-5 / HL-LL cleanup plan
 
-## Session system prompt (paste / follow at start of every new chat)
+## Session system prompt (follow at start of every new chat)
 
-You are continuing the ECHO cleanup tracked in this plan file:
-`projectplan.md` (workspace root)
+You are continuing the ECHO cleanup tracked in **`projectplan.md`** (workspace root).
 
 **Rules for this session:**
 
-1. Read this entire plan first (system prompt, active subtask, locked decisions, progress log).
-2. Work on **exactly one** subtask: the first with status `pending` in frontmatter todos (or the id the user names). Do not start the next.
-3. Stay inside that subtask’s scope. If you discover blockers or needed follow-ups, note them in the Progress log — do not silently expand scope.
-4. Prefer editing the **live ECHO path** under [`ECHO/training/`](ECHO/training/) and shared [`ARPO/verl_arpo_entropy/verl/`](ARPO/verl_arpo_entropy/verl/). Touch the ARPO recipe echo twin only when the subtask says so or drift would break imports.
-5. Do not commit unless the user asks. Give `git add` paths when the user accepts changes.
-6. When the subtask is done (or blocked), **update this plan file before ending**:
-   - Set that todo `status: completed` (or leave `pending` and explain blocker).
-   - Append a Progress log entry: what changed (paths), what was deferred, any amendments for later subtasks.
-7. End the chat with a one-paragraph handoff: subtask id, done / blocked, and the next pending subtask id.
+1. Read this entire plan (system prompt, **Architecture map**, active subtask deep brief, locked decisions, Progress log).
+2. Work on **exactly one** subtask: the first frontmatter todo with `status: pending` (or the id the user names). Do not start the next.
+3. Before editing, open the files listed in that subtask’s deep brief and understand the current call graph — do not implement from the one-line todo alone.
+4. Stay inside that subtask’s scope. Blockers / follow-ups go in the Progress log — do not silently expand scope.
+5. Prefer the **live ECHO path** [`ECHO/training/`](ECHO/training/) + shared [`ARPO/verl_arpo_entropy/verl/`](ARPO/verl_arpo_entropy/verl/). Touch [`ARPO/verl_arpo_entropy/recipe/echo/`](ARPO/verl_arpo_entropy/recipe/echo/) only when the subtask says so or import drift would break.
+6. Do not commit unless asked. Give `git add` paths when the user accepts changes.
+7. Before ending: mark the todo completed (or leave pending + blocker), append a Progress log entry, hand off next pending id.
 
-**Active subtask right now:** `S3-remove-dapo`
+**Active subtask right now:** `S4-simplify-phase-algos`
 
 ---
 
-## Subtasks (one per chat session)
+## Architecture map (read before coding)
 
-| ID | Name | Done when |
-|----|------|-----------|
-| **S1** | Uniform format validator | Single `validate_format` for prompt-5; `compute_score` uses ARPO-style −1 early exits for all phases; no HL/LL format split; unit/self-check or `__main__` smoke still passes |
-| **S2** | Drop profiles + eval wiring | No `VALIDATOR_PROFILE*` / `resolve_validator_profile` / `--validator_profile` in ARPO twin + live eval; shared `format_valid`. Skip `evaluation/xmix/` |
-| **S3** | Remove DAPO | No `dapo` / `filter_groups` / `filter_informative_groups` / `_collect_phase_batch_dapo`; configs and `train.sh` cleaned; `echo_3B_ll_hl_dapo.yaml` deleted |
-| **S4** | Simplify phase algos | No reward_strategy / sign_cond_strategy; per phase: advantage algorithm + rollout strategy; sign-cond clip uses assigned advantage sign |
-| **S5** | Wire prompt 5 | `active_system_prompt` in `train.sh` + configs; ARPO prompt YAML has `system_prompt_5` |
-| **S6** | Remask `<tool>` | Rollout `_TAG_INFO` / hierarchical masks use free-text `tool`; drop `first_select`/`select` mask keys from launch surface |
-| **S7** | Regroup configs | Launch YAMLs: shared keys then contiguous HL block then LL block; start with `echo_3B_ll_hl_grpo.yaml` |
-| **S8** | Eval prompt 5 | Eval launchers/defaults use prompt 5; **do not** port or delete xmix |
+ECHO is hierarchical RL on top of verl/ARPO. Two training code trees exist:
 
-Depends-on order: S1 → S2; S3 independent after S1 or parallel only if no file conflicts; S4 after S3 preferred (same trainer/config files); S5–S7 after S4; S6 can follow S5; S8 last.
+| Path | Role |
+|------|------|
+| [`ECHO/training/`](ECHO/training/) | **Live** trainer used by [`ECHO/training/scripts/train.sh`](ECHO/training/scripts/train.sh) |
+| [`ARPO/verl_arpo_entropy/recipe/echo/`](ARPO/verl_arpo_entropy/recipe/echo/) | Recipe twin (often drifts); keep in sync only when a subtask requires it |
+| [`ARPO/verl_arpo_entropy/verl/`](ARPO/verl_arpo_entropy/verl/) | Shared library: rewards, rollout, dataset — **single copy** used by live ECHO |
+
+### Data / prompt flow
+
+1. Launch YAML under [`ECHO/training/training_config/`](ECHO/training/training_config/) → `train.sh` exports keys → Hydra [`echo_trainer.yaml`](ECHO/training/config/echo_trainer.yaml) + [`echo_system_prompts.yaml`](ECHO/training/config/echo_system_prompts.yaml).
+2. [`rl_dataset.py`](ARPO/verl_arpo_entropy/verl/utils/dataset/rl_dataset.py) reads `data.active_system_prompt` → loads `system_prompt_{N}` into chat messages.
+3. Rollout [`vllm_rollout_echo.py`](ARPO/verl_arpo_entropy/verl/workers/rollout/vllm_rollout/vllm_rollout_echo.py) generates tool-augmented trajectories, builds **phase loss masks** (`high_level_loss_mask` / `low_level_loss_mask`) from XML tags in `_TAG_INFO` / `_compute_hierarchical_masks`.
+4. Reward: [`echo_reward_manager.py`](ECHO/training/echo_reward_manager.py) → [`deep_research_echo.compute_score`](ARPO/verl_arpo_entropy/verl/utils/reward_score/deep_research_echo.py) (S1 already rewrote this for prompt-5).
+5. Trainer [`echo_ray_trainer.py`](ECHO/training/echo_ray_trainer.py) loops `phase_order`: generate → score → `compute_advantage` → actor update with phase mask. Actor [`echo_dp_actor.py`](ECHO/training/echo_dp_actor.py) applies PG clip / optional sign-cond / entropy reshape using `phase_strategy` meta.
+
+### Prompt-5 trajectory schema (target)
+
+```
+<think>…</think>
+<tool>rationale</tool><search|python>…</search|python><result>…</result>
+…
+<tool>no more tools</tool><answer>…\boxed{…}</answer>
+```
+
+SFT reference: [`scripts/sft_refactor/trajectory.py`](scripts/sft_refactor/trajectory.py) `verify_text`. Runtime validator after S1: `deep_research_echo.validate_format`.
+
+### What already changed (S1–S2)
+
+- Scoring is **phase-agnostic**: one `validate_format` + `format_valid`; no `high_level_valid` / `low_level_valid`; no validator profiles.
+- Eval ([`evaluation/evaluate.py`](evaluation/evaluate.py), [`evaluation/src/evaluator.py`](evaluation/src/evaluator.py)) reports `echo_format_pass_rate` only; launchers no longer pass `ECHO_VALIDATOR_PROFILE`.
+- Live + ARPO trainers log `reward/format_valid_rate`.
+- **`evaluation/xmix/` is out of scope** — leave untouched (intentionally broken vs new API).
+
+### Still select-era / obsolete surfaces (later subtasks)
+
+- Rollout `_TAG_INFO` still has `<select>` / `first_select` and **no** free-text `<tool>` → prompt-5 tool rationales are unmasked (S6).
+- `phase_rewards.*.strategy` still `scorer|entropy|aepo` (“reward strategy”) and `sign_cond_strategy` still exists (S4).
+- `data.active_system_prompt` defaults to `1`; `train.sh` does not pass it; ARPO prompt YAML stops at `_4` (S5).
+
+Depends-on: S4 → S5 → S6 → S7; S8 last. Do not parallelize with completed S3.
+
+---
+
+## Subtasks (deep briefs)
+
+### S1 — Uniform format validator — COMPLETED
+
+See Progress log. Touchstone file: [`deep_research_echo.py`](ARPO/verl_arpo_entropy/verl/utils/reward_score/deep_research_echo.py).
+
+### S2 — Drop profiles + eval wiring — COMPLETED
+
+See Progress log. Profiles/eval CLI cleaned; xmix skipped.
+
+---
+
+### S3 — Remove DAPO entirely — COMPLETED
+
+See Progress log.
+
+---
+
+### S4 — Simplify phase algorithmic surface
+
+**Goal:** Scoring is always answer F1 (already). Per phase, only (1) **advantage computation algorithm** and (2) **rollout strategy**. Remove “reward strategy” and `sign_cond_strategy`.
+
+**Read first:**
+
+- [`echo_trainer.yaml`](ECHO/training/config/echo_trainer.yaml) `phase_rewards.*.strategy` comments (`scorer|entropy|aepo`) vs `phase_rollouts.*.strategy` (`default|aepo`).
+- [`echo_ray_trainer.py`](ECHO/training/echo_ray_trainer.py): sets `meta_info["phase_strategy"]`, `sign_cond_strategy`, gates entropy path on `phase_strategy == "scorer"`.
+- [`echo_dp_actor.py`](ECHO/training/echo_dp_actor.py): `resolve_advantage_signal(phase_strategy, …)` for PG advantages; **separate** `resolve_advantage_signal(sign_cond_strategy, …)` for `clip_sign_advantages`.
+- [`echo_core_algos.py`](ECHO/training/echo_core_algos.py): `resolve_advantage_signal`, `compute_policy_loss(..., use_sign_cond_clip, clip_sign_advantages, ...)`.
+- Launch keys in `train.sh`: `*_reward_strategy`, `*_sign_cond_strategy`.
+
+**Do:**
+
+1. Rename/clarify config: drop `phase_rewards.*.strategy` / `*_reward_strategy`. Advantage shaping becomes an explicit per-phase **advantage algorithm** knob (settle name at implement; map old `scorer|entropy|aepo` reshape behavior onto it if still needed). Fold or keep `algorithm: grpo` only as leftover from S3 — do not reintroduce dapo.
+2. Remove `sign_cond_strategy` everywhere. If `use_sign_cond_clip` stays, `clip_sign_advantages` must be the **same advantages** used for the PG loss (token advantage sign), not a parallel scorer/entropy channel.
+3. Leave `phase_rollouts.*.strategy` as the rollout strategy (`default` = temperature sampling; `aepo` = entropy-guided branching). Default rollout = `default`.
+4. Update `train.sh` + Hydra defaults + training_config keys accordingly (full YAML regroup is S7; here just rename/remove obsolete keys so nothing breaks).
+
+**Done when:** no `reward_strategy` / `sign_cond_strategy` / `phase_rewards.*.strategy` as scorer-named reward strategies; actor sign-cond path uses assigned advantages; rollout strategy still independently configurable.
+
+---
+
+### S5 — Wire `system_prompt_5`
+
+**Goal:** Training actually injects prompt-5 text.
+
+**Read first:**
+
+- [`rl_dataset.py`](ARPO/verl_arpo_entropy/verl/utils/dataset/rl_dataset.py) ~126–132: `active = config.get("active_system_prompt")` → `system_prompt_{active}`.
+- [`ECHO/training/config/echo_trainer.yaml`](ECHO/training/config/echo_trainer.yaml): `data.active_system_prompt: 1` today.
+- [`ECHO/training/config/echo_system_prompts.yaml`](ECHO/training/config/echo_system_prompts.yaml): has `system_prompt_5`.
+- [`ARPO/.../recipe/echo/config/echo_system_prompts.yaml`](ARPO/verl_arpo_entropy/recipe/echo/config/echo_system_prompts.yaml): **stops at `_4`** — sync `_5` from ECHO copy.
+- [`train.sh`](ECHO/training/scripts/train.sh): does **not** currently pass `data.active_system_prompt` (so default 1 always wins unless CLI override).
+
+**Do:** Add `active_system_prompt` to `VALID_LAUNCH_KEYS` + Hydra `data.active_system_prompt="${ACTIVE_SYSTEM_PROMPT}"`. Set `active_system_prompt: 5` in active training_configs (at least `echo_3B_ll_hl_grpo.yaml`; preferably all live configs). Sync ARPO prompt YAML. Optionally bump trainer default to 5.
+
+**Done when:** a dry-run / config resolve shows `data.active_system_prompt=5` and both prompt YAMLs define `system_prompt_5`.
+
+---
+
+### S6 — Remask free-text `<tool>`
+
+**Goal:** Phase loss masks assign tokens under free-text `<tool>…</tool>` (prompt-5 rationales). Drop select-era `first_select` / `select` mask categories from the launch surface.
+
+**Read first:**
+
+- [`vllm_rollout_echo.py`](ARPO/verl_arpo_entropy/verl/workers/rollout/vllm_rollout/vllm_rollout_echo.py): `_TAG_INFO` (still select-centric), `_compute_hierarchical_masks` (`first_select` vs `select` counting), outputs `select_loss_mask` / `first_select_loss_mask` / `first_select_post_idx`.
+- Trainer entropy-hybrid paths that intersect LL mask with `select_loss_mask` (if still present after S4).
+- `train.sh` / `echo_trainer.yaml` `mask_categories.first_select|select|think|answer|search|python`.
+
+**Do:**
+
+1. Add `<tool>`/`</tool>` to `_TAG_INFO`; categorize block type `tool`.
+2. Remove or stop emitting `first_select`/`select` categories; map config to `mask_tool` (+ existing think/answer/search/python). Results stay excluded.
+3. Remap any remaining `select_loss_mask` consumers to `tool_loss_mask` or delete if unused after S4.
+4. Update Hydra defaults + `train.sh` mask keys + training_config `mask_*` fields.
+
+**Done when:** a prompt-5 trajectory’s `<tool>` tokens appear in HL or LL mask per `mask_tool`; no `mask_first_select` / `mask_select` in launch surface.
+
+---
+
+### S7 — Regroup launch YAMLs
+
+**Goal:** Readable per-phase config layout after S3–S6 key renames.
+
+**Primary file:** [`echo_3B_ll_hl_grpo.yaml`](ECHO/training/training_config/echo_3B_ll_hl_grpo.yaml), then other live configs under `training_config/`.
+
+**Layout:**
+
+```yaml
+# shared: project/data/rollout infra, phase_order, active_system_prompt, masks, clip ratios, norm_adv …
+# --- high_level ---  (budget, updates, advantage algo, rollout strategy, sign_cond clip bool, hl_kl/entropy, …)
+# --- low_level ---   (same family + ll_aepo_* only if rollout_strategy=aepo)
+```
+
+No filter_groups / reward_strategy / sign_cond_strategy / mask_first_select leftovers.
+
+**Done when:** `echo_3B_ll_hl_grpo.yaml` (and touched siblings) match the layout and `train.sh` still accepts all keys via `VALID_LAUNCH_KEYS`.
+
+---
+
+### S8 — Eval defaults → prompt 5
+
+**Goal:** Standard eval jobs load `system_prompt_5`.
+
+**Read first:** [`evaluation/src/prompt_manager.py`](evaluation/src/prompt_manager.py) (`ECHO_SYSTEM_PROMPT_YAML`, `ECHO_ACTIVE_SYSTEM_PROMPT`); eval `run_*` shells that export those vars (mostly `1` today).
+
+**Do:** Point YAML at a file that contains `_5` (ECHO copy or synced ARPO copy); set `ECHO_ACTIVE_SYSTEM_PROMPT=5` in active launchers. Update comments that still describe `<select>` schema.
+
+**Do not** modify [`evaluation/xmix/`](evaluation/xmix/).
+
+**Done when:** math/qa eval launchers used for ECHO checkpoints default to prompt 5.
 
 ---
 
 ## Locked decisions (do not reopen unless user says so)
 
-### Design
-
-- HL vs LL differ **only** by phase loss mask. Scoring/format are shared.
-- Schema = [`system_prompt_5`](ECHO/training/config/echo_system_prompts.yaml): think → tool → search\|python → result → … → final tool → answer + `\boxed{}`.
-- Format gate mirrors ARPO [`deep_research.compute_score`](ARPO/verl_arpo_entropy/verl/utils/reward_score/deep_research.py): −1 on bad `validate_format`, missing answer extract, or boxed parse fail; else F1 (+ existing multi-tool bonus).
-- Delete validator profiles (c1–c4) entirely.
-- Delete DAPO / filter_groups machinery entirely (not just disable).
-- No `*_reward_strategy` / `sign_cond_strategy`. Per phase: **advantage algorithm** + **rollout strategy** (default temperature / `default`). Sign-cond clip (if enabled) uses sign of the token’s assigned advantage.
-- Launch configs: group phase knobs in contiguous HL then LL blocks.
-- Explicit `active_system_prompt` via `train.sh` (target `5`).
-- **`evaluation/xmix/` is out of scope** for this cleanup. It is a dead select-era cross-checkpoint mix experiment (not on the training/eval critical path). Leave the folder untouched; do not port the splicer to prompt-5 and do not delete it in these subtasks.
-
-### Key files
-
-- Format/score: [`ARPO/.../deep_research_echo.py`](ARPO/verl_arpo_entropy/verl/utils/reward_score/deep_research_echo.py) (reuse helpers from [`deep_research.py`](ARPO/verl_arpo_entropy/verl/utils/reward_score/deep_research.py); SFT invariants in [`scripts/sft_refactor/trajectory.py`](scripts/sft_refactor/trajectory.py) `verify_text`)
-- Trainer/actor: [`ECHO/training/echo_ray_trainer.py`](ECHO/training/echo_ray_trainer.py), [`echo_dp_actor.py`](ECHO/training/echo_dp_actor.py), [`echo_core_algos.py`](ECHO/training/echo_core_algos.py), [`echo_reward_manager.py`](ECHO/training/echo_reward_manager.py)
-- Configs: [`ECHO/training/config/echo_trainer.yaml`](ECHO/training/config/echo_trainer.yaml), [`ECHO/training/scripts/train.sh`](ECHO/training/scripts/train.sh), [`ECHO/training/training_config/`](ECHO/training/training_config/)
-- Masks: [`vllm_rollout_echo.py`](ARPO/verl_arpo_entropy/verl/workers/rollout/vllm_rollout/vllm_rollout_echo.py)
+- HL vs LL differ **only** by phase loss mask; scoring/format shared.
+- Schema = system_prompt_5 (think / tool / search|python / result / final tool / answer+boxed).
+- Format gate = ARPO-style −1 early exits then F1 (+ multi-tool bonus).
+- Delete validator profiles; delete DAPO/filter_groups entirely.
+- No reward_strategy / sign_cond_strategy; per phase: advantage algorithm + rollout strategy (default temperature). Sign-cond clip uses assigned advantage sign.
+- Contiguous HL then LL blocks in launch YAMLs; explicit `active_system_prompt` via train.sh (target 5).
+- **`evaluation/xmix/` out of scope** — leave untouched.
 
 ---
 
@@ -112,24 +241,37 @@ _Agents append here after each session._
   - Removed HL/LL validators, `VALIDATOR_PROFILE*`, `resolve_validator_profile`, `mask_categories_for_profile`, select-era helpers.
   - `__main__` smoke: good / no-tool / bad structure / multi-tool bonus / legacy select rejection — all passed.
 - Follow-ups for later subtasks:
-  - **S2**: live eval (`evaluate.py` / `src/evaluator.py`) still imports `validate_format_echo` / `mask_categories_for_profile`; ARPO recipe twin still calls `resolve_validator_profile`. Wire to shared `validate_format` / `format_valid` and drop `--validator_profile`. Trainer metrics that read `high_level_valid`/`low_level_valid` → `format_valid`. **Skip `evaluation/xmix/`** (may already be broken after S1; intentional).
+  - **S2**: live eval still imported old APIs; wire to shared `validate_format` / `format_valid`. Skip `evaluation/xmix/`.
 - Next: S2-drop-profiles-eval
 
 ### 2026-07-13 — plan-amendment — locked
-- Decision: carve **`evaluation/xmix/`** out of cleanup (user chose leave-untouched).
-- Role of xmix (for handoff): one-off cross-checkpoint mixed-prefix harness — cand1/cand2 greedy rollouts → select-era HL/LL splice (`splicer.py`) → prefix continuation → judge. Not used by standard `run_*` eval jobs; `xmix_runs/` empty.
-- Amendments: S2 no longer lists xmix CLIs; S8 renamed `S8-eval-prompt5` (prompt-5 eval only); locked decision + S1 follow-up updated.
+- Decision: carve **`evaluation/xmix/`** out of cleanup (leave untouched).
+- Amendments: S2 no longer lists xmix CLIs; S8 renamed `S8-eval-prompt5`; locked decision updated.
 - Next: S2-drop-profiles-eval
 
 ### 2026-07-13 — S2-drop-profiles-eval — completed
 - Changes:
   - Live eval: [`evaluation/evaluate.py`](evaluation/evaluate.py) + [`evaluation/src/evaluator.py`](evaluation/src/evaluator.py) drop `--validator_profile` / `--mask_categories`; import shared `validate_format`; report only `echo_format_valid` / `echo_format_pass_rate`.
-  - Eval launchers: strip `ECHO_VALIDATOR_PROFILE` / `VALIDATOR_PROFILE` from `echo_evaluate_passk_math_4qa.sh`, `run_layout.sh`, and 15 `run_*` / `high*` shells. **Left `evaluation/xmix/` untouched.**
-  - ARPO twin: remove `resolve_validator_profile` + `meta_info["validator_profile"]` from [`recipe/echo/echo_ray_trainer.py`](ARPO/verl_arpo_entropy/recipe/echo/echo_ray_trainer.py); stop forwarding profile in [`echo_reward_manager.py`](ARPO/verl_arpo_entropy/recipe/echo/echo_reward_manager.py).
-  - Metrics: ECHO live + ARPO twin trainers + both `plot_training_log.py` now use `format_valid` → `reward/format_valid_rate` (JSONL `format_valid_rate.jsonl`); dropped HL/LL valid-rate metrics.
-- Follow-ups for later subtasks:
-  - **S3**: remove DAPO / `filter_groups` / `_collect_phase_batch_dapo` / dapo yaml (`evaluation/xmix` still broken vs S1 API — intentional).
-  - Docs drift: `ECHO/training/docs/logging_readme.md` (+ ARPO twin twin) still describe HL/LL valid rates — optional cleanup later.
+  - Eval launchers: strip `ECHO_VALIDATOR_PROFILE` / `VALIDATOR_PROFILE` from shells. **Left `evaluation/xmix/` untouched.**
+  - ARPO twin: remove profile resolve/forward from recipe `echo_ray_trainer.py` / `echo_reward_manager.py`.
+  - Metrics: format_valid → `reward/format_valid_rate`; dropped HL/LL valid-rate metrics.
+- Follow-ups:
+  - **S3**: remove DAPO machinery (this plan’s deep brief).
+  - Docs drift: `logging_readme.md` may still mention HL/LL valid rates — optional later.
 - Next: S3-remove-dapo
 
+### 2026-07-13 — plan-amendment — deepen subtask briefs
+- Replaced shallow subtask table with Architecture map + per-subtask deep briefs (files, call graph, done criteria).
+- Confirmed S1/S2 completed; active = S3.
+- Next: S3-remove-dapo
 
+### 2026-07-13 — S3-remove-dapo — completed
+- Changes:
+  - Live: removed `_collect_phase_batch_dapo`, dapo train-loop branch, `_phase_algorithm`; algorithm validate is `grpo` only ([`echo_ray_trainer.py`](ECHO/training/echo_ray_trainer.py)).
+  - Deleted `filter_informative_groups` / `_ECHO_FILTER_METRICS` ([`echo_core_algos.py`](ECHO/training/echo_core_algos.py)).
+  - Dropped `DAPORewardManager` import/branch ([`echo_reward_manager.py`](ECHO/training/echo_reward_manager.py)).
+  - Removed `filter_groups` from Hydra defaults + `train.sh` keys/overrides; stripped filter keys from launch YAMLs; deleted `echo_3B_ll_hl_dapo.yaml`.
+  - Mirrored same removals under [`ARPO/verl_arpo_entropy/recipe/echo/`](ARPO/verl_arpo_entropy/recipe/echo/) (incl. both dapo yaml copies).
+- Left historical `"ll_grpo_hl_dapo"` name matching in analysis report scripts (non-functional).
+- Follow-ups: **S4** simplify reward_strategy / sign_cond_strategy.
+- Next: S4-simplify-phase-algos

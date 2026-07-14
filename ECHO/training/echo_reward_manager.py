@@ -22,7 +22,7 @@ import torch
 from verl import DataProto
 from verl.trainer.ppo.reward import get_custom_reward_fn
 from verl.utils.reward_score import default_compute_score
-from verl.workers.reward_manager import BatchRewardManager, DAPORewardManager, NaiveRewardManager, PrimeRewardManager
+from verl.workers.reward_manager import BatchRewardManager, NaiveRewardManager, PrimeRewardManager
 
 
 class ECHORewardManager:
@@ -135,8 +135,6 @@ def load_echo_reward_manager(config, tokenizer, num_examine, **reward_kwargs):
         reward_manager_cls = PrimeRewardManager
     elif reward_manager_name == "batch":
         reward_manager_cls = BatchRewardManager
-    elif reward_manager_name == "dapo":
-        reward_manager_cls = DAPORewardManager
     else:
         raise NotImplementedError
 

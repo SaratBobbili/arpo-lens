@@ -43,10 +43,6 @@ low_level_reward_strategy: entropy-hybrid
 high_level_algorithm: grpo
 low_level_algorithm: grpo
 norm_adv_by_std_in_grpo: False
-high_level_filter_groups_enable: True
-low_level_filter_groups_enable: True
-high_level_filter_metric: seq_reward
-low_level_filter_metric: seq_reward
 
 mask_first_select: high
 mask_select: low

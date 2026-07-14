@@ -40,8 +40,7 @@ VALID_LAUNCH_KEYS=(
     total_epochs save_freq test_freq save_best_checkpoint best_checkpoint_metric max_actor_ckpt_to_keep resume_mode
     phase_order high_level_update_repeats low_level_update_repeats
     high_level_reward_strategy low_level_reward_strategy high_level_algorithm low_level_algorithm
-    norm_adv_by_std_in_grpo high_level_filter_groups_enable low_level_filter_groups_enable
-    high_level_filter_metric low_level_filter_metric high_level_max_num_gen_batches low_level_max_num_gen_batches
+    norm_adv_by_std_in_grpo
     skip_training_on_tool_failure
     mask_first_select mask_select mask_think mask_answer mask_search mask_python
     clip_ratio_low clip_ratio_high clip_ratio_c clip_ratio_low_pos clip_ratio_high_pos clip_ratio_low_neg clip_ratio_high_neg
@@ -142,12 +141,6 @@ ARGS=(
     "reward_model.phase_rewards.low_level.strategy=${LOW_LEVEL_REWARD_STRATEGY}"
     "reward_model.phase_rewards.high_level.algorithm=${HIGH_LEVEL_ALGORITHM:-grpo}"
     "reward_model.phase_rewards.low_level.algorithm=${LOW_LEVEL_ALGORITHM:-grpo}"
-    reward_model.phase_rewards.high_level.filter_groups.enable="${HIGH_LEVEL_FILTER_GROUPS_ENABLE:-false}"
-    reward_model.phase_rewards.low_level.filter_groups.enable="${LOW_LEVEL_FILTER_GROUPS_ENABLE:-false}"
-    reward_model.phase_rewards.high_level.filter_groups.metric="${HIGH_LEVEL_FILTER_METRIC:-seq_reward}"
-    reward_model.phase_rewards.low_level.filter_groups.metric="${LOW_LEVEL_FILTER_METRIC:-seq_reward}"
-    reward_model.phase_rewards.high_level.filter_groups.max_num_gen_batches="${HIGH_LEVEL_MAX_NUM_GEN_BATCHES:-10}"
-    reward_model.phase_rewards.low_level.filter_groups.max_num_gen_batches="${LOW_LEVEL_MAX_NUM_GEN_BATCHES:-10}"
     actor_rollout_ref.rollout.tools.skip_training_on_tool_failure="${SKIP_TRAINING_ON_TOOL_FAILURE:-false}"
     "reward_model.phase_rewards.high_level.kl_loss_coef=${HL_KL_LOSS_COEF:-0.0}"
     "reward_model.phase_rewards.low_level.kl_loss_coef=${LL_KL_LOSS_COEF:-0.0}"

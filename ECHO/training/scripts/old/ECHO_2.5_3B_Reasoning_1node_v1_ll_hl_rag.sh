@@ -97,7 +97,7 @@ WANDB_API_KEY="0986ce441bdc0e809cd73f235d468fa624518fe8" # Modify your wandb key
 SEARCH_CLASS_PATH="verl.workers.agent.tools.search_tool.RagSearchTool"
 # ============================ RAG Sidecar Configuration ====================
 # All knobs are hydra-config driven; the FAISS sidecar must already be running
-# (see ARPO/rag_search_launch.sh). Loopback because this is a 1-node ECHO run.
+# (see ECHO/training/scripts/rag_launch.sh). Loopback because this is a 1-node ECHO run.
 RAG_SERVER_URL="http://127.0.0.1:5003"
 RAG_SIMILARITY_THRESHOLD=0.92        # Cosine cutoff for top-1 to count as a hit; below this we fall through to Bing.
 RAG_TOPK=1                           # Top-k requested from sidecar; only top-1 is consumed (>1 useful for tuning logs).

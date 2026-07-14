@@ -1,6 +1,6 @@
 ---
 name: ECHO RagSearchTool
-overview: "Replace BingSearchToolRAG with RagSearchTool: FAISS over unioned ECHO/search_cache, Bing fallback, durable /add. New ECHO-owned sidecar + launch; train.sh starts/waits only for RagSearchTool. ARPO/rag_search_* is reference-only until final cleanup."
+overview: "Replace BingSearchToolRAG with RagSearchTool: FAISS over unioned ECHO/search_cache, Bing fallback, durable /add. ECHO-owned sidecar + launch; train.sh starts/waits only for RagSearchTool. Old ARPO/rag_search_* scratch removed (S5)."
 todos:
   - id: S1-union-corpus
     content: Naive-union all ECHO/search_cache/*.json into search_cache_union_rag.json (script under ECHO/training/)
@@ -16,14 +16,15 @@ todos:
     status: completed
   - id: S5-cleanup-old-arpo-rag
     content: After RagSearchTool path is concrete and tested, remove/retire unused ARPO/rag_search_launch.sh and related scratch RAG artifacts
-    status: pending
+    status: completed
 ---
+
 
 # Session system prompt
 
 1. Read this entire `Project_plan.md` before doing any work.
 2. Work on **exactly one** subtask: the first todo with `status: pending`, or the id the user names.
-3. **Active subtask right now:** `S5-cleanup-old-arpo-rag`
+3. **Active subtask right now:** none (Goal S1–S5 complete)
 4. Do not reopen Locked decisions unless the user explicitly asks.
 5. Stay inside the active subtask’s deep brief. Put blockers and follow-ups in the Progress log.
 6. Before editing, open the files named in that subtask’s deep brief and understand the current call graph.
@@ -32,7 +33,7 @@ todos:
 
 # Goal
 
-Augment ECHO training search with a RagSearchTool that treats the unioned Bright Data search caches under `ECHO/search_cache/` as a semantic corpus (E5 + FAISS), looks up similar past queries before calling Brightdata Bing, and online-updates the RAG index when Bing fallback returns new results. Keep plain `BingSearchTool` as a separate Hydra-selectable option. Own the RAG sidecar + launcher under **ECHO** (Tree-GRPO / old ARPO rag scratch as design reference only). `train.sh` starts/waits for that sidecar only when `RagSearchTool` is configured. Operator installs RAG deps manually. Retire old `ARPO/rag_search_*` in a final cleanup subtask after the new path is tested.
+Augment ECHO training search with a RagSearchTool that treats the unioned Bright Data search caches under `ECHO/search_cache/` as a semantic corpus (E5 + FAISS), looks up similar past queries before calling Brightdata Bing, and online-updates the RAG index when Bing fallback returns new results. Keep plain `BingSearchTool` as a separate Hydra-selectable option. Own the RAG sidecar + launcher under **ECHO**. `train.sh` starts/waits for that sidecar only when `RagSearchTool` is configured. Operator installs RAG deps manually. Old `ARPO/rag_search_*` scratch removed in S5.
 
 # Architecture / codebase map
 
@@ -62,9 +63,8 @@ flowchart TD
 | `ECHO/training/build_rag_corpus_union.py` | **S1** naive union → `search_cache_union_rag.json` |
 | `ECHO/training/rag/` (new) | **S2** ECHO-owned FastAPI FAISS sidecar (`/retrieve`, `/add`, `/stats`) |
 | `ECHO/training/scripts/rag_launch.sh` (new) | **S2** Sidecar launcher (default corpus = union JSON, port 5003) |
-| `ARPO/verl_arpo_entropy/.../search_tool.py` | `BingSearchTool`; rename `BingSearchToolRAG` → `RagSearchTool` |
+| `ARPO/verl_arpo_entropy/.../search_tool.py` | `BingSearchTool` + `RagSearchTool` |
 | `ARPO/verl_arpo_entropy/.../vllm_rollout_echo.py` | `<search>` → execute → `<result>` (unchanged) |
-| `ARPO/rag_search_server.py`, `ARPO/rag_search_launch.sh` | **Reference only** — prior chat scratch; do not wire `train.sh` to them; retire in **S5** |
 | `Tree-GRPO/search_r1/search/retrieval_server.py` | Design reference (API shape / Encoder patterns) |
 | `README.md` | Root runbook (S4) |
 
@@ -209,8 +209,8 @@ Plug point: Hydra `actor_rollout_ref.rollout.tools.tool_instances.search.class_p
   3. Standalone `BingSearchTool` API / exception hard fail (same)
   - Empty-organic success path already returned this string; unchanged.
   - Hard-fail still logs the real exception to stdout; return value to the trajectory is the unified string (avoids empty-tool retries).
-- Tree-GRPO / old ARPO rag scratch = **design reference only**. Live sidecar + launch live under **ECHO** (`ECHO/training/rag/`, `ECHO/training/scripts/rag_launch.sh`).
-- Do **not** implement or maintain the current Goal on `ARPO/rag_search_launch.sh` / `ARPO/rag_search_server.py`; clean those up in **S5** after the new path is concrete and tested.
+- Live sidecar + launch live under **ECHO** (`ECHO/training/rag/`, `ECHO/training/scripts/rag_launch.sh`). Tree-GRPO retrieval_server remains design reference only.
+- `ARPO/rag_search_server.py` / `ARPO/rag_search_launch.sh` removed in **S5** (were prior-chat scratch, never the live path).
 - Operator installs RAG deps manually.
 - `train.sh` starts/waits for the ECHO RAG server **only** if `search_class_path` is `RagSearchTool`; otherwise existing Bing workflow is guaranteed.
 - Scope: training + README + final ARPO scratch cleanup. Eval / Redis / wiki out of scope unless user adds a subtask.
@@ -257,3 +257,8 @@ Plug point: Hydra `actor_rollout_ref.rollout.tools.tool_instances.search.class_p
 - Changes: Added root `README.md` section **RAG search (`RagSearchTool`)**: manual deps list (no pip from train.sh), `build_rag_corpus_union.py`, `train.sh` + `echo_3B_ll_hl_rag.yaml` auto start/wait/`RAG_READY_TIMEOUT`, optional `rag_launch.sh` + `curl /stats`, `CUDA_VISIBLE_DEVICES` note. Points only at ECHO paths.
 - Follow-ups: S5 retire `ARPO/rag_search_*` after user confirms smoke/train against ECHO sidecar is good enough; prefer explicit deletion approval for tracked files.
 - Next: `S5-cleanup-old-arpo-rag`.
+
+### 2026-07-14 — S5-cleanup-old-arpo-rag — completed
+- Changes: Retargeted old-shell comment to `ECHO/training/scripts/rag_launch.sh`. On user approval: `git rm ARPO/rag_search_server.py ARPO/rag_search_launch.sh`. Confirmed no live launcher/docs point at those paths. Updated architecture map + locked decisions.
+- Follow-ups: none for this Goal (S1–S5 done). GPU smoke of union encode + `/stats` still optional/operator-side.
+- Next: none.

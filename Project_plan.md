@@ -13,7 +13,7 @@ todos:
     status: completed
   - id: S4-readme-rag
     content: README RAG section (deps manual; corpus build; train.sh auto-starts ECHO sidecar for RagSearchTool)
-    status: pending
+    status: completed
   - id: S5-cleanup-old-arpo-rag
     content: After RagSearchTool path is concrete and tested, remove/retire unused ARPO/rag_search_launch.sh and related scratch RAG artifacts
     status: pending
@@ -23,7 +23,7 @@ todos:
 
 1. Read this entire `Project_plan.md` before doing any work.
 2. Work on **exactly one** subtask: the first todo with `status: pending`, or the id the user names.
-3. **Active subtask right now:** `S4-readme-rag`
+3. **Active subtask right now:** `S5-cleanup-old-arpo-rag`
 4. Do not reopen Locked decisions unless the user explicitly asks.
 5. Stay inside the active subtask’s deep brief. Put blockers and follow-ups in the Progress log.
 6. Before editing, open the files named in that subtask’s deep brief and understand the current call graph.
@@ -252,3 +252,8 @@ Plug point: Hydra `actor_rollout_ref.rollout.tools.tool_instances.search.class_p
 - Changes: Added launch keys `rag_server_url` / `similarity_threshold` / `topk` / `soft_fallback` / `rag_request_timeout` to `VALID_LAUNCH_KEYS` and `echo_3B_ll_hl_rag.yaml`. `train.sh` starts `ECHO/training/scripts/rag_launch.sh` only when `SEARCH_CLASS_PATH` contains `RagSearchTool`, polls `${rag_server_url}/stats` (default timeout 3600s via `RAG_READY_TIMEOUT`), fails on early exit/timeout, traps kill sidecar PID, and appends `+...params.rag_*` Hydra overrides. Non-RAG YAMLs unchanged (no sidecar, no rag_* overrides).
 - Follow-ups: S4 README for corpus build, manual deps, auto sidecar lifecycle, `CUDA_VISIBLE_DEVICES`. Full encode + `/stats` smoke still needs a GPU node.
 - Next: `S4-readme-rag`.
+
+### 2026-07-14 — S4-readme-rag — completed
+- Changes: Added root `README.md` section **RAG search (`RagSearchTool`)**: manual deps list (no pip from train.sh), `build_rag_corpus_union.py`, `train.sh` + `echo_3B_ll_hl_rag.yaml` auto start/wait/`RAG_READY_TIMEOUT`, optional `rag_launch.sh` + `curl /stats`, `CUDA_VISIBLE_DEVICES` note. Points only at ECHO paths.
+- Follow-ups: S5 retire `ARPO/rag_search_*` after user confirms smoke/train against ECHO sidecar is good enough; prefer explicit deletion approval for tracked files.
+- Next: `S5-cleanup-old-arpo-rag`.

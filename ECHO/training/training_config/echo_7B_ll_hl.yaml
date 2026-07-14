@@ -1,5 +1,6 @@
 project_name: qwen7B
 experiment_name: echo7B_ll_hl
+active_system_prompt: 5
 nnodes: 1
 n_gpus_per_node: 8
 

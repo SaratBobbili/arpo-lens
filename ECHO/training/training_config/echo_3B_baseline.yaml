@@ -1,5 +1,6 @@
 project_name: qwen3B
 experiment_name: echo3B_baseline
+active_system_prompt: 5
 nnodes: 1
 n_gpus_per_node: 1
 

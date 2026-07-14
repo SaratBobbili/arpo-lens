@@ -16,7 +16,7 @@ todos:
     status: completed
   - id: S5-wire-prompt5
     content: "S5: active_system_prompt via train.sh + training_config; sync system_prompt_5 into ARPO echo_system_prompts.yaml"
-    status: pending
+    status: completed
   - id: S6-remask-tool
     content: "S6: Rollout masks — replace first_select/select with free-text <tool>; update train.sh mask keys + echo_trainer defaults"
     status: pending
@@ -45,7 +45,7 @@ You are continuing the ECHO cleanup tracked in **`projectplan.md`** (workspace r
 6. Do not commit unless asked. Give `git add` paths when the user accepts changes.
 7. Before ending: mark the todo completed (or leave pending + blocker), append a Progress log entry, hand off next pending id.
 
-**Active subtask right now:** `S5-wire-prompt5`
+**Active subtask right now:** `S6-remask-tool`
 
 ---
 
@@ -88,9 +88,8 @@ SFT reference: [`scripts/sft_refactor/trajectory.py`](scripts/sft_refactor/traje
 ### Still select-era / obsolete surfaces (later subtasks)
 
 - Rollout `_TAG_INFO` still has `<select>` / `first_select` and **no** free-text `<tool>` → prompt-5 tool rationales are unmasked (S6).
-- `data.active_system_prompt` defaults to `1`; `train.sh` does not pass it; ARPO prompt YAML stops at `_4` (S5).
 
-Depends-on: S5 → S6 → S7; S8 last. Do not parallelize with completed S4.
+Depends-on: S6 → S7; S8 last. Do not parallelize with completed S5.
 
 ---
 
@@ -118,21 +117,9 @@ See Progress log.
 
 ---
 
-### S5 — Wire `system_prompt_5`
+### S5 — Wire `system_prompt_5` — COMPLETED
 
-**Goal:** Training actually injects prompt-5 text.
-
-**Read first:**
-
-- [`rl_dataset.py`](ARPO/verl_arpo_entropy/verl/utils/dataset/rl_dataset.py) ~126–132: `active = config.get("active_system_prompt")` → `system_prompt_{active}`.
-- [`ECHO/training/config/echo_trainer.yaml`](ECHO/training/config/echo_trainer.yaml): `data.active_system_prompt: 1` today.
-- [`ECHO/training/config/echo_system_prompts.yaml`](ECHO/training/config/echo_system_prompts.yaml): has `system_prompt_5`.
-- [`ARPO/.../recipe/echo/config/echo_system_prompts.yaml`](ARPO/verl_arpo_entropy/recipe/echo/config/echo_system_prompts.yaml): **stops at `_4`** — sync `_5` from ECHO copy.
-- [`train.sh`](ECHO/training/scripts/train.sh): does **not** currently pass `data.active_system_prompt` (so default 1 always wins unless CLI override).
-
-**Do:** Add `active_system_prompt` to `VALID_LAUNCH_KEYS` + Hydra `data.active_system_prompt="${ACTIVE_SYSTEM_PROMPT}"`. Set `active_system_prompt: 5` in active training_configs (at least `echo_3B_ll_hl_grpo.yaml`; preferably all live configs). Sync ARPO prompt YAML. Optionally bump trainer default to 5.
-
-**Done when:** a dry-run / config resolve shows `data.active_system_prompt=5` and both prompt YAMLs define `system_prompt_5`.
+See Progress log.
 
 ---
 
@@ -270,3 +257,13 @@ _Agents append here after each session._
   - ARPO recipe twin still has old `reward_strategy` / `sign_cond_strategy` surface — sync later if needed.
   - `scripts/old/` + analysis report still read legacy `strategy` key (non-blocking).
 - Next: S5-wire-prompt5
+
+### 2026-07-14 — S5-wire-prompt5 — completed
+- Changes:
+  - [`train.sh`](ECHO/training/scripts/train.sh): `active_system_prompt` in `VALID_LAUNCH_KEYS`; Hydra override `data.active_system_prompt="${ACTIVE_SYSTEM_PROMPT:-5}"`.
+  - Defaults: `data.active_system_prompt: 5` in live + ARPO [`echo_trainer.yaml`](ECHO/training/config/echo_trainer.yaml).
+  - All 10 live [`training_config/*.yaml`](ECHO/training/training_config/) set `active_system_prompt: 5`.
+  - Synced `system_prompt_5` into ARPO [`echo_system_prompts.yaml`](ARPO/verl_arpo_entropy/recipe/echo/config/echo_system_prompts.yaml) (identical to ECHO copy).
+- Verified: launch resolve → `data.active_system_prompt=5`; both prompt YAMLs define `_5`.
+- Follow-ups: **S6** remask free-text `<tool>`; drop `mask_first_select` / `mask_select`.
+- Next: S6-remask-tool

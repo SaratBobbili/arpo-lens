@@ -1,5 +1,6 @@
 project_name: qwen3BInst
 experiment_name: echo3BInst_hl_scorer_ll_entropy_tag_tokens_include_group
+active_system_prompt: 5
 nnodes: 1
 n_gpus_per_node: 8
 

@@ -31,6 +31,7 @@ LAUNCH_CONFIG_PATH="${ECHO_ROOT}/$1"
 VALID_LAUNCH_KEYS=(
     project_name experiment_name nnodes n_gpus_per_node
     train_batch_size gen_batch_size ppo_mini_batch_size max_prompt_length max_response_length prompt_key
+    active_system_prompt
     train_files valid_files actor_model_subpath reward_manager
     rollout_n high_level_budget low_level_budget reuse_phase_rollouts enable_multi_turn
     tensor_model_parallel_size gpu_memory_utilization rollout_name rollout_mode
@@ -81,6 +82,7 @@ ARGS=(
     data.train_files="${TRAIN_FILES}"
     data.val_files="${VALID_FILES}"
     data.prompt_key="${PROMPT_KEY}"
+    data.active_system_prompt="${ACTIVE_SYSTEM_PROMPT:-5}"
     data.train_batch_size="${TRAIN_BATCH_SIZE}"
     data.gen_batch_size="${GEN_BATCH_SIZE:-$TRAIN_BATCH_SIZE}"
     data.max_prompt_length="${MAX_PROMPT_LENGTH}"

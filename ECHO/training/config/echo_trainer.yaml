@@ -20,7 +20,6 @@ data:
 
 reward_model:
   # Start ECHO with a dedicated manager key so we can evolve reward logic independently.
-  # Only consulted by phases whose strategy == "scorer".
   reward_manager: echo
   # Order in which the hierarchical phases are executed within each training
   # step. The first phase in this list runs its full GRPO pipeline
@@ -33,28 +32,20 @@ reward_model:
   phase_update_repeats:
     high_level: 1
     low_level: 1
-  # Per-phase reward strategy. Scorer reward is always computed for all phases.
-  # The strategy controls how advantages are shaped inside update_policy using
-  # the current (new) policy's entropy.
-  # Supported strategies:
-  #   scorer  -> Use GRPO advantage from scorer reward as-is.
-  #   entropy -> Replace GRPO advantage with scaled normalized entropy:
-  #              A = alpha * H_norm.
-  #   aepo    -> Modulate scorer GRPO advantage by entropy:
-  #              A = A_scorer * (1 + alpha * H_norm).
-  # Per-phase use_sign_cond_clip enables asymmetric clip bounds (clip_ratio_*_pos/neg).
-  # When enabled, sign_cond_strategy (scorer | entropy | aepo) selects which advantage
-  # sign drives clip bounds and dual-clip gating; PG advantage still follows strategy above.
-  # Per-phase use_aepo_clip applies the ratio-adaptive upper bound (ratio.detach) on top of
-  # whichever fixed bounds sign-cond or global clip selected; the two flags compose independently.
+  # Per-phase advantage algorithm (how token advantages are formed for the PG loss):
+  #   grpo    -> Use GRPO advantages from scorer reward as-is.
+  #   entropy -> Replace with scaled normalized entropy: A = alpha * H_norm.
+  #   aepo    -> Modulate GRPO advantages by entropy: A = A_grpo * (1 + alpha * H_norm).
+  # use_sign_cond_clip enables asymmetric clip bounds (clip_ratio_*_pos/neg) using
+  # the same advantages fed to the PG loss (token advantage sign).
+  # use_aepo_clip applies the ratio-adaptive upper bound on top of whichever fixed
+  # bounds sign-cond or global clip selected; the two flags compose independently.
   phase_rewards:
     high_level:
-      algorithm: grpo
+      advantage_algorithm: grpo
       kl_loss_coef: 0.0
       use_aepo_clip: false
       use_sign_cond_clip: false
-      sign_cond_strategy: scorer
-      strategy: scorer
       entropy:
         # How entropy is z-scored before use as an advantage signal:
         #   token_pool -> z-score over all valid tokens in the micro-batch (AEPO-style).
@@ -64,15 +55,13 @@ reward_model:
         # Scaling weight for entropy-based advantage shaping (entropy and aepo).
         alpha: 0.2
         # Direct entropy regularizer: L_actor = L_PG - reg_coeff * mean(H) on the
-        # phase loss mask. 0.0 disables. Applies to all three strategies.
+        # phase loss mask. 0.0 disables. Applies to all advantage_algorithms.
         reg_coeff: 0.0
     low_level:
-      algorithm: grpo
+      advantage_algorithm: entropy
       kl_loss_coef: 0.0
       use_aepo_clip: false
       use_sign_cond_clip: false
-      sign_cond_strategy: scorer
-      strategy: entropy
       entropy:
         normalization: token_pool
         alpha: 0.2

@@ -81,7 +81,6 @@ class RayECHOTrainer(RayPPOTrainer):
         return {f"{prefix}{key}": value for key, value in metrics_dict.items()}
 
     def _phase_reward_cfg(self, phase_name: str):
-        # Per-phase reward config block (strategy + strategy-specific params).
         return self.config.reward_model.phase_rewards[phase_name]
 
     def _phase_rollout_cfg(self, phase_name: str):
@@ -164,8 +163,6 @@ class RayECHOTrainer(RayPPOTrainer):
     ) -> dict:
         """Compute phase metrics without actor/critic updates or extra rollouts."""
         phase_prefix = f"{target_phase_name}/"
-        phase_reward_cfg = self._phase_reward_cfg(target_phase_name)
-        phase_strategy = phase_reward_cfg.strategy
         phase_metrics: dict = {}
 
         phase_batch = deepcopy(source_batch)
@@ -214,16 +211,13 @@ class RayECHOTrainer(RayPPOTrainer):
         phase_batch.non_tensor_batch["uid"] = uids
 
     def _validate_phase_reward_configs(self, phase_specs) -> None:
-        allowed_sign_cond = {"scorer", "entropy", "aepo"}
+        allowed_adv = {"grpo", "entropy", "aepo"}
         for phase_name, _, _ in phase_specs:
             cfg = self._phase_reward_cfg(phase_name)
-            algo = cfg.get("algorithm", "grpo")
-            assert algo == "grpo", f"{phase_name}.algorithm must be grpo, got {algo!r}"
-            if bool(cfg.get("use_sign_cond_clip", False)):
-                sign_cond_strategy = str(cfg.get("sign_cond_strategy", "scorer"))
-                assert sign_cond_strategy in allowed_sign_cond, (
-                    f"{phase_name}.sign_cond_strategy must be one of {sorted(allowed_sign_cond)}, got {sign_cond_strategy!r}"
-                )
+            adv_algo = str(cfg.get("advantage_algorithm", "grpo"))
+            assert adv_algo in allowed_adv, (
+                f"{phase_name}.advantage_algorithm must be one of {sorted(allowed_adv)}, got {adv_algo!r}"
+            )
 
     def _validate_phase_rollout_configs(self, phase_specs) -> None:
         allowed_rollout = {"default", "aepo"}
@@ -368,7 +362,7 @@ class RayECHOTrainer(RayPPOTrainer):
     ):
         phase_prefix = f"{phase_name}/"
         phase_reward_cfg = self._phase_reward_cfg(phase_name)
-        phase_strategy = phase_reward_cfg.strategy
+        advantage_algorithm = str(phase_reward_cfg.get("advantage_algorithm", "grpo"))
         phase_reward_extra_infos_dict: dict = {}
 
         phase_batch = DataProto(
@@ -403,7 +397,7 @@ class RayECHOTrainer(RayPPOTrainer):
 
         if self.config.algorithm.adv_estimator == AdvantageEstimator.REMAX:
             with _timer(f"{phase_name}_gen_max", timing_raw):
-                if phase_strategy == "scorer":
+                if advantage_algorithm == "grpo":
                     gen_baseline_batch = deepcopy(phase_gen_batch)
                     gen_baseline_batch.meta_info["do_sample"] = False
                     gen_baseline_output = self.actor_rollout_wg.generate_sequences(gen_baseline_batch)
@@ -531,10 +525,9 @@ class RayECHOTrainer(RayPPOTrainer):
         timing_raw: dict,
         metrics: dict,
     ) -> tuple[DataProto, dict]:
-        """Reuse rollout from a preceding phase, recomputing rewards with this phase's strategy."""
+        """Reuse rollout from a preceding phase, recomputing rewards for this phase."""
         phase_prefix = f"{phase_name}/"
         phase_reward_cfg = self._phase_reward_cfg(phase_name)
-        phase_strategy = phase_reward_cfg.strategy
         phase_reward_extra_infos_dict: dict = {}
 
         num_prompts = gen_batch_output.batch.batch_size[0] // phase_rollout_n
@@ -727,7 +720,6 @@ class RayECHOTrainer(RayPPOTrainer):
                     with _timer("step", timing_raw):
                         phase_prefix = f"{phase_name}/"
                         phase_reward_cfg = self._phase_reward_cfg(phase_name)
-                        phase_strategy = phase_reward_cfg.strategy
 
                         if reuse_phase_rollouts and cached_gen_batch_output is not None:
                             phase_rollout_n = cached_rollout_n
@@ -800,10 +792,9 @@ class RayECHOTrainer(RayPPOTrainer):
                                 phase_batch.meta_info["use_sign_cond_clip_override"] = bool(
                                     phase_reward_cfg.get("use_sign_cond_clip", False)
                                 )
-                                phase_batch.meta_info["sign_cond_strategy"] = str(
-                                    phase_reward_cfg.get("sign_cond_strategy", "scorer")
+                                phase_batch.meta_info["advantage_algorithm"] = str(
+                                    phase_reward_cfg.get("advantage_algorithm", "grpo")
                                 )
-                                phase_batch.meta_info["phase_strategy"] = phase_strategy
                                 phase_batch.meta_info["entropy_normalization"] = str(
                                     phase_reward_cfg.entropy.get("normalization", "token_pool")
                                 )

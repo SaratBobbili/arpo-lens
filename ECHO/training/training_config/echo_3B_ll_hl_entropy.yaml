@@ -29,7 +29,7 @@ resume_mode: ""
 tool_call_limit: 3
 
 phase_order: '["low_level", "high_level"]'
-high_level_reward_strategy: scorer
+high_level_advantage_algorithm: grpo
 
 mask_first_select: high
 mask_select: low
@@ -38,7 +38,7 @@ mask_answer: high
 mask_search: low
 mask_python: low
 
-low_level_reward_strategy: entropy
+low_level_advantage_algorithm: entropy
 
 ll_entropy_reg_coeff: 0
 ll_entropy_normalization: token_pool

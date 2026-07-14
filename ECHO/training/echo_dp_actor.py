@@ -21,7 +21,7 @@ class DataParallelECHOActor(DataParallelPPOActor):
 
         temperature = data.meta_info["temperature"]
         multi_turn = data.meta_info.get("multi_turn", False)
-        phase_strategy = data.meta_info.get("phase_strategy", "scorer")
+        advantage_algorithm = data.meta_info.get("advantage_algorithm", "grpo")
         entropy_normalization = data.meta_info.get("entropy_normalization", "token_pool")
         entropy_alpha = float(data.meta_info.get("entropy_alpha", 0.2))
         entropy_coeff_override = data.meta_info.get("entropy_coeff_override", None)
@@ -30,11 +30,7 @@ class DataParallelECHOActor(DataParallelPPOActor):
         kl_loss_coef_override = data.meta_info.get("kl_loss_coef_override", None)
         use_aepo_clip = bool(data.meta_info.get("use_aepo_clip_override", False))
         use_sign_cond_clip = bool(data.meta_info.get("use_sign_cond_clip_override", False))
-        sign_cond_strategy = data.meta_info.get("sign_cond_strategy", "scorer")
-        needs_entropy_norm = (
-            phase_strategy in ("entropy", "aepo")
-            or (use_sign_cond_clip and sign_cond_strategy in ("entropy", "aepo"))
-        )
+        needs_entropy_norm = advantage_algorithm in ("entropy", "aepo")
 
         select_keys = ["responses", "input_ids", "attention_mask", "position_ids", "old_log_probs", "advantages"]
         if multi_turn or "loss_mask" in data.batch.keys():
@@ -102,7 +98,7 @@ class DataParallelECHOActor(DataParallelPPOActor):
 
                     old_log_prob = data["old_log_probs"]
                     advantages = data["advantages"]
-                    scorer_advantages = advantages.clone()
+                    grpo_advantages = advantages.clone()
 
                     clip_ratio = self.config.clip_ratio
                     clip_ratio_low = self.config.clip_ratio_low if self.config.clip_ratio_low is not None else clip_ratio
@@ -118,7 +114,6 @@ class DataParallelECHOActor(DataParallelPPOActor):
                     # Always compute fresh entropy from the current policy.
                     entropy, log_prob = self._forward_micro_batch(micro_batch=data, temperature=temperature, calculate_entropy=True)
 
-                    entropy_norm = None
                     if needs_entropy_norm:
                         entropy_norm = compute_entropy_normalized(
                             entropy=entropy,
@@ -126,16 +121,11 @@ class DataParallelECHOActor(DataParallelPPOActor):
                             normalization=entropy_normalization,
                             index=uid,
                         )
-                    if phase_strategy != "scorer":
                         advantages = resolve_advantage_signal(
-                            phase_strategy, scorer_advantages, entropy_norm, entropy_alpha
+                            advantage_algorithm, grpo_advantages, entropy_norm, entropy_alpha
                         )
 
-                    clip_sign_advantages = None
-                    if use_sign_cond_clip:
-                        clip_sign_advantages = resolve_advantage_signal(
-                            sign_cond_strategy, scorer_advantages, entropy_norm, entropy_alpha
-                        )
+                    clip_sign_advantages = advantages if use_sign_cond_clip else None
 
                     pg_loss, pg_clipfrac, ppo_kl, pg_clipfrac_lower = compute_policy_loss(
                         old_log_prob=old_log_prob,

@@ -39,14 +39,13 @@ VALID_LAUNCH_KEYS=(
     output_root sft_root
     total_epochs save_freq test_freq save_best_checkpoint best_checkpoint_metric max_actor_ckpt_to_keep resume_mode
     phase_order high_level_update_repeats low_level_update_repeats
-    high_level_reward_strategy low_level_reward_strategy high_level_algorithm low_level_algorithm
+    high_level_advantage_algorithm low_level_advantage_algorithm
     norm_adv_by_std_in_grpo
     skip_training_on_tool_failure
     mask_first_select mask_select mask_think mask_answer mask_search mask_python
     clip_ratio_low clip_ratio_high clip_ratio_c clip_ratio_low_pos clip_ratio_high_pos clip_ratio_low_neg clip_ratio_high_neg
     hl_kl_loss_coef ll_kl_loss_coef hl_use_aepo_clip ll_use_aepo_clip
     high_level_use_sign_cond_clip low_level_use_sign_cond_clip
-    high_level_sign_cond_strategy low_level_sign_cond_strategy
     hl_entropy_reg_coeff ll_entropy_reg_coeff hl_entropy_normalization ll_entropy_normalization
     hl_entropy_alpha ll_entropy_alpha
     high_level_rollout_strategy low_level_rollout_strategy
@@ -137,10 +136,8 @@ ARGS=(
     "reward_model.phase_order=${PHASE_ORDER}"
     "reward_model.phase_update_repeats.high_level=${HIGH_LEVEL_UPDATE_REPEATS:-1}"
     "reward_model.phase_update_repeats.low_level=${LOW_LEVEL_UPDATE_REPEATS:-1}"
-    "reward_model.phase_rewards.high_level.strategy=${HIGH_LEVEL_REWARD_STRATEGY}"
-    "reward_model.phase_rewards.low_level.strategy=${LOW_LEVEL_REWARD_STRATEGY}"
-    "reward_model.phase_rewards.high_level.algorithm=${HIGH_LEVEL_ALGORITHM:-grpo}"
-    "reward_model.phase_rewards.low_level.algorithm=${LOW_LEVEL_ALGORITHM:-grpo}"
+    "reward_model.phase_rewards.high_level.advantage_algorithm=${HIGH_LEVEL_ADVANTAGE_ALGORITHM:-grpo}"
+    "reward_model.phase_rewards.low_level.advantage_algorithm=${LOW_LEVEL_ADVANTAGE_ALGORITHM:-grpo}"
     actor_rollout_ref.rollout.tools.skip_training_on_tool_failure="${SKIP_TRAINING_ON_TOOL_FAILURE:-false}"
     "reward_model.phase_rewards.high_level.kl_loss_coef=${HL_KL_LOSS_COEF:-0.0}"
     "reward_model.phase_rewards.low_level.kl_loss_coef=${LL_KL_LOSS_COEF:-0.0}"
@@ -148,8 +145,6 @@ ARGS=(
     reward_model.phase_rewards.low_level.use_aepo_clip="${LL_USE_AEPO_CLIP:-false}"
     reward_model.phase_rewards.high_level.use_sign_cond_clip="${HIGH_LEVEL_USE_SIGN_COND_CLIP:-false}"
     reward_model.phase_rewards.low_level.use_sign_cond_clip="${LOW_LEVEL_USE_SIGN_COND_CLIP:-false}"
-    "reward_model.phase_rewards.high_level.sign_cond_strategy=${HIGH_LEVEL_SIGN_COND_STRATEGY:-scorer}"
-    "reward_model.phase_rewards.low_level.sign_cond_strategy=${LOW_LEVEL_SIGN_COND_STRATEGY:-scorer}"
     "reward_model.phase_rewards.high_level.entropy.reg_coeff=${HL_ENTROPY_REG_COEFF:-0.0}"
     "reward_model.phase_rewards.low_level.entropy.reg_coeff=${LL_ENTROPY_REG_COEFF:-0.0}"
     "reward_model.phase_rewards.high_level.entropy.normalization=${HL_ENTROPY_NORMALIZATION:-token_pool}"

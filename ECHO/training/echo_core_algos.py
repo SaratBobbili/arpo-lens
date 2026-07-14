@@ -220,18 +220,18 @@ def compute_entropy_normalized(
 
 
 def resolve_advantage_signal(
-    strategy: str,
-    scorer_advantages: torch.Tensor,
+    advantage_algorithm: str,
+    grpo_advantages: torch.Tensor,
     entropy_norm: torch.Tensor,
     entropy_alpha: float,
 ) -> torch.Tensor:
-    if strategy == "scorer":
-        return scorer_advantages
-    if strategy == "entropy":
+    if advantage_algorithm == "grpo":
+        return grpo_advantages
+    if advantage_algorithm == "entropy":
         return entropy_alpha * entropy_norm
-    if strategy == "aepo":
-        return scorer_advantages * (1.0 + entropy_alpha * entropy_norm)
-    raise ValueError(f"Invalid advantage strategy: {strategy}")
+    if advantage_algorithm == "aepo":
+        return grpo_advantages * (1.0 + entropy_alpha * entropy_norm)
+    raise ValueError(f"Invalid advantage_algorithm: {advantage_algorithm}")
 
 
 def compute_grpo_passk_outcome_advantage(

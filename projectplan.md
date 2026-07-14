@@ -13,7 +13,7 @@ todos:
     status: completed
   - id: S4-simplify-phase-algos
     content: "S4: Drop reward_strategy + sign_cond_strategy; advantage algorithm + rollout strategy only; sign-cond clip uses advantage sign"
-    status: pending
+    status: completed
   - id: S5-wire-prompt5
     content: "S5: active_system_prompt via train.sh + training_config; sync system_prompt_5 into ARPO echo_system_prompts.yaml"
     status: pending
@@ -45,7 +45,7 @@ You are continuing the ECHO cleanup tracked in **`projectplan.md`** (workspace r
 6. Do not commit unless asked. Give `git add` paths when the user accepts changes.
 7. Before ending: mark the todo completed (or leave pending + blocker), append a Progress log entry, hand off next pending id.
 
-**Active subtask right now:** `S4-simplify-phase-algos`
+**Active subtask right now:** `S5-wire-prompt5`
 
 ---
 
@@ -88,10 +88,9 @@ SFT reference: [`scripts/sft_refactor/trajectory.py`](scripts/sft_refactor/traje
 ### Still select-era / obsolete surfaces (later subtasks)
 
 - Rollout `_TAG_INFO` still has `<select>` / `first_select` and **no** free-text `<tool>` → prompt-5 tool rationales are unmasked (S6).
-- `phase_rewards.*.strategy` still `scorer|entropy|aepo` (“reward strategy”) and `sign_cond_strategy` still exists (S4).
 - `data.active_system_prompt` defaults to `1`; `train.sh` does not pass it; ARPO prompt YAML stops at `_4` (S5).
 
-Depends-on: S4 → S5 → S6 → S7; S8 last. Do not parallelize with completed S3.
+Depends-on: S5 → S6 → S7; S8 last. Do not parallelize with completed S4.
 
 ---
 
@@ -113,26 +112,9 @@ See Progress log.
 
 ---
 
-### S4 — Simplify phase algorithmic surface
+### S4 — Simplify phase algorithmic surface — COMPLETED
 
-**Goal:** Scoring is always answer F1 (already). Per phase, only (1) **advantage computation algorithm** and (2) **rollout strategy**. Remove “reward strategy” and `sign_cond_strategy`.
-
-**Read first:**
-
-- [`echo_trainer.yaml`](ECHO/training/config/echo_trainer.yaml) `phase_rewards.*.strategy` comments (`scorer|entropy|aepo`) vs `phase_rollouts.*.strategy` (`default|aepo`).
-- [`echo_ray_trainer.py`](ECHO/training/echo_ray_trainer.py): sets `meta_info["phase_strategy"]`, `sign_cond_strategy`, gates entropy path on `phase_strategy == "scorer"`.
-- [`echo_dp_actor.py`](ECHO/training/echo_dp_actor.py): `resolve_advantage_signal(phase_strategy, …)` for PG advantages; **separate** `resolve_advantage_signal(sign_cond_strategy, …)` for `clip_sign_advantages`.
-- [`echo_core_algos.py`](ECHO/training/echo_core_algos.py): `resolve_advantage_signal`, `compute_policy_loss(..., use_sign_cond_clip, clip_sign_advantages, ...)`.
-- Launch keys in `train.sh`: `*_reward_strategy`, `*_sign_cond_strategy`.
-
-**Do:**
-
-1. Rename/clarify config: drop `phase_rewards.*.strategy` / `*_reward_strategy`. Advantage shaping becomes an explicit per-phase **advantage algorithm** knob (settle name at implement; map old `scorer|entropy|aepo` reshape behavior onto it if still needed). Fold or keep `algorithm: grpo` only as leftover from S3 — do not reintroduce dapo.
-2. Remove `sign_cond_strategy` everywhere. If `use_sign_cond_clip` stays, `clip_sign_advantages` must be the **same advantages** used for the PG loss (token advantage sign), not a parallel scorer/entropy channel.
-3. Leave `phase_rollouts.*.strategy` as the rollout strategy (`default` = temperature sampling; `aepo` = entropy-guided branching). Default rollout = `default`.
-4. Update `train.sh` + Hydra defaults + training_config keys accordingly (full YAML regroup is S7; here just rename/remove obsolete keys so nothing breaks).
-
-**Done when:** no `reward_strategy` / `sign_cond_strategy` / `phase_rewards.*.strategy` as scorer-named reward strategies; actor sign-cond path uses assigned advantages; rollout strategy still independently configurable.
+See Progress log.
 
 ---
 
@@ -215,7 +197,7 @@ No filter_groups / reward_strategy / sign_cond_strategy / mask_first_select left
 - Schema = system_prompt_5 (think / tool / search|python / result / final tool / answer+boxed).
 - Format gate = ARPO-style −1 early exits then F1 (+ multi-tool bonus).
 - Delete validator profiles; delete DAPO/filter_groups entirely.
-- No reward_strategy / sign_cond_strategy; per phase: advantage algorithm + rollout strategy (default temperature). Sign-cond clip uses assigned advantage sign.
+- No reward_strategy / sign_cond_strategy; per phase: `advantage_algorithm` (`grpo|entropy|aepo`) + rollout strategy (default temperature). No separate `algorithm` estimator field. Sign-cond clip uses assigned advantage sign.
 - Contiguous HL then LL blocks in launch YAMLs; explicit `active_system_prompt` via train.sh (target 5).
 - **`evaluation/xmix/` out of scope** — leave untouched.
 
@@ -275,3 +257,16 @@ _Agents append here after each session._
 - Left historical `"ll_grpo_hl_dapo"` name matching in analysis report scripts (non-functional).
 - Follow-ups: **S4** simplify reward_strategy / sign_cond_strategy.
 - Next: S4-simplify-phase-algos
+
+### 2026-07-14 — S4-simplify-phase-algos — completed
+- Changes (live [`ECHO/training/`](ECHO/training/) only):
+  - Single per-phase knob `advantage_algorithm` (`grpo|entropy|aepo`); dropped separate `algorithm` estimator field and old `scorer` name (`scorer` → `grpo`).
+  - Launch keys: `*_reward_strategy` → `*_advantage_algorithm`; removed `*_algorithm` / `*_sign_cond_strategy` from `train.sh` + Hydra + all `training_config/*.yaml`.
+  - Actor: `clip_sign_advantages` = same PG advantages when `use_sign_cond_clip`; no parallel sign channel ([`echo_dp_actor.py`](ECHO/training/echo_dp_actor.py)).
+  - Trainer meta_info: `advantage_algorithm` replaces `phase_strategy` / `sign_cond_strategy` ([`echo_ray_trainer.py`](ECHO/training/echo_ray_trainer.py)).
+  - Left `phase_rollouts.*.strategy` (`default|aepo`) unchanged.
+- Follow-ups:
+  - **S5**: wire `active_system_prompt=5`.
+  - ARPO recipe twin still has old `reward_strategy` / `sign_cond_strategy` surface — sync later if needed.
+  - `scripts/old/` + analysis report still read legacy `strategy` key (non-blocking).
+- Next: S5-wire-prompt5

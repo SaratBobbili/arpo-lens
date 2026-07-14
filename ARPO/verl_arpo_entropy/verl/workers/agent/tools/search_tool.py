@@ -432,7 +432,7 @@ class BingSearchTool(BaseTool):
         except Exception as e:
             error_msg = f"Bing search failed: {str(e)}"
             print(error_msg)
-            return ""
+            return "No search results found."
     
     def _extract_and_format_results(self, data: Dict) -> str:
         """
@@ -482,21 +482,12 @@ class BingSearchTool(BaseTool):
         return "\n".join(formatted)
 
 
-class BingSearchToolRAG(BaseTool):
+class RagSearchTool(BaseTool):
     """
-    Query-side semantic-dedup wrapper around BingSearchTool.
+    RAG-first search: retrieve from ECHO FAISS sidecar; optional Bing fallback.
 
-    Pipeline per <search> call:
-      1. POST {queries:[q], topk, return_scores:True, threshold} to a sidecar
-         FAISS server that indexed the trainer's existing search-cache keys
-         with E5. If the top-1 cosine >= similarity_threshold, return that
-         neighbor's cached formatted result verbatim (no Brightdata hit).
-      2. On miss, if soft_fallback is True, delegate to an inner BingSearchTool
-         instance (which keeps its own on-disk cache) and POST the new
-         (query, formatted_result) to /add so the next rollout can hit it
-         in-memory. The on-disk corpus_path is never mutated by the sidecar.
-      3. On miss with soft_fallback=False, return "" so the rollout's
-         retry-then-EOS path treats it like an empty Bing response.
+    soft_fallback=True (default): miss → BingSearchTool → /add on non-empty result.
+    soft_fallback=False: miss → "No search results found."
     """
 
     def __init__(
@@ -516,15 +507,6 @@ class BingSearchToolRAG(BaseTool):
         soft_fallback: bool = True,
         rag_request_timeout: float = 30.0,
     ):
-        """
-        Args mirror BingSearchTool for the inner Brightdata client, plus:
-            rag_server_url: base URL of the FAISS sidecar (no trailing slash).
-            similarity_threshold: cosine cutoff for top-1 to be considered a hit.
-            topk: top-k requested from the sidecar (only top-1 is consumed; >1 is for tuning logs).
-            soft_fallback: on miss, fall through to Brightdata via inner BingSearchTool.
-            rag_request_timeout: HTTP read timeout (s) for sidecar /retrieve and /add.
-        """
-        # Inner Bing client owns the on-disk cache + Brightdata HTTP path.
         self._bing = BingSearchTool(
             api_key=api_key,
             zone=zone,
@@ -544,15 +526,13 @@ class BingSearchToolRAG(BaseTool):
 
     @property
     def name(self) -> str:
-        return "bing_search_rag"
+        return "rag_search"
 
     @property
     def trigger_tag(self) -> str:
         return "search"
 
     def _retrieve(self, query: str) -> Optional[Dict[str, Any]]:
-        # Returns the best hit dict {key, value, score} if top-1 score >=
-        # threshold, else None. A None return is the signal to fall back.
         resp = requests.post(
             f"{self._rag_server_url}/retrieve",
             json={
@@ -573,7 +553,6 @@ class BingSearchToolRAG(BaseTool):
         return None
 
     def _add_to_index(self, query: str, value: str) -> None:
-        # Best-effort online insert; sidecar maintains an in-memory delta only.
         try:
             requests.post(
                 f"{self._rag_server_url}/add",
@@ -584,16 +563,12 @@ class BingSearchToolRAG(BaseTool):
             print(f"RAG /add failed (non-fatal): {e}")
 
     def execute(self, query: str, timeout: Optional[int] = None) -> str:
-        # Match BingSearchTool's only piece of normalization so cache keys
-        # produced by past Bing calls (which were stripped) line up.
         query = query.replace('"', '')
 
         try:
             hit = self._retrieve(query)
         except Exception as e:
-            # Network/sidecar failure must not kill the rollout; fall through
-            # so the inner Bing path can still serve the request.
-            print(f"RAG /retrieve failed, falling back to Bing: {e}")
+            print(f"RAG /retrieve failed: {e}")
             hit = None
 
         if hit is not None:
@@ -601,7 +576,7 @@ class BingSearchToolRAG(BaseTool):
             return hit["value"]
 
         if not self._soft_fallback:
-            return ""
+            return "No search results found."
 
         result = self._bing.execute(query, timeout=timeout)
         if result:

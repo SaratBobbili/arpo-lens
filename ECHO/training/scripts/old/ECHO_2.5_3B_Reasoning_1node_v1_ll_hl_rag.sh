@@ -34,7 +34,7 @@ export PYTHONPATH="${VERL_ROOT}:${ECHO_TOP}:$PYTHONPATH"
 # ============================ Basic Configuration ============================
 # Experiment name and project
 PROJECT_NAME="qwen3B" # Modify experiment group
-EXPERIMENT_NAME="echo3BInstruct-r2-rag" # v1_ll_hl + query-side RAG search dedup (BingSearchToolRAG -> FAISS sidecar)
+EXPERIMENT_NAME="echo3BInstruct-r2-rag" # v1_ll_hl + query-side RAG search dedup (RagSearchTool -> FAISS sidecar)
 
 # Configuration file path
 CONFIG_PATH="${ECHO_ROOT}/config" # ECHO recipe config colocated with this launch script
@@ -94,7 +94,7 @@ ROLLOUT_SAVE_PATH="${SAVE_PATH}/rollout"
 # ============================ WandB / API Keys ==============================
 # WandB settings
 WANDB_API_KEY="0986ce441bdc0e809cd73f235d468fa624518fe8" # Modify your wandb key
-SEARCH_CLASS_PATH="verl.workers.agent.tools.search_tool.BingSearchToolRAG"
+SEARCH_CLASS_PATH="verl.workers.agent.tools.search_tool.RagSearchTool"
 # ============================ RAG Sidecar Configuration ====================
 # All knobs are hydra-config driven; the FAISS sidecar must already be running
 # (see ARPO/rag_search_launch.sh). Loopback because this is a 1-node ECHO run.

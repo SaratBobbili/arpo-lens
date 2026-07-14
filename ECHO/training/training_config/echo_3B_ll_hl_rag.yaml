@@ -19,7 +19,7 @@ enable_multi_turn: false
 tensor_model_parallel_size: 1
 gpu_memory_utilization: 0.7
 search_cache_file: search_cache_echo_3B_rag.json
-search_class_path: verl.workers.agent.tools.search_tool.BingSearchToolRAG
+search_class_path: verl.workers.agent.tools.search_tool.RagSearchTool
 brightdata_timeout: 45
 tool_call_limit: ""
 

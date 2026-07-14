@@ -7,7 +7,7 @@ todos:
     status: completed
   - id: S2-rag-search-tool
     content: RagSearchTool + new ECHO-owned RAG sidecar (reference ARPO/rag_search_* only); durable /add; ECHO launch script
-    status: pending
+    status: completed
   - id: S3-hydra-train
     content: Wire RagSearchTool + rag_* params; train.sh starts ECHO RAG sidecar + waits healthy only if RagSearchTool
     status: pending
@@ -23,7 +23,7 @@ todos:
 
 1. Read this entire `Project_plan.md` before doing any work.
 2. Work on **exactly one** subtask: the first todo with `status: pending`, or the id the user names.
-3. **Active subtask right now:** `S2-rag-search-tool`
+3. **Active subtask right now:** `S3-hydra-train`
 4. Do not reopen Locked decisions unless the user explicitly asks.
 5. Stay inside the active subtask’s deep brief. Put blockers and follow-ups in the Progress log.
 6. Before editing, open the files named in that subtask’s deep brief and understand the current call graph.
@@ -201,7 +201,14 @@ Plug point: Hydra `actor_rollout_ref.rollout.tools.tool_instances.search.class_p
 - `<search>` tags drive calls; system-prompt “wikipedia” wording has no design impact.
 - No wiki-18 corpus. Corpus = naive union of `ECHO/search_cache/*.json` (skip `.lock` / `.tmp`); last-write-wins; duplicates OK.
 - `BingSearchTool` remains Bright Data; `RagSearchTool` is an additional Hydra-selectable class.
-- Flow: RAG `/retrieve` → empty/weak → Bing → `/add` + persist.
+- Flow: RAG `/retrieve` → hit returns cached `Page N: ...` value; miss → optional Bing (`soft_fallback`) → `/add` + persist on non-empty Bing result.
+- `soft_fallback` (Hydra param on `RagSearchTool`, default `True`) toggles Bing after RAG miss. No custom miss strings.
+- Unified tool return for no usable search content → `"No search results found."` (appended by rollout inside `<result>...`):
+  1. `RagSearchTool` RAG miss + `soft_fallback=False`
+  2. `RagSearchTool` RAG miss + `soft_fallback=True` but Bright Data / exception hard fail (`BingSearchTool` now returns this instead of `""`)
+  3. Standalone `BingSearchTool` API / exception hard fail (same)
+  - Empty-organic success path already returned this string; unchanged.
+  - Hard-fail still logs the real exception to stdout; return value to the trajectory is the unified string (avoids empty-tool retries).
 - Tree-GRPO / old ARPO rag scratch = **design reference only**. Live sidecar + launch live under **ECHO** (`ECHO/training/rag/`, `ECHO/training/scripts/rag_launch.sh`).
 - Do **not** implement or maintain the current Goal on `ARPO/rag_search_launch.sh` / `ARPO/rag_search_server.py`; clean those up in **S5** after the new path is concrete and tested.
 - Operator installs RAG deps manually.
@@ -230,3 +237,13 @@ Plug point: Hydra `actor_rollout_ref.rollout.tools.tool_instances.search.class_p
 - Changes: Locked manual deps; conditional train.sh RAG lifecycle; ECHO-owned sidecar (ARPO/rag_search_* reference-only); added S5 cleanup after tested.
 - Follow-ups: none for planning.
 - Next: `S1-union-corpus` on execute.
+
+### 2026-07-14 — S2-rag-search-tool — completed
+- Changes: Added `ECHO/training/rag/server.py` (E5 + IndexFlatIP; `/retrieve` `/add` `/stats`; durable `/add` via flock + atomic JSON replace). Added `ECHO/training/scripts/rag_launch.sh` (default corpus `ECHO/search_cache/search_cache_union_rag.json`, port 5003). Renamed `BingSearchToolRAG` → `RagSearchTool` (`name="rag_search"`); updated `echo_3B_ll_hl_rag.yaml` + old rag shell `SEARCH_CLASS_PATH`. Left `ARPO/rag_search_*` untouched.
+- Follow-ups: Full `rag_launch.sh` encode + `/stats` over the union corpus needs a GPU node (login node has `cuda=False`). S3 wires `train.sh` start/wait + rag_* Hydra params (include `soft_fallback`). Exercise miss→Bing→`/add` ntotal growth on GPU when convenient.
+- Next: `S3-hydra-train`.
+
+### 2026-07-14 — S2-rag-search-tool (miss-policy) — completed
+- Changes: Locked unified no-content return `"No search results found."` for (1) RAG miss + `soft_fallback=False`, (2) RAG miss + Bing hard fail, (3) standalone `BingSearchTool` hard fail (was `""`). Empty-organic path unchanged. Documented under Locked decisions. Confirmed RAG hit path returns same `Page N: ...` corpus values Bing would have appended.
+- Follow-ups: S3 must forward `soft_fallback` (and other `rag_*`) via Hydra/`train.sh` without inventing new miss strings.
+- Next: `S3-hydra-train`.

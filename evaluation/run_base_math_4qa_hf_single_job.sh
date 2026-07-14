@@ -39,7 +39,7 @@ INFER_MODE="completion"
 #   math        -> python only (table row "+ TIR Prompting")
 #   search      -> search only
 #   code_search -> python + search (default for ARPO/AEPO trained checkpoints)
-#   echo        -> ECHO prompt-5 schema (think/tool/search|python/result/answer);
+#   echo        -> ECHO system_prompt_1 schema (think/tool/search|python/result/answer);
 #                  loads system prompt from ECHO_SYSTEM_PROMPT_YAML below.
 PROMPT_TYPE="base"
 
@@ -51,10 +51,10 @@ MAX_PYTHON_TIMES="5"
 MAX_SEARCH_TIMES="0"
 
 # ---- ECHO-only config (consumed only when PROMPT_TYPE=echo) ----
-# Live ECHO training prompts (must include system_prompt_5).
+# Live ECHO training prompts (must include system_prompt_1).
 ECHO_SYSTEM_PROMPT_YAML="${SCRIPT_DIR}/../ECHO/training/config/echo_system_prompts.yaml"
 # Selects system_prompt_N; must equal data.active_system_prompt used in training.
-ECHO_ACTIVE_SYSTEM_PROMPT="5"
+ECHO_ACTIVE_SYSTEM_PROMPT="1"
 # Combined per-sample tool budget (matches vLLMRolloutECHO.tool_call_limit, default 5).
 ECHO_TOOL_CALL_LIMIT="5"
 

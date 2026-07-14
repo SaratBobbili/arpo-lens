@@ -1,7 +1,7 @@
 # shared
 project_name: qwen3BInst
 experiment_name: echo3BInst_hierarchical_with_low_level_aepo
-active_system_prompt: 5
+active_system_prompt: 1
 nnodes: 1
 n_gpus_per_node: 8
 

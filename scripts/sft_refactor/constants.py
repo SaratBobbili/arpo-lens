@@ -20,7 +20,7 @@ NEW_SYSTEM_PROMPT = (
 )
 
 # Toggle which key from ECHO/training/config/echo_system_prompts.yaml is used by `export`.
-ACTIVE_SYSTEM_PROMPT = "system_prompt_5"
+ACTIVE_SYSTEM_PROMPT = "system_prompt_1"
 _ECHO_SYSTEM_PROMPTS_YAML = (
     Path(__file__).resolve().parents[2] / "ECHO" / "training" / "config" / "echo_system_prompts.yaml"
 )

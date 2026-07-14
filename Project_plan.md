@@ -1,12 +1,15 @@
 ---
 name: ECHO single-tree cleanup
-overview: Multi-session ECHO cleanup. Goal — one live training tree (ECHO/training/) + shared ARPO/verl runtime; delete the diverged recipe/echo twin; then purge stale live leftovers irrelevant to today's API. One subtask per chat; agent writes progress back into this plan before ending.
+overview: Multi-session ECHO cleanup. Goal — one live training tree (ECHO/training/) + shared ARPO/verl runtime; delete the diverged recipe/echo twin; purge stale live leftovers; then prune inactive prompts to system_prompt_1 and inventory dead shared verl. One subtask per chat; agent writes progress back into this plan before ending.
 todos:
   - id: S1-remove-recipe-echo-twin
     content: "S1: Delete ARPO/.../recipe/echo/ entirely; retarget eval/tree_hca/xmix + ECHO/training path refs to ECHO/training/; do not touch ARPO/.../verl/"
     status: completed
   - id: S2-purge-stale-live
     content: "S2: Inventory and remove stale code/vars/docs/config keys in live ECHO/training (and related analysis) that belong to pre-advantage_algorithm / pre-prompt-5 APIs; leave shared verl untouched unless a later subtask says so"
+    status: completed
+  - id: S3-prune-prompts-identify-verl
+    content: "S3: Prune system_prompt_1–4; rename system_prompt_5→system_prompt_1; retarget live defaults 5→1; inventory (do not edit) dead shared ECHO code under ARPO/.../verl/"
     status: completed
 ---
 
@@ -27,9 +30,9 @@ You are continuing the ECHO cleanup tracked in **`Project_plan.md`** (workspace 
 7. Do not commit unless asked. Give `git add` paths when the user accepts changes.
 8. Before ending: mark the todo completed (or leave pending + blocker), append a Progress log entry, hand off next pending id.
 
-**Active subtask right now:** _(none pending — add S3+ when named)_
+**Active subtask right now:** _(none — S3 completed; await user-named S4+)_
 
-**Later subtasks:** Further S3+ only when the user names them.
+**Later subtasks:** Further S4+ only when the user names them.
 
 ---
 
@@ -180,22 +183,67 @@ git diff --stat -- ARPO/verl_arpo_entropy/verl/
 
 ---
 
+### S3 — Prune prompts + identify dead shared verl — COMPLETED
+
+**Goal:** Make the sole live Echo prompt `system_prompt_1` (today’s prompt-5 text). Drop inactive `<select>`-era prompts 1–4. Retarget every live train/eval default that still says `5`. Separately, inventory dead shared ECHO leftovers under `ARPO/verl_arpo_entropy/verl/` (list in Progress log; **no verl edits**).
+
+**Why current code looks this way:** S2 kept prompts 1–4 on purpose as inactive candidates; live API is only prompt-5. Canonical index should be `1`. Shared `verl/` was frozen in S1/S2; S3 only identifies candidates for a later delete subtask.
+
+**Read first:**
+- [`ECHO/training/config/echo_system_prompts.yaml`](ECHO/training/config/echo_system_prompts.yaml) — keep `system_prompt_5` body; delete keys `_1`…`_4`; rename key `_5` → `_1`.
+- Defaults: [`echo_trainer.yaml`](ECHO/training/config/echo_trainer.yaml), [`train.sh`](ECHO/training/scripts/train.sh) (`ACTIVE_SYSTEM_PROMPT:-5`), all [`training_config/*.yaml`](ECHO/training/training_config/) (`active_system_prompt: 5`).
+- Eval/tree_hca: `evaluation/run_*.sh` / related HF jobs with `ECHO_ACTIVE_SYSTEM_PROMPT="5"` and “must include system_prompt_5” comments; [`scripts/sft_refactor/constants.py`](scripts/sft_refactor/constants.py) (`ACTIVE_SYSTEM_PROMPT = "system_prompt_5"`); docs [`Notes.md`](ECHO/training/docs/Notes.md).
+- Already-`1` loaders ([`tree_hca_eval/main.sh`](tree_hca_eval/main.sh), [`run_math_echo.sh`](tree_hca_eval/run_math_echo.sh), [`evaluation/xmix/run_xmix.sh`](evaluation/xmix/run_xmix.sh)): after rename they load the live schema — leave defaults at `1`; only fix comments if they still imply select-era N.
+- Shared verl inventory seeds: [`vllm_rollout_echo.py`](ARPO/verl_arpo_entropy/verl/workers/rollout/vllm_rollout/vllm_rollout_echo.py), [`deep_research_echo.py`](ARPO/verl_arpo_entropy/verl/utils/reward_score/deep_research_echo.py), [`search_tool_echo.py`](ARPO/verl_arpo_entropy/verl/workers/agent/tools/search_tool_echo.py) (live YAMLs use `BingSearchTool` only; `OpenAISearchTool` appears in `scripts/old/`), `fsdp_workers.py` `sync_echo` branch, callers of those symbols.
+
+**Do:**
+1. Rewrite `echo_system_prompts.yaml` to a single `system_prompt_1` = current `system_prompt_5` text; header comment says N=1 is the only live schema.
+2. Flip live defaults `5` → `1`: `echo_trainer.yaml`, `train.sh`, all live `training_config/*.yaml`, eval launchers that hardcode `ECHO_ACTIVE_SYSTEM_PROMPT=5`, `scripts/sft_refactor/constants.py`, live docs/comments that say prompt-5 as current.
+3. Update this plan’s locked “Schema = …” line if still needed so it matches `system_prompt_1` (same tags).
+4. **Inventory** shared verl: for each candidate, note file/symbol, why dead vs live call graph, keep-vs-delete recommendation. Append table to Progress log. **Do not** `git rm` or edit under `ARPO/verl_arpo_entropy/verl/`.
+
+**Do not:**
+- Edit `ARPO/verl_arpo_entropy/verl/` (inventory only).
+- Mass-edit `ECHO/training/scripts/old/` (provenance; may still mention prompt 5 / `search_tool_echo`).
+- Rewrite `evaluation/xmix/` beyond leaving `ECHO_ACTIVE_SYSTEM_PROMPT` at 1.
+- Invent new prompt text; only prune + rename.
+
+**Done when:**
+- YAML has only `system_prompt_1` with former prompt-5 body (`rg system_prompt_[2-5]` clean under live config).
+- Live train/eval defaults resolve to `1` (`train.sh` default, training_config, eval `ECHO_ACTIVE_SYSTEM_PROMPT`).
+- Progress log has shared-verl dead-code inventory table.
+- `git diff --stat -- ARPO/verl_arpo_entropy/verl/` empty.
+
+**Verify:**
+```bash
+rg -n 'system_prompt_[2-5]|active_system_prompt:\s*5|ACTIVE_SYSTEM_PROMPT:-5|ECHO_ACTIVE_SYSTEM_PROMPT=\"5\"' \
+  ECHO/training evaluation tree_hca_eval scripts/sft_refactor \
+  --glob '!ECHO/training/scripts/old/**' --glob '!**/projectplan_OLD.md'
+python -c "import yaml; p=yaml.safe_load(open('ECHO/training/config/echo_system_prompts.yaml')); assert set(k for k in p if k.startswith('system_prompt_'))=={'system_prompt_1'}"
+git diff --stat -- ARPO/verl_arpo_entropy/verl/
+```
+
+**Depends on:** S1 + S2 completed.
+
+---
+
 ## Locked decisions (do not reopen unless user says so)
 
 **Already shipped (still in force):**
 - HL vs LL differ **only** by phase loss mask; scoring/format shared.
-- Schema = system_prompt_5 (think / tool / search|python / result / final tool / answer+boxed).
+- Schema = system_prompt_1 (content of former system_prompt_5: think / tool / search|python / result / final tool / answer+boxed). S3 flips the key index; body unchanged.
 - Format gate = ARPO-style −1 early exits then F1 (+ multi-tool bonus).
 - No DAPO/filter_groups; no validator profiles.
 - Per phase: `advantage_algorithm` (`grpo|entropy|aepo`) + `phase_rollouts.*.strategy` (`default|aepo`). Sign-cond clip uses assigned advantage sign.
-- Contiguous HL/LL blocks in launch YAMLs; `active_system_prompt` via train.sh (target 5).
+- Contiguous HL/LL blocks in launch YAMLs; `active_system_prompt` via train.sh (target **1** after S3).
 
 **This campaign:**
 - Canonical recipe = [`ECHO/training/`](ECHO/training/) only.
 - Completely remove [`ARPO/verl_arpo_entropy/recipe/echo/`](ARPO/verl_arpo_entropy/recipe/echo/) (S1).
-- Shared runtime under `ARPO/verl_arpo_entropy/verl/` stays; **S1 and S2 must not edit it** (unless a later user-named subtask says so).
-- `evaluation/xmix/` remains out of scope for API/behavior cleanup; **path-only** retarget of deleted twin refs is allowed in S1.
+- Shared runtime under `ARPO/verl_arpo_entropy/verl/` stays; **S1–S3 must not edit it**. S3 may **inventory** dead shared ECHO leftovers only; deletes require a later user-named subtask.
+- `evaluation/xmix/` remains out of scope for API/behavior cleanup; **path-only** retarget of deleted twin refs is allowed in S1; S3 leaves xmix/tree_hca defaults at `1` (correct after rename).
 - S2 may delete confirmed-stale live code/docs; `scripts/old/` and ECHO sandbox junk stay unless inventory + user scope say otherwise.
+- S3: prune inactive prompts 1–4; rename prompt-5 → prompt-1; retarget live `5` → `1`; inventory-only for shared verl.
 - Further subtasks only when the user adds them to this plan.
 
 ---
@@ -273,4 +321,32 @@ _Agents append here after each session._
 
 - Changes: Rewrote Notes + logging cheatsheet; retargeted analysis defaults to live metrics; fixed report config signature; cleared DAPO/scorer-phase comments. Shared `verl/` untouched. Launch-key check on `echo_3B_ll_hl.yaml` OK. Seed rg clean under `ECHO/training` excluding `scripts/old/`.
 - Follow-ups for later subtasks: (none pending unless user names S3 — e.g. shared-verl dead code, or prune inactive system_prompt_1–4).
+- Next: _(none)_
+
+### 2026-07-14 — plan-amendment — S3 prune prompts + identify verl
+- User: add S3 to prune echo prompts 1–4, rename system_prompt_5 → system_prompt_1, update training scripts accordingly, and identify dead shared verl code.
+- Added `S3-prune-prompts-identify-verl` (pending) with deep brief: single live `system_prompt_1` (= today’s prompt-5 body); flip live defaults `5`→`1`; tree_hca/xmix stay at `1`; shared `verl/` inventory only (no edits).
+- Locked decisions updated: schema key target = `system_prompt_1`; S1–S3 must not edit `verl/`.
+- Next: `S3-prune-prompts-identify-verl`
+
+### 2026-07-14 — S3-prune-prompts-identify-verl — completed
+
+**Prompt prune / retarget:**
+- Rewrote [`echo_system_prompts.yaml`](ECHO/training/config/echo_system_prompts.yaml) to sole `system_prompt_1` (= former prompt-5 body); dropped inactive `<select>`-era `_1`…`_4`.
+- Flipped defaults `5`→`1`: `echo_trainer.yaml`, `train.sh` (`ACTIVE_SYSTEM_PROMPT:-1`), all 10 `training_config/*.yaml`, 15 eval HF launchers (`ECHO_ACTIVE_SYSTEM_PROMPT="1"` + comments), `scripts/sft_refactor/constants.py` + README, `docs/Notes.md`, `docs/logging_readme.md` wording, `tree_hca_eval/run_math_echo.sh` comment.
+- Left xmix/tree_hca defaults already at `1`. Did not touch `scripts/old/` or `ARPO/.../verl/`.
+- Verify: YAML assert unique `system_prompt_1`; seed rg clean; `git diff --stat -- ARPO/.../verl/` empty.
+
+**Shared verl dead-code inventory (no edits this subtask):**
+
+| File / symbol | Why dead vs live call graph | Rec |
+|---------------|----------------------------|-----|
+| [`search_tool_echo.py`](ARPO/verl_arpo_entropy/verl/workers/agent/tools/search_tool_echo.py) (entire module: `BingSearchTool` + `OpenAISearchTool`) | Live YAMLs load `verl.workers.agent.tools.search_tool.BingSearchTool` / `BingSearchToolRAG` only. Zero live importers of `search_tool_echo`; only provenance hit is `ECHO/training/scripts/old/ECHO_2.5_7B_Reasoning_1node.sh` → `OpenAISearchTool`. | **delete** (later subtask) |
+| [`vllm_rollout_echo.py`](ARPO/verl_arpo_entropy/verl/workers/rollout/vllm_rollout/vllm_rollout_echo.py) | Live via `rollout.mode=sync_echo`; prompt-1 tags / `tool_loss_mask` / `mask_categories`. No retired `first_select`/`non_border` keys left. | **keep** |
+| [`deep_research_echo.py`](ARPO/verl_arpo_entropy/verl/utils/reward_score/deep_research_echo.py) | Live train reward + eval `validate_format` / xmix `get_ordered_blocks`. `__main__` legacy-`<select>` rejection smoke = intentional. | **keep** |
+| `fsdp_workers.py` `sync_echo` → `vLLMRolloutECHO` | Live trainer entry for ECHO rollout. | **keep** |
+| `mask_categories_for_profile` / `resolve_validator_profile` | Already removed from `deep_research_echo` in prior campaigns. [`evaluation/xmix/score_with_compute_score.py`](evaluation/xmix/score_with_compute_score.py) still imports them → **stale caller** (xmix out of S3 API scope). | symbols gone; fix/drop xmix import later if user names it |
+
+- Changes: Prompt prune + live `5`→`1` retargets; verl inventory table only.
+- Follow-ups for later subtasks (user-named): delete `search_tool_echo.py`; optionally repair xmix import of removed profile helpers.
 - Next: _(none)_

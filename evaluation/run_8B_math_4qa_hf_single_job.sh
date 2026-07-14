@@ -52,7 +52,7 @@ MAX_SEARCH_TIMES="0"
 # Shared prompt YAML used by both training and evaluation.
 ECHO_SYSTEM_PROMPT_YAML="${SCRIPT_DIR}/../ECHO/training/config/echo_system_prompts.yaml"
 # Selects system_prompt_N; must equal data.active_system_prompt used in training.
-ECHO_ACTIVE_SYSTEM_PROMPT="5"
+ECHO_ACTIVE_SYSTEM_PROMPT="1"
 # Combined per-sample tool budget for ECHO-style prompting.
 ECHO_TOOL_CALL_LIMIT="5"
 

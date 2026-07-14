@@ -14,7 +14,7 @@ data:
   gen_batch_size: ${data.train_batch_size}
   # Which system prompt candidate to inject at runtime (via rl_dataset.py).
   # Set to the suffix number of the desired system_prompt_N key below, or null to skip.
-  active_system_prompt: 5
+  active_system_prompt: 1
 
   # system_prompt_N keys are loaded from echo_system_prompts.yaml via Hydra defaults.
 

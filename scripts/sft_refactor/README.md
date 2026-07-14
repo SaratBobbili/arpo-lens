@@ -36,8 +36,8 @@ inspect  →  split  →  verify  →  prune  →  export
 3. **verify** — checks the structural invariants; prints OK/bad counts + reason histogram.
 4. **prune** — drops rows failing `verify`, writes the clean JSONL/parquet.
 5. **export** — swaps the GPT-transform `system` prompt for `ECHO_SYSTEM_PROMPT` (ECHO's
-   `system_prompt_1` reworded for the new `<think>/<tool>/<search>/<python>/<result>/<answer>`
-   structure; mirrored as `system_prompt_4` in `echo_system_prompts.yaml`). `conversations` are
+   `system_prompt_1` in `echo_system_prompts.yaml` — `<think>/<tool>/<search>/<python>/<result>/<answer>`
+   schema). `conversations` are
    left untouched, giving a SFT-ready ShareGPT JSONL/parquet.
 
 ## Usage

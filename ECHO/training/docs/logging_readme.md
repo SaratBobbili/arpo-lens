@@ -37,7 +37,7 @@ the cleanest "how good is the current checkpoint?" numbers.
 |---|---|
 | `val-core/<dataset>/reward/mean@1` | Average task score on the val set (one greedy answer per prompt). For ECHO this is F1, with `-1` for any malformed response. **Primary quality dial.** |
 | `val-aux/<dataset>/f1_score/mean@1` | Same idea but averaged over only the F1 component (no `-1` penalty for bad format — bad-format samples just contribute 0). Slightly more lenient than `val-core/.../reward`. |
-| `val-aux/<dataset>/format_valid/mean@1` | Fraction of greedy responses that pass the shared prompt-5 format gate (`think` / `tool` / tool call or direct answer / `answer`+`\\boxed{}`). |
+| `val-aux/<dataset>/format_valid/mean@1` | Fraction of greedy responses that pass the shared system_prompt_1 format gate (`think` / `tool` / tool call or direct answer / `answer`+`\\boxed{}`). |
 | `val-aux/<dataset>/no_tool_calls/mean@1` | Fraction of scored responses that never called `<search>` or `<python>` (degenerate "answer-from-prior" behavior). Want this low. |
 
 > Why validation looks higher than training rewards: training rolls out at
@@ -62,7 +62,7 @@ will do at eval time.
 | `<phase>/reward/f1_mean` | Mean F1 component from scorer output (zeros on non-matching answers). |
 | `<phase>/reward/format_pass_rate` | Fraction of rollouts with `score >= 0`. Want this climbing toward 1.0. |
 | `<phase>/reward/bad_format_rate` | `1 − format_pass_rate` (share with `score < 0`). |
-| `<phase>/reward/format_valid_rate` | Mean of scorer `format_valid` (prompt-5 structure OK). |
+| `<phase>/reward/format_valid_rate` | Mean of scorer `format_valid` (system_prompt_1 structure OK). |
 | `<phase>/reward/no_tool_rate` | Fraction of rollouts that never called `<search>` or `<python>`. |
 
 ### 2.2 Format validity

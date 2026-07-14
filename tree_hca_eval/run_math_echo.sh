@@ -6,7 +6,7 @@ CKPT="${CHECKPOINT_DIR}/checkpoints/echo3BInst_hl_scorer_ll_entropy_sign_cond_cl
 test -f "$CKPT/config.json" && echo OK || echo "BAD CKPT PATH"
 
 export ECHO_SYSTEM_PROMPT_YAML="$(pwd)/../ECHO/training/config/echo_system_prompts.yaml"
-export ECHO_ACTIVE_SYSTEM_PROMPT=1      # which system_prompt_N (1/2/3)
+export ECHO_ACTIVE_SYSTEM_PROMPT=1      # which system_prompt_N (live schema = 1)
 export ECHO_TOOL_CALL_LIMIT=8           # per-sample combined tool budget
 
 LOG_DIR="logs/eval_$(basename "$CKPT")_math_$(date +%F_%H-%M-%S)"

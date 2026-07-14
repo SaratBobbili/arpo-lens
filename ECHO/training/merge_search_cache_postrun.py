@@ -8,13 +8,13 @@ Merge policy: master is authoritative for any key whose value is a "valid"
 may drift across time -- from clobbering curated master results.
 
 Usage (merge master + all experiment caches matched by glob):
-python ARPO/verl_arpo_entropy/recipe/echo/merge_search_cache_postrun.py \
+python ECHO/training/merge_search_cache_postrun.py \
   --master-cache /scratch/user/saratb_tamu.edu/research/arpo-lens/ARPO/search_cache/search_cache.json \
   --run-cache-inputs "/scratch/user/saratb_tamu.edu/research/arpo-lens/ARPO/search_cache/echo3B*.json" \
   --output-cache /scratch/user/saratb_tamu.edu/research/arpo-lens/ARPO/search_cache/search_cache_union_candidate.json
 
 Usage (merge multiple explicit files and patterns in one run):
-python ARPO/verl_arpo_entropy/recipe/echo/merge_search_cache_postrun.py \
+python ECHO/training/merge_search_cache_postrun.py \
   --master-cache /scratch/user/saratb_tamu.edu/research/arpo-lens/ARPO/search_cache/search_cache.json \
   --run-cache-inputs \
     "/scratch/user/saratb_tamu.edu/research/arpo-lens/ARPO/search_cache/echo3B_hl_ll_sel_low.json" \

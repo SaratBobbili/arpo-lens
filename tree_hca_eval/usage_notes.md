@@ -92,7 +92,7 @@ When `prompt_type=echo`, the script exports these environment variables:
 
 | Variable | Default | Description |
 |---|---|---|
-| `ECHO_SYSTEM_PROMPT_YAML` | `../ARPO/.../echo_system_prompts.yaml` | Path to ECHO system prompt YAML |
+| `ECHO_SYSTEM_PROMPT_YAML` | `../ECHO/training/config/echo_system_prompts.yaml` | Path to ECHO system prompt YAML |
 | `ECHO_ACTIVE_SYSTEM_PROMPT` | `1` | Which `system_prompt_N` to use from the YAML |
 | `ECHO_TOOL_CALL_LIMIT` | `8` | Combined per-sample tool budget across all tools |
 

@@ -96,7 +96,7 @@ class RayECHOTrainer(RayPPOTrainer):
 
     def _init_logging_data(self) -> None:
         # One JSONL per (phase, metric) under {default_local_dir}/logging_data/.
-        # Read by recipe/echo/plot_training_log.py for offline per-step plots.
+        # Read by training/analysis/plot_training_log.py for offline per-step plots.
         self._logging_data_root = os.path.join(self.config.trainer.default_local_dir, "logging_data")
         self._prev_logged_values: dict[str, float] = {}
         for phase in self._LOGGING_SPEC:

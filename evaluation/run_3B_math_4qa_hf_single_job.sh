@@ -33,7 +33,7 @@ REASON_MODEL_NAME="Qwen2.5-7B-Instruct"
 # Optional pointer to the training recipe .sh that produced the checkpoint
 # above. Recorded verbatim into run_config.yaml so eval folders stay traceable
 # back to the exact training config; leave empty to skip.
-#TRAINING_RECIPE_PATH="${SCRIPT_DIR}/../ARPO/verl_arpo_entropy/recipe/echo/ECHO_2.5_3B_Reasoning_1node_v1_ll_hl.sh"
+#TRAINING_RECIPE_PATH="${SCRIPT_DIR}/../ECHO/training/scripts/old/ECHO_2.5_3B_Reasoning_1node_v1_ll_hl.sh"
 TRAINING_RECIPE_PATH=""
 
 if [[ "$USE_HF_HUB_MODEL" == "true" ]]; then

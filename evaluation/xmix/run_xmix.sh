@@ -135,7 +135,7 @@ DATASET_GROUP="${DATASET_GROUP:-grpo_mix}"
 DATA_PATH_BASE="${DATA_PATH_BASE:-${EVAL_DIR}/data}"
 
 # ECHO prompt + budget knobs (consumed by PromptManager when PROMPT_TYPE=echo).
-ECHO_SYSTEM_PROMPT_YAML="${ECHO_SYSTEM_PROMPT_YAML:-${REPO_ROOT}/ARPO/verl_arpo_entropy/recipe/echo/config/echo_system_prompts.yaml}"
+ECHO_SYSTEM_PROMPT_YAML="${ECHO_SYSTEM_PROMPT_YAML:-${REPO_ROOT}/ECHO/training/config/echo_system_prompts.yaml}"
 ECHO_ACTIVE_SYSTEM_PROMPT="${ECHO_ACTIVE_SYSTEM_PROMPT:-1}"
 ECHO_TOOL_CALL_LIMIT="${ECHO_TOOL_CALL_LIMIT:-8}"
 ECHO_VALIDATOR_PROFILE="${ECHO_VALIDATOR_PROFILE:-c1}"

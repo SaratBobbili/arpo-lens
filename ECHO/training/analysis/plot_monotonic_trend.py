@@ -36,19 +36,19 @@ so we don't need a second loader.
 Usage
 -----
 ECHO dual-phase (default — LL entropy reward + HL F1):
-  python -m recipe.echo.plot_monotonic_trend \\
+  python ECHO/training/analysis/plot_monotonic_trend.py \\
       --run-dir /scratch/.../checkpoints/echo3BInstruct \\
       --x-metric low_level/actor/entropy_loss
 
 ECHO with custom phase pair (e.g. raw HL score instead of F1):
-  python -m recipe.echo.plot_monotonic_trend \\
+  python ECHO/training/analysis/plot_monotonic_trend.py \\
       --run-dir .../checkpoints/echo3BInstruct \\
       --x-metric high_level/actor/kl_loss \\
       --y-metrics LL:low_level/reward/entropy_scalar_mean \\
                   HL:high_level/reward/score_mean
 
 ARPO/GRPO single-phase baseline:
-  python -m recipe.echo.plot_monotonic_trend \\
+  python ECHO/training/analysis/plot_monotonic_trend.py \\
       --run-dir /scratch/.../GRPO/Qwen3B-Instruct/checkpoints/grpo \\
       --x-metric actor/entropy_loss \\
       --y-metrics actor:critic/rewards/mean

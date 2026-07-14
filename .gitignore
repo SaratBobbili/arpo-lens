@@ -8,11 +8,6 @@ LLaMA-Factory/LLaMA-Factory-backup
 *.sbatch
 __pycache__/
 *.py[cod]
-ARPO/verl_arpo_entropy/recipe/echo/secrets.sh
-ARPO/verl_arpo_entropy/recipe/echo/convergence_plot/
-ARPO/verl_arpo_entropy/recipe/echo/echo_monotone_plots/
-ARPO/verl_arpo_entropy/recipe/echo/reports/
-
 # Cursor / IDE
 .cursor/*
 !.cursor/rules/

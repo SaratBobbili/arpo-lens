@@ -1,9 +1,11 @@
 #!/bin/bash
 
-CKPT="/path/to/your/echo/best_checkpoint/hf"        # <-- set this
+CHECKPOINT_DIR="/scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ECHO"
+CKPT="${CHECKPOINT_DIR}/checkpoints/echo3BInst_hl_scorer_ll_entropy_sign_cond_clip_true/best_checkpoint/hf"
+#CKPT="/path/to/your/echo/best_checkpoint/hf"        # <-- set this
 test -f "$CKPT/config.json" && echo OK || echo "BAD CKPT PATH"
 
-export ECHO_SYSTEM_PROMPT_YAML="$(pwd)/../ARPO/verl_arpo_entropy/recipe/echo/config/echo_system_prompts.yaml"
+export ECHO_SYSTEM_PROMPT_YAML="$(pwd)/../ECHO/training/config/echo_system_prompts.yaml"
 export ECHO_ACTIVE_SYSTEM_PROMPT=1      # which system_prompt_N (1/2/3)
 export ECHO_TOOL_CALL_LIMIT=8           # per-sample combined tool budget
 

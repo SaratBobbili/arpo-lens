@@ -68,7 +68,7 @@ if [ ! -f "${MODEL_PATH}/config.json" ]; then
 fi
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
-ECHO_SYSTEM_PROMPT_YAML="${SCRIPT_DIR}/../ARPO/verl_arpo_entropy/recipe/echo/config/echo_system_prompts.yaml"
+ECHO_SYSTEM_PROMPT_YAML="${SCRIPT_DIR}/../ECHO/training/config/echo_system_prompts.yaml"
 ECHO_ACTIVE_SYSTEM_PROMPT="1"
 ECHO_TOOL_CALL_LIMIT="8"
 

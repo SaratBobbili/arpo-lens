@@ -6,7 +6,7 @@ is this number actually telling me?".
 
 This file covers **two trainers**:
 
-- **ECHO** (`recipe/echo/`) — two-phase trainer that runs separate HL / LL
+- **ECHO** (`ECHO/training/`) — two-phase trainer that runs separate HL / LL
   GRPO updates per step. Metrics are split by phase using `high_level/`
   and `low_level/` prefixes.
 - **ARPO baseline** (`verl/trainer/ppo/`) — single-phase GRPO. Metrics are

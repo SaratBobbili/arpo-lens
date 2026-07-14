@@ -6,7 +6,7 @@ cloud needed), pulls a single scalar history, merges resumed runs per experiment
 paper-ready PNG/PDF/CSV.
 
 Edit the CONFIG block below and run:
-    python -m recipe.echo.plot_convergence
+    python ECHO/training/analysis/plot_convergence_7B.py
 """
 
 from __future__ import annotations

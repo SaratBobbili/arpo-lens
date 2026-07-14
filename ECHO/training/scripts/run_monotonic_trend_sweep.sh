@@ -2,7 +2,7 @@
 # ============================================================================
 # run_monotonic_trend_sweep.sh
 # ----------------------------------------------------------------------------
-# Sweep `recipe.echo.plot_monotonic_trend` over a list of candidate x-metrics
+# Sweep `ECHO/training/analysis/plot_monotonic_trend.py` over a list of candidate x-metrics
 # for ONE training run.log. For each x, the python script picks the longest
 # chronological step subseq along which (x, Δy¹, Δy², …) are jointly monotone
 # in DIRECTION; bash sorts by k descending so the strongest co-mover floats
@@ -20,7 +20,7 @@
 # Usage
 # -----
 # ECHO sweep:
-#   bash ARPO/verl_arpo_entropy/recipe/echo/run_monotonic_trend_sweep.sh
+#   bash ECHO/training/scripts/run_monotonic_trend_sweep.sh
 #
 # Any non-ECHO checkpoint — script auto-detects the layout:
 #   RUN_DIR=/scratch/.../ECHO/checkpoints/<experiment_name> \
@@ -28,7 +28,7 @@
 #
 # Override y-metrics manually (e.g. ECHO with raw HL score, not F1):
 #   Y_METRICS=("LL:low_level/reward/entropy_scalar_mean" "HL:high_level/reward/score_mean") \
-#       bash ARPO/verl_arpo_entropy/recipe/echo/run_monotonic_trend_sweep.sh
+#       bash ECHO/training/scripts/run_monotonic_trend_sweep.sh
 #
 # Override x-candidate list (space-separated single string):
 #   X_METRICS_OVERRIDE="high_level/actor/kl_loss high_level/actor/grad_norm" \
@@ -212,7 +212,7 @@ for x in "${X_METRICS[@]}"; do
     # `|| rc=$?` prevents a single missing metric (or any non-zero exit) from
     # aborting the whole sweep under `set -e`; we just count failures and move on.
     rc=0
-    "$PY" -m recipe.echo.plot_monotonic_trend \
+    "$PY" "${SCRIPT_DIR}/../analysis/plot_monotonic_trend.py" \
         --run-dir "$RUN_DIR" \
         --x-metric "$x" \
         --y-metrics "${Y_METRICS[@]}" \

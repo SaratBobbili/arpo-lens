@@ -22,14 +22,14 @@ USE_HF_HUB_MODEL="false"
 
 # Main reasoning model checkpoint/HF id served on ports 8002/8003.
 CHECKPOINT_DIR="/scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ECHO"
-TRAINING_RUN_DIR="${CHECKPOINT_DIR}/sft/checkpoints/Qwen2.5-7B-Instruct"
+TRAINING_RUN_DIR="${CHECKPOINT_DIR}/sft/checkpoints/Qwen2.5-3B-Instruct"
 # HF best checkpoint written by ECHO training (best_checkpoint/hf).
 ACTOR_MODEL_PATH="${TRAINING_RUN_DIR}/"
 REASON_MODEL_PATH="${ACTOR_MODEL_PATH}"
 # run_layout.sh: parent of ACTOR_MODEL_PATH is best_checkpoint -> CHECKPOINT_STEP.
 RAW_ACTOR_CHECKPOINT_PATH="${ACTOR_MODEL_PATH}"
 # Served model alias for reasoning endpoints; must match infer DEFAULT_MODEL.
-REASON_MODEL_NAME="Qwen2.5-7B-Instruct"
+REASON_MODEL_NAME="Qwen2.5-3B-Instruct"
 # Optional pointer to the training recipe .sh that produced the checkpoint
 # above. Recorded verbatim into run_config.yaml so eval folders stay traceable
 # back to the exact training config; leave empty to skip.
@@ -37,11 +37,11 @@ REASON_MODEL_NAME="Qwen2.5-7B-Instruct"
 TRAINING_RECIPE_PATH=""
 
 if [[ "$USE_HF_HUB_MODEL" == "true" ]]; then
-  ACTOR_MODEL_PATH="Qwen/Qwen2.5-7B-Instruct"
+  ACTOR_MODEL_PATH="Qwen/Qwen2.5-3B-Instruct"
   REASON_MODEL_PATH="${ACTOR_MODEL_PATH}"
-  REASON_BASE_MODEL_PATH="Qwen/Qwen2.5-7B-Instruct"
+  REASON_BASE_MODEL_PATH="Qwen/Qwen2.5-3B-Instruct"
   RAW_ACTOR_CHECKPOINT_PATH=""
-  REASON_MODEL_NAME="Qwen2.5-7B-Instruct"
+  REASON_MODEL_NAME="Qwen2.5-3B-Instruct"
 fi
 
 # Summarization helper checkpoint/HF id served on ports 8004/8005.
@@ -59,7 +59,7 @@ INFER_MODE="completion"
 #   code_search -> python + search (default for ARPO/AEPO trained checkpoints)
 #   echo        -> ECHO system_prompt_1 schema (think/tool/search|python/result/answer);
 #                  loads system prompt from ECHO_SYSTEM_PROMPT_YAML below.
-PROMPT_TYPE="base"
+PROMPT_TYPE="${PROMPT_TYPE:-echo}"
 
 # Per-sample tool-call budgets enforced by the SampleProcessor; set to 0 to disable a tool entirely.
 # When PROMPT_TYPE=echo these are overridden below to the combined ECHO budget so
@@ -93,10 +93,10 @@ COUNTS="1000000"
 DATASET_GROUP="math_all"
 
 # Pass@k turns (one output file per turn); space separated list.
-TURNS="1"
+TURNS="${TURNS:-1}"
 
 # Sampling temperature (0.0 => greedy decoding).
-TEMPERATURE="0.6"
+TEMPERATURE="${TEMPERATURE:-0.6}"
 
 # Max new tokens per model call; raise for long reasoning traces.
 MAX_TOKENS="4096"

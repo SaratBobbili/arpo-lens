@@ -17,11 +17,14 @@ BING_ZONE="serp_api1"
 # Bright Data proxy country code for Bing search (cc URL parameter).
 BING_LOCATION="us"
 
+# Set true to eval Qwen/Qwen2.5-3B-Instruct from Hugging Face Hub.
+USE_HF_HUB_MODEL="false"
+
 # Main reasoning model checkpoint/HF id served on ports 8002/8003.
 CHECKPOINT_DIR="/scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ECHO"
-TRAINING_RUN_DIR="${CHECKPOINT_DIR}/checkpoints/echo3BInst_hl_scorer_ll_entropy_sign_cond_clip_true_7B"
+TRAINING_RUN_DIR="${CHECKPOINT_DIR}/sft/checkpoints/Qwen2.5-7B-Instruct"
 # HF best checkpoint written by ECHO training (best_checkpoint/hf).
-ACTOR_MODEL_PATH="${TRAINING_RUN_DIR}/best_checkpoint/hf"
+ACTOR_MODEL_PATH="${TRAINING_RUN_DIR}/"
 REASON_MODEL_PATH="${ACTOR_MODEL_PATH}"
 # run_layout.sh: parent of ACTOR_MODEL_PATH is best_checkpoint -> CHECKPOINT_STEP.
 RAW_ACTOR_CHECKPOINT_PATH="${ACTOR_MODEL_PATH}"
@@ -32,6 +35,14 @@ REASON_MODEL_NAME="Qwen2.5-7B-Instruct"
 # back to the exact training config; leave empty to skip.
 #TRAINING_RECIPE_PATH="${SCRIPT_DIR}/../ECHO/training/scripts/old/ECHO_2.5_3B_Reasoning_1node_v1_ll_hl.sh"
 TRAINING_RECIPE_PATH=""
+
+if [[ "$USE_HF_HUB_MODEL" == "true" ]]; then
+  ACTOR_MODEL_PATH="Qwen/Qwen2.5-7B-Instruct"
+  REASON_MODEL_PATH="${ACTOR_MODEL_PATH}"
+  REASON_BASE_MODEL_PATH="Qwen/Qwen2.5-7B-Instruct"
+  RAW_ACTOR_CHECKPOINT_PATH=""
+  REASON_MODEL_NAME="Qwen2.5-7B-Instruct"
+fi
 
 # Summarization helper checkpoint/HF id served on ports 8004/8005.
 SUMM_MODEL_PATH="Qwen/Qwen2.5-7B-Instruct"
@@ -48,7 +59,7 @@ INFER_MODE="completion"
 #   code_search -> python + search (default for ARPO/AEPO trained checkpoints)
 #   echo        -> ECHO system_prompt_1 schema (think/tool/search|python/result/answer);
 #                  loads system prompt from ECHO_SYSTEM_PROMPT_YAML below.
-PROMPT_TYPE="echo"
+PROMPT_TYPE="${PROMPT_TYPE:-base}"
 
 # Per-sample tool-call budgets enforced by the SampleProcessor; set to 0 to disable a tool entirely.
 # When PROMPT_TYPE=echo these are overridden below to the combined ECHO budget so
@@ -82,21 +93,16 @@ COUNTS="1000000"
 DATASET_GROUP="math_all"
 
 # Pass@k turns (one output file per turn); space separated list.
-TURNS="3"
+TURNS="${TURNS:-1}"
 
 # Sampling temperature (0.0 => greedy decoding).
-TEMPERATURE="0.6"
+TEMPERATURE="${TEMPERATURE:-0.6}"
 
 # Max new tokens per model call; raise for long reasoning traces.
 MAX_TOKENS="4096"
 
-# Sampling-distribution shape pinned to vLLMRolloutECHO + ppo_trainer.yaml defaults
-# (top_p=1.0, top_k=-1, repetition_penalty=1.0). Eval was previously running with
-# the Qwen-Instruct-style profile (top_p=0.95/top_k=20/rep_pen=1.1), which deflates
-# repeated format tokens (<tool>, <think>, <answer>, ...) that ECHO emits densely
-# and was never exposed to under that penalty during training. Keep TEMPERATURE
-# below the training value (1.0) for sharper single-rollout eval.
-TOP_P="1.0"
+
+TOP_P="0.95"
 TOP_K="-1"
 MIN_P="0.0"
 REPETITION_PENALTY="1.0"
@@ -172,7 +178,7 @@ source "${SCRIPT_DIR}/run_layout.sh"
 init_run_layout
 
 # Fallback for legacy runs that still have FSDP under best_checkpoint/actor.
-if [[ ! -f "${ACTOR_MODEL_PATH}/config.json" ]]; then
+if [[ "$USE_HF_HUB_MODEL" != "true" && ! -f "${ACTOR_MODEL_PATH}/config.json" ]]; then
   src_actor=""
   if [[ -d "${TRAINING_RUN_DIR}/best_checkpoint/actor" ]]; then
     src_actor="${TRAINING_RUN_DIR}/best_checkpoint/actor"

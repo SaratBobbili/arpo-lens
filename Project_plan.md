@@ -1,15 +1,15 @@
 ---
-name: Pass@8 exploration plots
-overview: "Collect Pass@8 via a thin temperature-loop wrapper around the existing single-job eval (TURNS=1..8 except T=0 uses TURNS=1), then a post-hoc script that ORs per-sample correctness across whatever turn metrics exist and plots Pass@8 vs temperature with one subplot per dataset and legends for model×prompt runs."
+name: ARPO prompt eval sweep
+overview: "Pipeline math_all evals of Hub Qwen2.5-7B-ARPO across distinct ARPO system prompts (PromptManager), without modifying run_7B_math_4qa_hf_single_job.sh. Standalone sweep materializes a temp job for env overrides; post-hoc summary ranks prompt_types."
 todos:
-  - id: S1-env-overrides
-    content: Make TURNS/TEMPERATURE (and PROMPT_TYPE) env-overridable with ${VAR:-default} in 7B/3B single-job scripts
+  - id: S1-driver-arpo-hub
+    content: "Leave run_7B untouched; sweep_arpo_prompts.sh materializes temp job with Hub ARPO + env knobs"
     status: completed
-  - id: S2-temp-sweep-wrapper
-    content: "Add sweep_pass_at_k_temps.sh: loop temps 0.0..1.0 step 0.2; T=0 → TURNS=1 else TURNS=1..8"
+  - id: S2-prompt-sweep
+    content: "sweep_arpo_prompts.sh loops base/math/search/code_search/gemini/react with per-prompt tool budgets"
     status: completed
-  - id: S3-posthoc-plot
-    content: "Add plot_pass_at_k.py: OR over discovered turn *_metrics.json (1 file at T=0, up to 8 otherwise); subplot per dataset"
+  - id: S3-prompt-summary
+    content: "summarize_prompt_sweep.py table of llm_equal rates by prompt_type × dataset"
     status: completed
 ---
 
@@ -23,65 +23,81 @@ todos:
 6. Before editing, open the files named in that subtask’s deep brief and understand the current call graph.
 7. Before ending the chat: mark the subtask completed or blocked; append a Progress log entry; end with `subtask_id | done|blocked | next_pending_id`.
 8. Do not create alternate plan files (`Project_plan_v2.md`, dated copies, chat-named plans). This file is authoritative.
+9. **Never edit** [`evaluation/run_7B_math_4qa_hf_single_job.sh`](evaluation/run_7B_math_4qa_hf_single_job.sh) for this goal; override via [`evaluation/sweep_arpo_prompts.sh`](evaluation/sweep_arpo_prompts.sh) only.
 
 # Goal
 
-Enable Pass@8 exploration curves (Pass@8 Rate vs Temperature) with minimal changes to the existing math_4qa HF eval pipeline: a temperature-sweep wrapper around the current single-job scripts, plus a post-hoc aggregator/plotter that ORs per-sample correctness across turn metric files and draws one subplot per dataset with legends for model×prompt runs.
+Compare ARPO system prompts (not ECHO) on math_all for Hub `dongguanting/Qwen2.5-7B-ARPO` by running the existing 7B single-job driver through a standalone sweep wrapper, then summarizing which `prompt_type` wins.
 
 # Architecture / codebase map
 
 ```mermaid
 flowchart LR
-  wrapper["sweep_pass_at_k_temps.sh"] -->|"for T in temps"| job["run_*_single_job.sh"]
-  job -->|"T gt 0: TURNS 1..8 / T=0: TURNS 1"| infer["infer: K output files"]
-  infer --> eval["evaluate.py per turn"]
-  eval --> metrics["*_metrics.json xK"]
-  metrics --> posthoc["plot_pass_at_k.py"]
-  posthoc --> fig["one figure: subplot per dataset"]
+  sweep["sweep_arpo_prompts.sh"] -->|"sed materialize temp + env"| job["run_7B_math_4qa_hf_single_job.sh"]
+  job --> layout["run_layout.sh run_config.yaml"]
+  job --> infer["echo_infer_math_4qa_hf.sh"]
+  infer --> pm["PromptManager prompt_type"]
+  job --> metrics["*_metrics.json"]
+  metrics --> summary["summarize_prompt_sweep.py"]
 ```
 
 Key paths:
-- [`evaluation/run_7B_math_4qa_hf_single_job.sh`](evaluation/run_7B_math_4qa_hf_single_job.sh) / [`run_3B_math_4qa_hf_single_job.sh`](evaluation/run_3B_math_4qa_hf_single_job.sh) — drivers; `TURNS`/`TEMPERATURE`/`PROMPT_TYPE` env-overridable
-- [`evaluation/run_layout.sh`](evaluation/run_layout.sh) — writes `run_config.yaml` (temperature, prompt_type, training_experiment)
-- [`evaluation/src/inference_engine.py`](evaluation/src/inference_engine.py) — one independent rollout file per turn
-- [`evaluation/sweep_pass_at_k_temps.sh`](evaluation/sweep_pass_at_k_temps.sh) — temperature loop
-- [`evaluation/plot_pass_at_k.py`](evaluation/plot_pass_at_k.py) — Pass@8 OR + plot
+- [`evaluation/run_7B_math_4qa_hf_single_job.sh`](evaluation/run_7B_math_4qa_hf_single_job.sh) — **unchanged** on-disk driver
+- [`evaluation/sweep_arpo_prompts.sh`](evaluation/sweep_arpo_prompts.sh) — materialize temp job + prompt loop
+- [`evaluation/src/prompt_manager.py`](evaluation/src/prompt_manager.py) — ARPO prompt texts (`base`/`math`/`search`/`code_search`/`gemini`/`react`)
+- [`evaluation/summarize_prompt_sweep.py`](evaluation/summarize_prompt_sweep.py) — rank by mean accuracy
 
 # Subtasks
 
-## S1 — Env-overridable knobs
-- Goal: wrapper can set TURNS/TEMPERATURE/PROMPT_TYPE without editing drivers.
-- Done when: `${VAR:-default}` used; unset env keeps prior defaults.
+## S1 — No edits to run_7B; overrides via materialize
+- Goal: Hub ARPO + overridable `PROMPT_TYPE` / `MAX_*` without touching the shared job file.
+- Mechanism: `sed` rewrites only a **temp copy** so env vars win.
+- Done when: on-disk `run_7B_...sh` git-clean from this goal; sweep still loads Hub ARPO.
 
-## S2 — Temperature sweep wrapper
-- Goal: loop default temps `0.0 0.2 0.4 0.6 0.8 1.0`; T=0 → TURNS=1 else full TURNS.
-- Files: new `evaluation/sweep_pass_at_k_temps.sh`.
+## S2 — Prompt sweep
+- Goal: sequential full evals for `base math search code_search gemini react`.
+- Budgets: base 0/0, math 3/0, search 0/3, code_search 3/3, gemini 3/3, react 0/10.
+- Done when: `./sweep_arpo_prompts.sh` runs without editing the driver.
 
-## S3 — Post-hoc Pass@8 + plot
-- Goal: glob available turn metrics; OR correctness; subplot per dataset; legend = training_experiment + prompt_type.
-- Files: new `evaluation/plot_pass_at_k.py`.
+## S3 — Summary table
+- Goal: print ranked table mean + per math_all dataset; optional JSON/CSV.
+- Filter: model needles contain `Qwen2.5-7B-ARPO`; prompt_type in sweep set.
+- Done when: `python summarize_prompt_sweep.py` shows a best `prompt_type`.
 
 # Locked decisions
-- Pass@8 = OR across available turn files (K=8 sampling; K=1 at T=0).
-- Default temps: `0.0 0.2 0.4 0.6 0.8 1.0`.
-- T=0 → TURNS=1; no reverse-order loop for savings.
-- Collection = wrapper + existing job; aggregation/plot post hoc only.
-- Legend = training_experiment + prompt_type.
-- Metric key: prefer `llm_equal`, fallback `math_equal`.
+- Do not permanently edit `run_7B_math_4qa_hf_single_job.sh`.
+- Sweep set: `base math search code_search gemini react` (no `echo`, no `code_search_cn`; `claude` == `gemini` text → skip claude).
+- Default model: `dongguanting/Qwen2.5-7B-ARPO`.
+- Metric: prefer `llm_equal`, fallback `math_equal`.
+- Full job per prompt (reason → infer → judge); no multi-prompt server reuse.
+
+# How to run
+
+```bash
+cd evaluation
+./sweep_arpo_prompts.sh
+# optional: PROMPT_TYPES="base math code_search" ./sweep_arpo_prompts.sh
+# optional: JOB_SCRIPT=./run_7B_math_4qa_hf_single_job.sh ACTOR_MODEL_PATH=dongguanting/Qwen2.5-7B-ARPO ./sweep_arpo_prompts.sh
+
+python summarize_prompt_sweep.py \
+  --root outputs/hf_math_4qa \
+  --out outputs/arpo_prompt_sweep_summary.json \
+  --csv outputs/arpo_prompt_sweep_summary.csv
+```
 
 # Progress log
 
-### 2026-07-21 — S1-env-overrides — completed
-- Changes: `PROMPT_TYPE`/`TURNS`/`TEMPERATURE` use `${VAR:-default}` in 7B and 3B single-job scripts.
+### 2026-08-09 — S1-driver-arpo-hub — completed
+- Changes: restored/left `run_7B_math_4qa_hf_single_job.sh` unmodified; sweep materializes a temp job for Hub ARPO + env knobs.
 - Follow-ups: none.
-- Next: S2-temp-sweep-wrapper
+- Next: S2-prompt-sweep
 
-### 2026-07-21 — S2-temp-sweep-wrapper — completed
-- Changes: added `evaluation/sweep_pass_at_k_temps.sh` (temps `0.0 0.2 … 1.0`; T=0 → TURNS=1).
+### 2026-08-09 — S2-prompt-sweep — completed
+- Changes: added `evaluation/sweep_arpo_prompts.sh` with six prompt types and per-prompt budgets.
 - Follow-ups: none.
-- Next: S3-posthoc-plot
+- Next: S3-prompt-summary
 
-### 2026-07-21 — S3-posthoc-plot — completed
-- Changes: added `evaluation/plot_pass_at_k.py` (OR across discovered turn metrics; subplot per dataset; legend=`experiment+prompt`). Smoke-tested on existing `outputs/hf_math_4qa` runs.
-- Follow-ups: run real temp sweeps via wrapper when ready; smoke PNG/JSON under `evaluation/outputs/pass_at_k_*_smoke.*` are optional artifacts.
+### 2026-08-09 — S3-prompt-summary — completed
+- Changes: added `evaluation/summarize_prompt_sweep.py` ranking mean + per-dataset rates.
+- Follow-ups: run the sweep on GPUs when free, then summarize.
 - Next: none

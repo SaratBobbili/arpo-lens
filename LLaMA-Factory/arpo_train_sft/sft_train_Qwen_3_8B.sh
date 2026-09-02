@@ -1,5 +1,6 @@
 #!/bin/bash
-
+# ARPO cold-start SFT: dongguanting/ARPO-SFT-54K (see arpo_train_sft/dataset_info/dataset_info.json).
+# Per-example system text (tool-use + reasoning format) lives in the dataset `system` column; no echo-specific prompt.
 export TMPDIR=/scratch/user/saratb_tamu.edu/tmp
 export RAY_TMPDIR=/scratch/user/saratb_tamu.edu/tmp/ray
 # Overrides model_name_or_path in the YAML config
@@ -13,7 +14,7 @@ export PYTHONPATH="${LF_ROOT}/src:${PYTHONPATH}"
 # Disable Weights & Biases
 export WANDB_DISABLED=false
 export WANDB_API_KEY=0986ce441bdc0e809cd73f235d468fa624518fe8
-export WANDB_PROJECT="echo_sft"
+export WANDB_PROJECT="ECHO_sft"
 
 #================== Training Parameter Configuration ==================#
 # Distributed training configuration
@@ -24,7 +25,8 @@ MASTER_ADDR="127.0.0.1"  # Address of the master node
 MASTER_PORT=29500        # Port of the master node
 
 # Output directory derived from MODEL_NAME
-OUTPUT_DIR="checkpoints/${MODEL_NAME##*/}/"
+CHECKPOINT_DIR="/scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ECHO/sft"
+OUTPUT_DIR="${CHECKPOINT_DIR}/checkpoints/${MODEL_NAME##*/}/"
 # Create output directory if it doesn't exist
 mkdir -p ${OUTPUT_DIR}
 

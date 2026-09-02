@@ -8,7 +8,7 @@
     }
   },
   "echo_dataset":{
-    "file_name": "../dataset/echo_sft_thinkfirst.jsonl",
+    "file_name": "../dataset/echo_sft_new.jsonl",
     "formatting": "sharegpt",
     "columns": {  
       "messages": "conversations",  

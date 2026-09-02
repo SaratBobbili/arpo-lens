@@ -21,7 +21,7 @@ MASTER_ADDR="127.0.0.1"  # Address of the master node
 MASTER_PORT=29500        # Port of the master node
 
 # Output directory
-OUTPUT_DIR="checkpoints/echo_sft_tool_think_first/"
+OUTPUT_DIR="checkpoints/echo_sft_new/"
 # Create output directory if it doesn't exist
 mkdir -p ${OUTPUT_DIR}
 

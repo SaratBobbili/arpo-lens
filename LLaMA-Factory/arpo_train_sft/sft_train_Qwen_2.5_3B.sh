@@ -14,7 +14,7 @@ export PYTHONPATH="${LF_ROOT}/src:${PYTHONPATH}"
 # Disable Weights & Biases
 export WANDB_DISABLED=false
 export WANDB_API_KEY=0986ce441bdc0e809cd73f235d468fa624518fe8
-export WANDB_PROJECT="arpo_sft"
+export WANDB_PROJECT="ECHO_sft"
 
 #================== Training Parameter Configuration ==================#
 # Distributed training configuration
@@ -25,7 +25,7 @@ MASTER_ADDR="127.0.0.1"  # Address of the master node
 MASTER_PORT=29500        # Port of the master node
 
 # Output directory derived from MODEL_NAME
-CHECKPOINT_DIR="/scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ARPO/sft"
+CHECKPOINT_DIR="/scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ECHO/sft"
 OUTPUT_DIR="${CHECKPOINT_DIR}/checkpoints/${MODEL_NAME##*/}/"
 # Create output directory if it doesn't exist
 mkdir -p ${OUTPUT_DIR}

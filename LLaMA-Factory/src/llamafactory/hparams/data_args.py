@@ -55,6 +55,10 @@ class DataArguments:
         default=False,
         metadata={"help": "Whether or not to mask the history and train on the last turn only."},
     )
+    mask_tool_output_tags: Optional[str] = field(
+        default=None,
+        metadata={"help": "Comma-separated tag names whose spans are excluded from the loss, e.g. `result`."},
+    )
     streaming: bool = field(
         default=False,
         metadata={"help": "Enable dataset streaming."},
@@ -146,6 +150,7 @@ class DataArguments:
 
         self.dataset = split_arg(self.dataset)
         self.eval_dataset = split_arg(self.eval_dataset)
+        self.mask_tool_output_tags = split_arg(self.mask_tool_output_tags)
 
         if self.media_dir is None:
             self.media_dir = self.dataset_dir

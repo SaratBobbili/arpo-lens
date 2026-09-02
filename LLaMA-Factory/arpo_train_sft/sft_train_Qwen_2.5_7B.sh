@@ -33,7 +33,7 @@ mkdir -p ${OUTPUT_DIR}
 # Resume from latest checkpoint if one exists, otherwise start fresh
 RESUME_ARG=""
 if ls "${OUTPUT_DIR}"/checkpoint-* 1>/dev/null 2>&1; then
-    RESUME_ARG="resume_from_checkpoint=true"
+    RESUME_ARG="resume_from_checkpoint=false"
 fi
 
 # Path to the training script
@@ -55,7 +55,6 @@ torchrun --nnodes ${NNODES} \
          output_dir=${OUTPUT_DIR} \
          run_name=${MODEL_NAME##*/} \
          num_train_epochs=1.0 \
-         learning_rate=1.0e-6 \
          ${RESUME_ARG} 2>&1 | tee ${OUTPUT_DIR}/training.log
 
 # Optionally enable logging redirection

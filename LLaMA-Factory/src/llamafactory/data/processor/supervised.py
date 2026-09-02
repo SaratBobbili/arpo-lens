@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import re
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Optional
@@ -30,6 +31,32 @@ logger = logging.get_logger(__name__)
 
 @dataclass
 class SupervisedDatasetProcessor(DatasetProcessor):
+    def __post_init__(self):
+        tags = self.data_args.mask_tool_output_tags
+        self.tool_output_pattern = (
+            re.compile("|".join(rf"<{tag}>.*?</{tag}>" for tag in tags), re.DOTALL) if tags else None
+        )
+
+    def _mask_tool_outputs(self, content: str, target_ids: list[int]) -> list[int]:
+        r"""Replace the labels of tokens inside tool output spans with the ignore index.
+
+        Only fully contained tokens are masked: a token straddling a span edge also covers the
+        adjacent tool tag (e.g. `><` between `</search>` and `<result>`), which the model must
+        still learn to emit since it is the rollout stop sequence.
+        """
+        spans = [match.span() for match in self.tool_output_pattern.finditer(content)]
+        if not spans:
+            return target_ids
+
+        offsets = self.tokenizer(content, add_special_tokens=False, return_offsets_mapping=True)["offset_mapping"]
+        labels = list(target_ids)
+        for i in range(min(len(offsets), len(labels))):
+            start, end = offsets[i]
+            if any(start >= span_start and end <= span_end for span_start, span_end in spans):
+                labels[i] = IGNORE_INDEX
+
+        return labels
+
     def _encode_data_example(
         self,
         prompt: list[dict[str, str]],
@@ -45,9 +72,11 @@ class SupervisedDatasetProcessor(DatasetProcessor):
             [], [], images, videos, audios, self.tokenizer, self.processor
         )
         encoded_pairs = self.template.encode_multiturn(self.tokenizer, messages, system, tools)
+        target_contents = [messages[i]["content"] for i in range(1, len(messages), 2)]
         total_length = len(input_ids) + (1 if self.template.efficient_eos else 0)
         if self.data_args.mask_history:
             encoded_pairs = encoded_pairs[::-1]  # high priority for last turns
+            target_contents = target_contents[::-1]
 
         for turn_idx, (source_ids, target_ids) in enumerate(encoded_pairs):
             if total_length >= self.data_args.cutoff_len:
@@ -69,6 +98,8 @@ class SupervisedDatasetProcessor(DatasetProcessor):
 
             if self.data_args.mask_history and turn_idx != 0:  # train on the last turn only
                 target_label = [IGNORE_INDEX] * target_len
+            elif self.tool_output_pattern is not None:
+                target_label = self._mask_tool_outputs(target_contents[turn_idx], target_ids)
             else:
                 target_label = target_ids
 

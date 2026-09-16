@@ -27,6 +27,8 @@ from pprint import pprint
 import numpy as np
 import ray
 import torch
+from torch.utils.data import RandomSampler, SequentialSampler
+from torchdata.stateful_dataloader import StatefulDataLoader
 from tqdm import tqdm
 
 from tensordict import TensorDict
@@ -45,8 +47,26 @@ _VERL_TO_HF_SCRIPT = os.path.join(_REPO_ROOT, "ARPO", "merge_ckpt", "convert_che
 logger = logging.getLogger(__name__)
 
 
+class _PhaseDataloaders:
+    """Per-phase prompt loaders behind the single state_dict API the base checkpointer uses."""
+
+    def __init__(self, loaders: dict):
+        self.loaders = loaders
+
+    def state_dict(self) -> dict:
+        return {phase: loader.state_dict() for phase, loader in self.loaders.items()}
+
+    def load_state_dict(self, state_dict: dict) -> None:
+        for phase, loader in self.loaders.items():
+            loader.load_state_dict(state_dict[phase])
+
+
 class RayECHOTrainer(RayPPOTrainer):
     """ECHO trainer with ARPO-identical PPO training loop."""
+
+    # Inner phase first: one outer cycle is num_iters[low_level] LL iterations then one HL iteration.
+    _PHASE_NAMES = ("low_level", "high_level")
+    _PHASE_MASK_KEYS = {"low_level": "low_level_loss_mask", "high_level": "high_level_loss_mask"}
 
     # Per-phase JSONL dump spec consumed by `_dump_logging_data`.
     _LOGGING_SPEC = {
@@ -80,19 +100,19 @@ class RayECHOTrainer(RayPPOTrainer):
     def _prefix_metrics(metrics_dict: dict, prefix: str) -> dict:
         return {f"{prefix}{key}": value for key, value in metrics_dict.items()}
 
-    def _phase_reward_cfg(self, phase_name: str):
-        return self.config.reward_model.phase_rewards[phase_name]
+    def _phase_cfg(self, phase_name: str):
+        return self.config.phases[phase_name]
 
     def _phase_rollout_cfg(self, phase_name: str):
-        return self.config.actor_rollout_ref.rollout.phase_rollouts[phase_name]
+        return self.config.phases[phase_name].rollout
 
     @staticmethod
-    def _entropy_reg_coeff(phase_reward_cfg) -> float:
-        return float(phase_reward_cfg.entropy.get("reg_coeff", 0.0))
+    def _entropy_reg_coeff(phase_cfg) -> float:
+        return float(phase_cfg.entropy.get("reg_coeff", 0.0))
 
     @staticmethod
-    def _uses_entropy_regularizer(phase_reward_cfg) -> bool:
-        return RayECHOTrainer._entropy_reg_coeff(phase_reward_cfg) > 0.0
+    def _uses_entropy_regularizer(phase_cfg) -> bool:
+        return RayECHOTrainer._entropy_reg_coeff(phase_cfg) > 0.0
 
     def _init_logging_data(self) -> None:
         # One JSONL per (phase, metric) under {default_local_dir}/logging_data/.
@@ -210,25 +230,28 @@ class RayECHOTrainer(RayPPOTrainer):
             uids[i] = str(uuid.uuid4())
         phase_batch.non_tensor_batch["uid"] = uids
 
-    def _validate_phase_reward_configs(self, phase_specs) -> None:
+    def _validate_phase_reward_configs(self) -> None:
         allowed_adv = {"grpo", "entropy", "aepo"}
-        for phase_name, _, _ in phase_specs:
-            cfg = self._phase_reward_cfg(phase_name)
+        for phase_name in self._PHASE_NAMES:
+            cfg = self._phase_cfg(phase_name)
             adv_algo = str(cfg.get("advantage_algorithm", "grpo"))
             assert adv_algo in allowed_adv, (
-                f"{phase_name}.advantage_algorithm must be one of {sorted(allowed_adv)}, got {adv_algo!r}"
+                f"phases.{phase_name}.advantage_algorithm must be one of {sorted(allowed_adv)}, got {adv_algo!r}"
+            )
+            assert int(cfg.group_size) >= 1, (
+                f"phases.{phase_name}.group_size must be >= 1, got {cfg.group_size}."
             )
 
-    def _validate_phase_rollout_configs(self, phase_specs) -> None:
+    def _validate_phase_rollout_configs(self) -> None:
         allowed_rollout = {"default", "aepo"}
-        for phase_name, _, _ in phase_specs:
+        for phase_name in self._PHASE_NAMES:
             cfg = self._phase_rollout_cfg(phase_name)
             strategy = str(cfg.get("strategy", "default"))
             assert strategy in allowed_rollout, (
-                f"{phase_name} rollout strategy must be one of {sorted(allowed_rollout)}, got {strategy!r}"
+                f"phases.{phase_name}.rollout.strategy must be one of {sorted(allowed_rollout)}, got {strategy!r}"
             )
             if strategy == "aepo":
-                assert cfg.get("aepo") is not None, f"{phase_name} rollout strategy=aepo requires phase_rollouts.{phase_name}.aepo block"
+                assert cfg.get("aepo") is not None, f"phases.{phase_name}.rollout.strategy=aepo requires an aepo block"
 
     @staticmethod
     def _rollout_strategies_uniform(phase_specs, rollout_cfg_getter) -> bool:
@@ -326,12 +349,96 @@ class RayECHOTrainer(RayPPOTrainer):
             expanded.extend([(phase_name, phase_rollout_n, phase_mask_key)] * repeats[phase_name])
         return expanded
 
-    def _next_batch_dict(self, data_iter):
+    def _phase_sampler(self, seed: int):
+        if not self.config.data.shuffle:
+            return SequentialSampler(data_source=self.train_dataset)
+        generator = torch.Generator()
+        generator.manual_seed(seed)
+        return RandomSampler(data_source=self.train_dataset, generator=generator)
+
+    def _create_dataloader(self, train_dataset, val_dataset, collate_fn, train_sampler):
+        """One prompt stream per phase; batch size derived from len(train_dataset) / num_iters.
+
+        Batches are floored to a multiple of world_size because every worker-group call
+        chunks the batch across ranks (`DataProto.chunk` requires exact divisibility).
+        """
+        from verl.trainer.main_ppo import create_rl_dataset
+
+        if train_dataset is None:
+            train_dataset = create_rl_dataset(self.config.data.train_files, self.config.data, self.tokenizer, self.processor)
+        if val_dataset is None:
+            val_dataset = create_rl_dataset(self.config.data.val_files, self.config.data, self.tokenizer, self.processor)
+        self.train_dataset, self.val_dataset = train_dataset, val_dataset
+        if collate_fn is None:
+            from verl.utils.dataset.rl_dataset import collate_fn as default_collate_fn
+
+            collate_fn = default_collate_fn
+
+        self._validate_phase_reward_configs()
+        self._validate_phase_rollout_configs()
+
+        dataset_size = len(self.train_dataset)
+        world_size = self.config.trainer.n_gpus_per_node * self.config.trainer.nnodes
+        num_workers = self.config.data.get("dataloader_num_workers", 8)
+        base_seed = self.config.data.get("seed", 1)
+
+        self._phase_dataloaders = {}
+        self._phase_iters = {}
+        for seed_offset, phase_name in enumerate(self._PHASE_NAMES):
+            num_iters = int(self._phase_cfg(phase_name).num_iters)
+            assert 1 <= num_iters <= dataset_size, (
+                f"phases.{phase_name}.num_iters must be in [1, {dataset_size}], got {num_iters}."
+            )
+            batch_size = (dataset_size // num_iters) // world_size * world_size
+            assert batch_size >= world_size, (
+                f"phases.{phase_name}.num_iters={num_iters} leaves {dataset_size // num_iters} prompts per iteration, "
+                f"fewer than one per rank ({world_size}); lower num_iters."
+            )
+            self._phase_dataloaders[phase_name] = StatefulDataLoader(
+                dataset=self.train_dataset,
+                batch_size=batch_size,
+                num_workers=num_workers,
+                drop_last=True,
+                collate_fn=collate_fn,
+                sampler=self._phase_sampler(seed=base_seed + seed_offset),
+            )
+            print(
+                f"[{phase_name}] num_iters={num_iters}, prompt_batch_size={batch_size}, "
+                f"batches_per_dataset_pass={len(self._phase_dataloaders[phase_name])}"
+            )
+
+        # The base checkpointer saves/loads `self.train_dataloader.state_dict()`.
+        self.train_dataloader = _PhaseDataloaders(self._phase_dataloaders)
+
+        val_batch_size = self.config.data.val_batch_size
+        if val_batch_size is None:
+            val_batch_size = len(self.val_dataset)
+        self.val_dataloader = StatefulDataLoader(
+            dataset=self.val_dataset,
+            batch_size=val_batch_size,
+            num_workers=num_workers,
+            shuffle=False,
+            drop_last=False,
+            collate_fn=collate_fn,
+        )
+        assert len(self.val_dataloader) >= 1, "Validation dataloader is empty!"
+
+        num_hl_iters = int(self._phase_cfg("high_level").num_iters)
+        num_ll_iters = int(self._phase_cfg("low_level").num_iters)
+        self.total_training_steps = num_hl_iters * (num_ll_iters + 1)
+        print(f"Total training steps: {self.total_training_steps}")
+
+    def _next_batch_dict(self, phase_name: str):
+        data_iter = self._phase_iters.get(phase_name)
+        if data_iter is None:
+            data_iter = iter(self._phase_dataloaders[phase_name])
+            self._phase_iters[phase_name] = data_iter
         try:
-            return next(data_iter), data_iter
+            return next(data_iter)
         except StopIteration:
-            data_iter = iter(self.train_dataloader)
-            return next(data_iter), data_iter
+            data_iter = iter(self._phase_dataloaders[phase_name])
+            self._phase_iters[phase_name] = data_iter
+            return next(data_iter)
 
     @staticmethod
     def _pop_gen_batch(batch: DataProto) -> tuple[DataProto, DataProto]:
@@ -361,8 +468,8 @@ class RayECHOTrainer(RayPPOTrainer):
         return_gen_output: bool = False,
     ):
         phase_prefix = f"{phase_name}/"
-        phase_reward_cfg = self._phase_reward_cfg(phase_name)
-        advantage_algorithm = str(phase_reward_cfg.get("advantage_algorithm", "grpo"))
+        phase_cfg = self._phase_cfg(phase_name)
+        advantage_algorithm = str(phase_cfg.get("advantage_algorithm", "grpo"))
         phase_reward_extra_infos_dict: dict = {}
 
         phase_batch = DataProto(
@@ -470,7 +577,7 @@ class RayECHOTrainer(RayPPOTrainer):
                 metrics[f"{phase_prefix}training/rollout_probs_diff_mean"] = torch.mean(rollout_probs_diff).detach().item()
                 metrics[f"{phase_prefix}training/rollout_probs_diff_std"] = torch.std(rollout_probs_diff).detach().item()
 
-        if self._uses_entropy_regularizer(phase_reward_cfg):
+        if self._uses_entropy_regularizer(phase_cfg):
             phase_batch.batch["entropy_reg_loss_mask"] = phase_batch.batch[phase_mask_key].to(torch.float32)
 
         if self.use_reference_policy:
@@ -527,7 +634,7 @@ class RayECHOTrainer(RayPPOTrainer):
     ) -> tuple[DataProto, dict]:
         """Reuse rollout from a preceding phase, recomputing rewards for this phase."""
         phase_prefix = f"{phase_name}/"
-        phase_reward_cfg = self._phase_reward_cfg(phase_name)
+        phase_cfg = self._phase_cfg(phase_name)
         phase_reward_extra_infos_dict: dict = {}
 
         num_prompts = gen_batch_output.batch.batch_size[0] // phase_rollout_n
@@ -579,7 +686,7 @@ class RayECHOTrainer(RayPPOTrainer):
                 metrics[f"{phase_prefix}actor/entropy_old_policy"] = entropy_loss.detach().item()
             phase_batch = phase_batch.union(old_log_prob)
 
-        if self._uses_entropy_regularizer(phase_reward_cfg):
+        if self._uses_entropy_regularizer(phase_cfg):
             phase_batch.batch["entropy_reg_loss_mask"] = phase_batch.batch[phase_mask_key].to(torch.float32)
 
         if self.use_reference_policy:
@@ -622,13 +729,160 @@ class RayECHOTrainer(RayPPOTrainer):
 
         return phase_batch, phase_reward_extra_infos_dict
 
+    def _run_phase_iteration(self, phase_name: str, hl_cycle: int, end_of_cycle: bool, logger, progress_bar) -> None:
+        """One GRPO iteration for `phase_name`: fresh prompt chunk -> rollout -> reward -> advantage -> update.
+
+        Rollouts always come from the policy as left by the previous iteration's optimizer step,
+        because the prompt chunk is only fetched here and `generate_sequences` resyncs FSDP -> vLLM.
+        """
+        phase_prefix = f"{phase_name}/"
+        phase_cfg = self._phase_cfg(phase_name)
+        phase_rollout_n = int(phase_cfg.group_size)
+        phase_mask_key = self._PHASE_MASK_KEYS[phase_name]
+        metrics = {f"{phase_prefix}training/group_size": phase_rollout_n}
+        timing_raw = {}
+        is_last_step = self.global_steps >= self.total_training_steps
+        saved_checkpoint_this_step = False
+
+        with _timer("step", timing_raw):
+            batch_dict = self._next_batch_dict(phase_name)
+            gen_batch, prompt_batch = self._pop_gen_batch(DataProto.from_single_dict(batch_dict))
+            metrics[f"{phase_prefix}training/num_prompts"] = gen_batch.batch.batch_size[0]
+            phase_batch, phase_reward_extra_infos_dict = self._phase_rollout_to_scored_batch(
+                gen_batch, prompt_batch, phase_name, phase_rollout_n, phase_mask_key, timing_raw, metrics,
+            )
+            del gen_batch, prompt_batch
+            gc.collect()
+            torch.cuda.empty_cache()
+
+            with _timer(f"{phase_name}_adv", timing_raw):
+                metrics[f"{phase_prefix}reward/in_group_reward_std"] = self._compute_in_group_reward_std(phase_batch)
+                self._apply_tool_failure_before_grpo(phase_batch)
+
+                phase_batch = compute_advantage(
+                    phase_batch,
+                    adv_estimator=self.config.algorithm.adv_estimator,
+                    gamma=self.config.algorithm.gamma,
+                    lam=self.config.algorithm.lam,
+                    num_repeat=phase_rollout_n,
+                    norm_adv_by_std_in_grpo=self.config.algorithm.get("norm_adv_by_std_in_grpo", True),
+                    multi_turn=self.config.actor_rollout_ref.rollout.multi_turn.enable,
+                    use_pf_ppo=self.config.algorithm.use_pf_ppo,
+                    pf_ppo_reweight_method=self.config.algorithm.pf_ppo.reweight_method,
+                    pf_ppo_weight_pow=self.config.algorithm.pf_ppo.weight_pow,
+                )
+                metrics.update(
+                    self._prefix_metrics(
+                        compute_data_metrics(batch=phase_batch, use_critic=self.use_critic),
+                        phase_prefix,
+                    )
+                )
+
+            if self.use_critic:
+                with _timer(f"{phase_name}_update_critic", timing_raw):
+                    critic_output = self.critic_wg.update_critic(phase_batch)
+                critic_output_metrics = reduce_metrics(critic_output.meta_info["metrics"])
+                metrics.update(self._prefix_metrics(critic_output_metrics, phase_prefix))
+
+            if self.config.trainer.critic_warmup <= self.global_steps:
+                with _timer(f"{phase_name}_update_actor", timing_raw):
+                    phase_batch.meta_info["multi_turn"] = self.config.actor_rollout_ref.rollout.multi_turn.enable
+                    phase_batch.meta_info["kl_loss_coef_override"] = float(
+                        phase_cfg.get("kl_loss_coef", self.config.actor_rollout_ref.actor.kl_loss_coef)
+                    )
+                    phase_batch.meta_info["use_aepo_clip_override"] = bool(phase_cfg.get("use_aepo_clip", False))
+                    phase_batch.meta_info["use_sign_cond_clip_override"] = bool(
+                        phase_cfg.get("use_sign_cond_clip", False)
+                    )
+                    phase_batch.meta_info["advantage_algorithm"] = str(phase_cfg.get("advantage_algorithm", "grpo"))
+                    phase_batch.meta_info["entropy_normalization"] = str(
+                        phase_cfg.entropy.get("normalization", "token_pool")
+                    )
+                    phase_batch.meta_info["entropy_alpha"] = float(phase_cfg.entropy.get("alpha", 0.2))
+                    if self._uses_entropy_regularizer(phase_cfg):
+                        phase_batch.meta_info["entropy_coeff_override"] = self._entropy_reg_coeff(phase_cfg)
+                        phase_batch.meta_info["entropy_loss_mask_key"] = "entropy_reg_loss_mask"
+                    actor_output = self.actor_rollout_wg.update_actor(phase_batch)
+                actor_output_metrics = reduce_metrics(actor_output.meta_info["metrics"])
+                metrics.update(self._prefix_metrics(actor_output_metrics, phase_prefix))
+
+            rollout_data_dir = self.config.trainer.get("rollout_data_dir", None)
+            if rollout_data_dir:
+                with _timer(f"{phase_name}_dump_rollout_generations", timing_raw):
+                    inputs = self.tokenizer.batch_decode(phase_batch.batch["prompts"], skip_special_tokens=True)
+                    outputs = self.tokenizer.batch_decode(phase_batch.batch["responses"], skip_special_tokens=True)
+                    scores = phase_batch.batch["token_level_scores"].sum(-1).cpu().tolist()
+                    self._dump_generations(
+                        inputs=inputs,
+                        outputs=outputs,
+                        scores=scores,
+                        reward_extra_infos_dict=phase_reward_extra_infos_dict,
+                        dump_path=rollout_data_dir,
+                    )
+
+            # Validation and checkpointing land on the high-level update that closes an outer
+            # cycle; test_freq / save_freq count outer cycles, never low-level iterations.
+            if end_of_cycle:
+                if self.val_reward_fn is not None and self.config.trainer.test_freq > 0 and (is_last_step or (hl_cycle + 1) % self.config.trainer.test_freq == 0):
+                    with _timer("testing", timing_raw):
+                        val_metrics: dict = self._validate()
+                        self._last_val_metrics = val_metrics
+                    metrics.update(val_metrics)
+
+                    if bool(self.config.trainer.get("save_best_checkpoint", False)):
+                        current_metric_key, current_metric_value = self._resolve_best_metric_from_val(val_metrics)
+                        selector = self._canonical_best_metric_selector(self.config.trainer.best_checkpoint_metric)
+                        metrics["training/best_checkpoint_metric_selector_id"] = (
+                            0.0 if selector == "val-core/reward" else 1.0
+                        )
+                        metrics["training/best_checkpoint_metric_current"] = current_metric_value
+                        metrics["training/best_checkpoint_metric_best"] = self._best_metric_value
+                        metrics["training/best_checkpoint_metric_improved"] = float(
+                            current_metric_value > self._best_metric_value
+                        )
+                        if current_metric_value > self._best_metric_value:
+                            self._best_metric_value = current_metric_value
+                            self._best_metric_step = self.global_steps
+                            self._best_metric_key = current_metric_key
+                            with _timer("save_checkpoint", timing_raw):
+                                self._save_checkpoint()
+                            saved_checkpoint_this_step = True
+                            with _timer("save_best_checkpoint", timing_raw):
+                                self._sync_best_checkpoint_dir()
+                            print(
+                                f"[best_checkpoint] updated: selector={selector}, "
+                                f"resolved_key={current_metric_key}, value={current_metric_value}, step={self.global_steps}"
+                            )
+                        metrics["training/best_checkpoint_metric_best"] = self._best_metric_value
+                        metrics["training/best_checkpoint_metric_best_step"] = float(self._best_metric_step)
+
+                if (
+                    not saved_checkpoint_this_step
+                    and self.config.trainer.save_freq > 0
+                    and (is_last_step or (hl_cycle + 1) % self.config.trainer.save_freq == 0)
+                ):
+                    with _timer("save_checkpoint", timing_raw):
+                        self._save_checkpoint()
+
+        metrics.update(
+            {
+                "training/global_step": self.global_steps,
+                "training/hl_cycle": hl_cycle,
+            }
+        )
+        metrics.update(compute_timing_metrics(batch=phase_batch, timing_raw=timing_raw))
+        n_gpus = self.resource_pool_manager.get_n_gpus()
+        metrics.update(compute_throughout_metrics(batch=phase_batch, timing_raw=timing_raw, n_gpus=n_gpus))
+
+        logger.log(data=metrics, step=self.global_steps)
+        self._dump_logging_data(metrics)
+
+        progress_bar.update(1)
+        self.global_steps += 1
+
     def fit(self):
-        """
-        The training loop of PPO.
-        The driver process only need to call the compute functions of the worker group through RPC
-        to construct the PPO dataflow.
-        The light-weight advantage computation is done on the driver process.
-        """
+        """Nested-phase GRPO: `num_iters[low_level]` low-level iterations inside each of
+        `num_iters[high_level]` outer cycles, each cycle closed by one high-level iteration."""
         from omegaconf import OmegaConf
 
         from verl.utils.tracking import Tracking
@@ -646,6 +900,7 @@ class RayECHOTrainer(RayPPOTrainer):
         self._best_metric_value = float("-inf")
         self._best_metric_step = -1
         self._best_metric_key = None
+        self._last_val_metrics = None
 
         self._init_logging_data()
 
@@ -662,245 +917,23 @@ class RayECHOTrainer(RayPPOTrainer):
             if self.config.trainer.get("val_only", False):
                 return
 
-        # add tqdm
+        num_hl_iters = int(self._phase_cfg("high_level").num_iters)
+        num_ll_iters = int(self._phase_cfg("low_level").num_iters)
+
         progress_bar = tqdm(total=self.total_training_steps, initial=self.global_steps, desc="Training Progress")
+
+        # Checkpoints only land on the high-level iteration that closes a cycle, so the
+        # resumed step count maps back to a whole number of completed outer cycles.
+        start_cycle = self.global_steps // (num_ll_iters + 1)
 
         # we start from step 1
         self.global_steps += 1
-        last_val_metrics = None
 
-        for epoch in range(self.config.trainer.total_epochs):
-            data_iter = iter(self.train_dataloader)
-            while self.global_steps <= self.total_training_steps:
-                high_level_budget = int(self.config.actor_rollout_ref.rollout.get("high_level_budget", 0))
-                low_level_budget = int(self.config.actor_rollout_ref.rollout.get("low_level_budget", 0))
+        for hl_cycle in range(start_cycle, num_hl_iters):
+            for _ in range(num_ll_iters):
+                self._run_phase_iteration("low_level", hl_cycle, end_of_cycle=False, logger=logger, progress_bar=progress_bar)
+            self._run_phase_iteration("high_level", hl_cycle, end_of_cycle=True, logger=logger, progress_bar=progress_bar)
 
-                phase_registry = {
-                    "high_level": (high_level_budget, "high_level_loss_mask"),
-                    "low_level": (low_level_budget, "low_level_loss_mask"),
-                }
-                phase_order = list(self.config.reward_model.phase_order)
-                assert set(phase_order) == set(phase_registry.keys()), (
-                    f"reward_model.phase_order must be a permutation of {sorted(phase_registry)}, got {phase_order}."
-                )
-                phase_specs = [
-                    (name, phase_registry[name][0], phase_registry[name][1])
-                    for name in phase_order
-                    if phase_registry[name][0] > 0
-                ]
-                assert phase_specs, "At least one hierarchical phase must have positive rollout budget."
-                self._validate_phase_reward_configs(phase_specs)
-                self._validate_phase_rollout_configs(phase_specs)
-                repeated_phase_specs = self._expand_phase_specs_with_repeats(phase_specs)
-
-                norm_adv_by_std_in_grpo = self.config.algorithm.get("norm_adv_by_std_in_grpo", True)
-                reuse_phase_rollouts = bool(self.config.actor_rollout_ref.rollout.get("reuse_phase_rollouts", False))
-                if reuse_phase_rollouts and not self._rollout_strategies_uniform(phase_specs, self._phase_rollout_cfg):
-                    logger.warning(
-                        "reuse_phase_rollouts disabled: active phases use different rollout strategies; "
-                        "regenerating rollouts per phase."
-                    )
-                    reuse_phase_rollouts = False
-
-                batch_dict, data_iter = self._next_batch_dict(data_iter)
-                step_gen_batch, step_prompt_batch = self._pop_gen_batch(DataProto.from_single_dict(batch_dict))
-                cached_gen_batch_output = None
-                cached_rollout_n = None
-
-                for phase_idx, (phase_name, phase_rollout_n, phase_mask_key) in enumerate(repeated_phase_specs):
-                    is_last_phase_in_cycle = (phase_idx == len(repeated_phase_specs) - 1)
-                    metrics = {
-                        "training/high_level_rollout_budget": high_level_budget,
-                        "training/low_level_rollout_budget": low_level_budget,
-                    }
-                    timing_raw = {}
-                    is_last_step = self.global_steps >= self.total_training_steps
-                    saved_checkpoint_this_step = False
-
-                    with _timer("step", timing_raw):
-                        phase_prefix = f"{phase_name}/"
-                        phase_reward_cfg = self._phase_reward_cfg(phase_name)
-
-                        if reuse_phase_rollouts and cached_gen_batch_output is not None:
-                            phase_rollout_n = cached_rollout_n
-                            phase_batch, phase_reward_extra_infos_dict = self._phase_from_cached_rollout(
-                                cached_gen_batch_output, step_prompt_batch, phase_name,
-                                phase_rollout_n, phase_mask_key, timing_raw, metrics
-                            )
-                            del cached_gen_batch_output
-                            cached_gen_batch_output = None
-                            metrics[f"{phase_prefix}training/num_gen_batches"] = 0
-                        else:
-                            if reuse_phase_rollouts:
-                                phase_batch, phase_reward_extra_infos_dict, gen_output = self._phase_rollout_to_scored_batch(
-                                    step_gen_batch, step_prompt_batch, phase_name, phase_rollout_n, phase_mask_key, timing_raw, metrics,
-                                    return_gen_output=True,
-                                )
-                                cached_gen_batch_output = gen_output
-                                del gen_output
-                                cached_rollout_n = phase_rollout_n
-                            else:
-                                phase_batch, phase_reward_extra_infos_dict = self._phase_rollout_to_scored_batch(
-                                    step_gen_batch, step_prompt_batch, phase_name, phase_rollout_n, phase_mask_key, timing_raw, metrics,
-                                )
-                            metrics[f"{phase_prefix}training/num_gen_batches"] = 1
-
-                        gc.collect()
-                        torch.cuda.empty_cache()
-
-                        with _timer(f"{phase_name}_adv", timing_raw):
-                            metrics[f"{phase_prefix}reward/in_group_reward_std"] = self._compute_in_group_reward_std(phase_batch)
-                            self._apply_tool_failure_before_grpo(phase_batch)
-
-                            phase_batch = compute_advantage(
-                                phase_batch,
-                                adv_estimator=self.config.algorithm.adv_estimator,
-                                gamma=self.config.algorithm.gamma,
-                                lam=self.config.algorithm.lam,
-                                num_repeat=phase_rollout_n,
-                                norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
-                                multi_turn=self.config.actor_rollout_ref.rollout.multi_turn.enable,
-                                use_pf_ppo=self.config.algorithm.use_pf_ppo,
-                                pf_ppo_reweight_method=self.config.algorithm.pf_ppo.reweight_method,
-                                pf_ppo_weight_pow=self.config.algorithm.pf_ppo.weight_pow,
-                            )
-                            metrics.update(
-                                self._prefix_metrics(
-                                    compute_data_metrics(batch=phase_batch, use_critic=self.use_critic),
-                                    phase_prefix,
-                                )
-                            )
-
-                        if self.use_critic:
-                            with _timer(f"{phase_name}_update_critic", timing_raw):
-                                critic_output = self.critic_wg.update_critic(phase_batch)
-                            critic_output_metrics = reduce_metrics(critic_output.meta_info["metrics"])
-                            metrics.update(self._prefix_metrics(critic_output_metrics, phase_prefix))
-
-                        if self.config.trainer.critic_warmup <= self.global_steps:
-                            with _timer(f"{phase_name}_update_actor", timing_raw):
-                                phase_batch.meta_info["multi_turn"] = self.config.actor_rollout_ref.rollout.multi_turn.enable
-                                phase_batch.meta_info["kl_loss_coef_override"] = float(
-                                    phase_reward_cfg.get(
-                                        "kl_loss_coef",
-                                        self.config.actor_rollout_ref.actor.kl_loss_coef,
-                                    )
-                                )
-                                phase_batch.meta_info["use_aepo_clip_override"] = bool(
-                                    phase_reward_cfg.get("use_aepo_clip", False)
-                                )
-                                phase_batch.meta_info["use_sign_cond_clip_override"] = bool(
-                                    phase_reward_cfg.get("use_sign_cond_clip", False)
-                                )
-                                phase_batch.meta_info["advantage_algorithm"] = str(
-                                    phase_reward_cfg.get("advantage_algorithm", "grpo")
-                                )
-                                phase_batch.meta_info["entropy_normalization"] = str(
-                                    phase_reward_cfg.entropy.get("normalization", "token_pool")
-                                )
-                                phase_batch.meta_info["entropy_alpha"] = float(
-                                    phase_reward_cfg.entropy.get("alpha", 0.2)
-                                )
-                                if self._uses_entropy_regularizer(phase_reward_cfg):
-                                    phase_batch.meta_info["entropy_coeff_override"] = self._entropy_reg_coeff(phase_reward_cfg)
-                                    phase_batch.meta_info["entropy_loss_mask_key"] = "entropy_reg_loss_mask"
-                                phase_batch.meta_info["skip_lr_step"] = not is_last_phase_in_cycle
-                                actor_output = self.actor_rollout_wg.update_actor(phase_batch)
-                            actor_output_metrics = reduce_metrics(actor_output.meta_info["metrics"])
-                            metrics.update(self._prefix_metrics(actor_output_metrics, phase_prefix))
-
-                        rollout_data_dir = self.config.trainer.get("rollout_data_dir", None)
-                        if rollout_data_dir:
-                            with _timer(f"{phase_name}_dump_rollout_generations", timing_raw):
-                                inputs = self.tokenizer.batch_decode(phase_batch.batch["prompts"], skip_special_tokens=True)
-                                outputs = self.tokenizer.batch_decode(phase_batch.batch["responses"], skip_special_tokens=True)
-                                scores = phase_batch.batch["token_level_scores"].sum(-1).cpu().tolist()
-                                self._dump_generations(
-                                    inputs=inputs,
-                                    outputs=outputs,
-                                    scores=scores,
-                                    reward_extra_infos_dict=phase_reward_extra_infos_dict,
-                                    dump_path=rollout_data_dir,
-                                )
-
-                        if bool(self.config.trainer.get("log_zero_budget_phase_metrics", True)) and len(phase_specs) == 1:
-                            active_phase_name = phase_specs[0][0]
-                            for skipped_phase_name, (skipped_budget, skipped_mask_key) in phase_registry.items():
-                                if skipped_budget != 0:
-                                    continue
-                                metrics.update(
-                                    self._collect_logging_only_phase_metrics(
-                                        source_batch=phase_batch,
-                                        target_phase_name=skipped_phase_name,
-                                        target_phase_mask_key=skipped_mask_key,
-                                    )
-                                )
-                                self._copy_tool_metrics_between_phases(
-                                    metrics=metrics,
-                                    source_phase=active_phase_name,
-                                    target_phase=skipped_phase_name,
-                                )
-
-                        if self.val_reward_fn is not None and self.config.trainer.test_freq > 0 and (is_last_step or self.global_steps % self.config.trainer.test_freq == 0):
-                            with _timer("testing", timing_raw):
-                                val_metrics: dict = self._validate()
-                                if is_last_step:
-                                    last_val_metrics = val_metrics
-                            metrics.update(val_metrics)
-
-                            if bool(self.config.trainer.get("save_best_checkpoint", False)):
-                                current_metric_key, current_metric_value = self._resolve_best_metric_from_val(val_metrics)
-                                selector = self._canonical_best_metric_selector(self.config.trainer.best_checkpoint_metric)
-                                metrics["training/best_checkpoint_metric_selector_id"] = (
-                                    0.0 if selector == "val-core/reward" else 1.0
-                                )
-                                metrics["training/best_checkpoint_metric_current"] = current_metric_value
-                                metrics["training/best_checkpoint_metric_best"] = self._best_metric_value
-                                metrics["training/best_checkpoint_metric_improved"] = float(
-                                    current_metric_value > self._best_metric_value
-                                )
-                                if current_metric_value > self._best_metric_value:
-                                    self._best_metric_value = current_metric_value
-                                    self._best_metric_step = self.global_steps
-                                    self._best_metric_key = current_metric_key
-                                    if not saved_checkpoint_this_step:
-                                        with _timer("save_checkpoint", timing_raw):
-                                            self._save_checkpoint()
-                                        saved_checkpoint_this_step = True
-                                    with _timer("save_best_checkpoint", timing_raw):
-                                        self._sync_best_checkpoint_dir()
-                                    print(
-                                        f"[best_checkpoint] updated: selector={selector}, "
-                                        f"resolved_key={current_metric_key}, value={current_metric_value}, step={self.global_steps}"
-                                    )
-                                metrics["training/best_checkpoint_metric_best"] = self._best_metric_value
-                                metrics["training/best_checkpoint_metric_best_step"] = float(self._best_metric_step)
-
-                        if (
-                            not saved_checkpoint_this_step
-                            and self.config.trainer.save_freq > 0
-                            and (is_last_step or self.global_steps % self.config.trainer.save_freq == 0)
-                        ):
-                            with _timer("save_checkpoint", timing_raw):
-                                self._save_checkpoint()
-
-                    metrics.update(
-                        {
-                            "training/global_step": self.global_steps,
-                            "training/epoch": epoch,
-                        }
-                    )
-                    metrics.update(compute_timing_metrics(batch=phase_batch, timing_raw=timing_raw))
-                    n_gpus = self.resource_pool_manager.get_n_gpus()
-                    metrics.update(compute_throughout_metrics(batch=phase_batch, timing_raw=timing_raw, n_gpus=n_gpus))
-
-                    logger.log(data=metrics, step=self.global_steps)
-                    self._dump_logging_data(metrics)
-
-                    progress_bar.update(1)
-                    self.global_steps += 1
-                    if is_last_step:
-                        pprint(f"Final validation metrics: {last_val_metrics}")
-                        progress_bar.close()
-                        return
+        pprint(f"Final validation metrics: {self._last_val_metrics}")
+        progress_bar.close()
 

@@ -30,17 +30,21 @@ source "${SCRIPT_DIR}/secrets.sh"
 LAUNCH_CONFIG_PATH="${ECHO_ROOT}/$1"
 VALID_LAUNCH_KEYS=(
     project_name experiment_name nnodes n_gpus_per_node
-    train_batch_size gen_batch_size ppo_mini_batch_size max_prompt_length max_response_length prompt_key
+    max_prompt_length max_response_length prompt_key
     active_system_prompt
     train_files valid_files actor_model_subpath reward_manager
-    rollout_n high_level_budget low_level_budget reuse_phase_rollouts enable_multi_turn
+    rollout_n enable_multi_turn
     tensor_model_parallel_size gpu_memory_utilization rollout_name rollout_mode
     exclude_tag_tokens_from_phase_masks search_cache_file search_class_path brightdata_timeout tool_call_limit
     rag_server_url similarity_threshold topk soft_fallback rag_request_timeout
     conda_path conda_env brightdata_api_key brightdata_zone brightdata_location wandb_api_key
     output_root sft_root
-    total_epochs save_freq test_freq save_best_checkpoint best_checkpoint_metric max_actor_ckpt_to_keep resume_mode
-    phase_order high_level_update_repeats low_level_update_repeats
+    save_freq test_freq save_best_checkpoint best_checkpoint_metric max_actor_ckpt_to_keep resume_mode
+    hl_num_iters ll_num_iters hl_group_size ll_group_size
+    hl_ppo_mini_batch_size ll_ppo_mini_batch_size
+    hl_ppo_micro_batch_size_per_gpu ll_ppo_micro_batch_size_per_gpu
+    hl_lr ll_lr hl_weight_decay ll_weight_decay
+    hl_warmup_style ll_warmup_style hl_lr_warmup_steps_ratio ll_lr_warmup_steps_ratio
     high_level_advantage_algorithm low_level_advantage_algorithm
     norm_adv_by_std_in_grpo
     skip_training_on_tool_failure
@@ -84,15 +88,11 @@ ARGS=(
     data.val_files="${VALID_FILES}"
     data.prompt_key="${PROMPT_KEY}"
     data.active_system_prompt="${ACTIVE_SYSTEM_PROMPT:-1}"
-    data.train_batch_size="${TRAIN_BATCH_SIZE}"
-    data.gen_batch_size="${GEN_BATCH_SIZE:-$TRAIN_BATCH_SIZE}"
     data.max_prompt_length="${MAX_PROMPT_LENGTH}"
     data.max_response_length="${MAX_RESPONSE_LENGTH}"
     actor_rollout_ref.model.path="${ACTOR_MODEL_PATH}"
     actor_rollout_ref.model.enable_gradient_checkpointing=True
     actor_rollout_ref.model.use_remove_padding=True
-    actor_rollout_ref.actor.optim.lr=1e-6
-    actor_rollout_ref.actor.ppo_mini_batch_size="${PPO_MINI_BATCH_SIZE}"
     actor_rollout_ref.actor.use_dynamic_bsz=True
     "actor_rollout_ref.actor.ppo_max_token_len_per_gpu=$((2*(MAX_PROMPT_LENGTH+MAX_RESPONSE_LENGTH)))"
     actor_rollout_ref.actor.use_kl_loss=True
@@ -113,9 +113,6 @@ ARGS=(
     actor_rollout_ref.rollout.mode="${ROLLOUT_MODE}"
     actor_rollout_ref.rollout.gpu_memory_utilization="${GPU_MEMORY_UTILIZATION}"
     actor_rollout_ref.rollout.n="${ROLLOUT_N}"
-    actor_rollout_ref.rollout.high_level_budget="${HIGH_LEVEL_BUDGET}"
-    actor_rollout_ref.rollout.low_level_budget="${LOW_LEVEL_BUDGET}"
-    actor_rollout_ref.rollout.reuse_phase_rollouts="${REUSE_PHASE_ROLLOUTS:-false}"
     actor_rollout_ref.rollout.exclude_tag_tokens_from_phase_masks="${EXCLUDE_TAG_TOKENS_FROM_PHASE_MASKS:-true}"
     actor_rollout_ref.rollout.multi_turn.enable="${ENABLE_MULTI_TURN}"
     actor_rollout_ref.rollout.tools.call_limit="${TOOL_CALL_LIMIT}"
@@ -135,38 +132,51 @@ ARGS=(
     "actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=$((4*(MAX_PROMPT_LENGTH+MAX_RESPONSE_LENGTH)))"
     actor_rollout_ref.ref.fsdp_config.param_offload=True
     reward_model.reward_manager="${REWARD_MANAGER}"
-    "reward_model.phase_order=${PHASE_ORDER}"
-    "reward_model.phase_update_repeats.high_level=${HIGH_LEVEL_UPDATE_REPEATS:-1}"
-    "reward_model.phase_update_repeats.low_level=${LOW_LEVEL_UPDATE_REPEATS:-1}"
-    "reward_model.phase_rewards.high_level.advantage_algorithm=${HIGH_LEVEL_ADVANTAGE_ALGORITHM:-grpo}"
-    "reward_model.phase_rewards.low_level.advantage_algorithm=${LOW_LEVEL_ADVANTAGE_ALGORITHM:-grpo}"
     actor_rollout_ref.rollout.tools.skip_training_on_tool_failure="${SKIP_TRAINING_ON_TOOL_FAILURE:-false}"
-    "reward_model.phase_rewards.high_level.kl_loss_coef=${HL_KL_LOSS_COEF:-0.0}"
-    "reward_model.phase_rewards.low_level.kl_loss_coef=${LL_KL_LOSS_COEF:-0.0}"
-    reward_model.phase_rewards.high_level.use_aepo_clip="${HL_USE_AEPO_CLIP:-false}"
-    reward_model.phase_rewards.low_level.use_aepo_clip="${LL_USE_AEPO_CLIP:-false}"
-    reward_model.phase_rewards.high_level.use_sign_cond_clip="${HIGH_LEVEL_USE_SIGN_COND_CLIP:-false}"
-    reward_model.phase_rewards.low_level.use_sign_cond_clip="${LOW_LEVEL_USE_SIGN_COND_CLIP:-false}"
-    "reward_model.phase_rewards.high_level.entropy.reg_coeff=${HL_ENTROPY_REG_COEFF:-0.0}"
-    "reward_model.phase_rewards.low_level.entropy.reg_coeff=${LL_ENTROPY_REG_COEFF:-0.0}"
-    "reward_model.phase_rewards.high_level.entropy.normalization=${HL_ENTROPY_NORMALIZATION:-token_pool}"
-    "reward_model.phase_rewards.low_level.entropy.normalization=${LL_ENTROPY_NORMALIZATION:-token_pool}"
-    "reward_model.phase_rewards.high_level.entropy.alpha=${HL_ENTROPY_ALPHA:-0.2}"
-    "reward_model.phase_rewards.low_level.entropy.alpha=${LL_ENTROPY_ALPHA:-0.2}"
-    "actor_rollout_ref.rollout.phase_rollouts.high_level.strategy=${HIGH_LEVEL_ROLLOUT_STRATEGY:-default}"
-    "actor_rollout_ref.rollout.phase_rollouts.low_level.strategy=${LOW_LEVEL_ROLLOUT_STRATEGY:-default}"
-    actor_rollout_ref.rollout.phase_rollouts.high_level.aepo.enable_dynamic_rollouts="${HL_AEPO_ENABLE_DYNAMIC_ROLLOUTS:-false}"
-    actor_rollout_ref.rollout.phase_rollouts.low_level.aepo.enable_dynamic_rollouts="${LL_AEPO_ENABLE_DYNAMIC_ROLLOUTS:-false}"
-    "actor_rollout_ref.rollout.phase_rollouts.high_level.aepo.initial_rollouts=${HL_AEPO_INITIAL_ROLLOUTS:-8}"
-    "actor_rollout_ref.rollout.phase_rollouts.low_level.aepo.initial_rollouts=${LL_AEPO_INITIAL_ROLLOUTS:-8}"
-    "actor_rollout_ref.rollout.phase_rollouts.high_level.aepo.beam_size=${HL_AEPO_BEAM_SIZE:-2}"
-    "actor_rollout_ref.rollout.phase_rollouts.low_level.aepo.beam_size=${LL_AEPO_BEAM_SIZE:-2}"
-    "actor_rollout_ref.rollout.phase_rollouts.high_level.aepo.branch_probability=${HL_AEPO_BRANCH_PROBABILITY:-0.5}"
-    "actor_rollout_ref.rollout.phase_rollouts.low_level.aepo.branch_probability=${LL_AEPO_BRANCH_PROBABILITY:-0.5}"
-    "actor_rollout_ref.rollout.phase_rollouts.high_level.aepo.entropy_weight=${HL_AEPO_ENTROPY_WEIGHT:-0.2}"
-    "actor_rollout_ref.rollout.phase_rollouts.low_level.aepo.entropy_weight=${LL_AEPO_ENTROPY_WEIGHT:-0.2}"
-    "actor_rollout_ref.rollout.phase_rollouts.high_level.aepo.initial_entropy_tokens=${HL_AEPO_INITIAL_ENTROPY_TOKENS:-50}"
-    "actor_rollout_ref.rollout.phase_rollouts.low_level.aepo.initial_entropy_tokens=${LL_AEPO_INITIAL_ENTROPY_TOKENS:-50}"
+    "phases.high_level.num_iters=${HL_NUM_ITERS}"
+    "phases.low_level.num_iters=${LL_NUM_ITERS}"
+    "phases.high_level.group_size=${HL_GROUP_SIZE}"
+    "phases.low_level.group_size=${LL_GROUP_SIZE}"
+    "phases.high_level.ppo_mini_batch_size=${HL_PPO_MINI_BATCH_SIZE}"
+    "phases.low_level.ppo_mini_batch_size=${LL_PPO_MINI_BATCH_SIZE}"
+    "phases.high_level.ppo_micro_batch_size_per_gpu=${HL_PPO_MICRO_BATCH_SIZE_PER_GPU:-null}"
+    "phases.low_level.ppo_micro_batch_size_per_gpu=${LL_PPO_MICRO_BATCH_SIZE_PER_GPU:-null}"
+    "phases.high_level.optim.lr=${HL_LR:-1e-6}"
+    "phases.low_level.optim.lr=${LL_LR:-1e-6}"
+    "phases.high_level.optim.weight_decay=${HL_WEIGHT_DECAY:-0.01}"
+    "phases.low_level.optim.weight_decay=${LL_WEIGHT_DECAY:-0.01}"
+    "phases.high_level.optim.warmup_style=${HL_WARMUP_STYLE:-constant}"
+    "phases.low_level.optim.warmup_style=${LL_WARMUP_STYLE:-constant}"
+    "phases.high_level.optim.lr_warmup_steps_ratio=${HL_LR_WARMUP_STEPS_RATIO:-0.0}"
+    "phases.low_level.optim.lr_warmup_steps_ratio=${LL_LR_WARMUP_STEPS_RATIO:-0.0}"
+    "phases.high_level.advantage_algorithm=${HIGH_LEVEL_ADVANTAGE_ALGORITHM:-grpo}"
+    "phases.low_level.advantage_algorithm=${LOW_LEVEL_ADVANTAGE_ALGORITHM:-grpo}"
+    "phases.high_level.kl_loss_coef=${HL_KL_LOSS_COEF:-0.0}"
+    "phases.low_level.kl_loss_coef=${LL_KL_LOSS_COEF:-0.0}"
+    phases.high_level.use_aepo_clip="${HL_USE_AEPO_CLIP:-false}"
+    phases.low_level.use_aepo_clip="${LL_USE_AEPO_CLIP:-false}"
+    phases.high_level.use_sign_cond_clip="${HIGH_LEVEL_USE_SIGN_COND_CLIP:-false}"
+    phases.low_level.use_sign_cond_clip="${LOW_LEVEL_USE_SIGN_COND_CLIP:-false}"
+    "phases.high_level.entropy.reg_coeff=${HL_ENTROPY_REG_COEFF:-0.0}"
+    "phases.low_level.entropy.reg_coeff=${LL_ENTROPY_REG_COEFF:-0.0}"
+    "phases.high_level.entropy.normalization=${HL_ENTROPY_NORMALIZATION:-token_pool}"
+    "phases.low_level.entropy.normalization=${LL_ENTROPY_NORMALIZATION:-token_pool}"
+    "phases.high_level.entropy.alpha=${HL_ENTROPY_ALPHA:-0.2}"
+    "phases.low_level.entropy.alpha=${LL_ENTROPY_ALPHA:-0.2}"
+    "phases.high_level.rollout.strategy=${HIGH_LEVEL_ROLLOUT_STRATEGY:-default}"
+    "phases.low_level.rollout.strategy=${LOW_LEVEL_ROLLOUT_STRATEGY:-default}"
+    phases.high_level.rollout.aepo.enable_dynamic_rollouts="${HL_AEPO_ENABLE_DYNAMIC_ROLLOUTS:-false}"
+    phases.low_level.rollout.aepo.enable_dynamic_rollouts="${LL_AEPO_ENABLE_DYNAMIC_ROLLOUTS:-false}"
+    "phases.high_level.rollout.aepo.initial_rollouts=${HL_AEPO_INITIAL_ROLLOUTS:-8}"
+    "phases.low_level.rollout.aepo.initial_rollouts=${LL_AEPO_INITIAL_ROLLOUTS:-8}"
+    "phases.high_level.rollout.aepo.beam_size=${HL_AEPO_BEAM_SIZE:-2}"
+    "phases.low_level.rollout.aepo.beam_size=${LL_AEPO_BEAM_SIZE:-2}"
+    "phases.high_level.rollout.aepo.branch_probability=${HL_AEPO_BRANCH_PROBABILITY:-0.5}"
+    "phases.low_level.rollout.aepo.branch_probability=${LL_AEPO_BRANCH_PROBABILITY:-0.5}"
+    "phases.high_level.rollout.aepo.entropy_weight=${HL_AEPO_ENTROPY_WEIGHT:-0.2}"
+    "phases.low_level.rollout.aepo.entropy_weight=${LL_AEPO_ENTROPY_WEIGHT:-0.2}"
+    "phases.high_level.rollout.aepo.initial_entropy_tokens=${HL_AEPO_INITIAL_ENTROPY_TOKENS:-50}"
+    "phases.low_level.rollout.aepo.initial_entropy_tokens=${LL_AEPO_INITIAL_ENTROPY_TOKENS:-50}"
     "custom_reward_function.path=${VERL_ROOT}/verl/utils/reward_score/deep_research_echo.py"
     custom_reward_function.name=compute_score
     trainer.critic_warmup=0
@@ -180,7 +190,6 @@ ARGS=(
     trainer.save_best_checkpoint="${SAVE_BEST_CHECKPOINT:-false}"
     trainer.best_checkpoint_metric="${BEST_CHECKPOINT_METRIC:-val-core/reward}"
     trainer.max_actor_ckpt_to_keep="${MAX_ACTOR_CKPT_TO_KEEP}"
-    trainer.total_epochs="${TOTAL_EPOCHS}"
     trainer.default_local_dir="${SAVE_PATH}"
     trainer.val_before_train=False
     trainer.rollout_data_dir="${ROLLOUT_SAVE_PATH}"

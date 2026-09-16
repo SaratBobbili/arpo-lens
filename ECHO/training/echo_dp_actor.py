@@ -15,8 +15,14 @@ logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
 
 class DataParallelECHOActor(DataParallelPPOActor):
+    def __init__(self, config, actor_module, phase_optims):
+        super().__init__(config, actor_module, actor_optimizer=None)
+        self.phase_optims = phase_optims
+
     @GPUMemoryLogger(role="dp actor", logger=logger)
     def update_policy(self, data: DataProto):
+        # _optimizer_step() and zero_grad() below act on the phase's own AdamW.
+        self.actor_optimizer, _ = self.phase_optims[data.meta_info["phase"]]
         self.actor_module.train()
 
         temperature = data.meta_info["temperature"]

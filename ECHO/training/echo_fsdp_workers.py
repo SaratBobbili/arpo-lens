@@ -16,10 +16,65 @@ from verl.utils.fsdp_utils import fsdp_version, load_fsdp_model_to_gpu, load_fsd
 from verl.utils.import_utils import import_external_libs
 from verl.utils.seqlen_balancing import get_reverse_idx, rearrange_micro_batches
 from verl.utils.device import get_torch_device
+from verl.utils.torch_functional import get_constant_schedule_with_warmup, get_cosine_schedule_with_warmup
 from verl.workers.actor import DataParallelPPOActor
 from verl.workers.fsdp_workers import ActorRolloutRefWorker, logger
 
 from .echo_dp_actor import DataParallelECHOActor
+
+PHASE_NAMES = ("high_level", "low_level")
+
+
+def _build_phase_optimizer(parameters, optim_config, total_steps):
+    """One AdamW + LR schedule for a single phase, mirroring the ARPO actor optimizer."""
+    optimizer = torch.optim.AdamW(
+        parameters,
+        lr=optim_config.lr,
+        betas=optim_config.get("betas", (0.9, 0.999)),
+        weight_decay=optim_config.get("weight_decay", 1e-2),
+    )
+
+    num_warmup_steps = int(optim_config.get("lr_warmup_steps", -1))
+    if num_warmup_steps < 0:
+        num_warmup_steps = int(optim_config.get("lr_warmup_steps_ratio", 0.0) * total_steps)
+
+    warmup_style = optim_config.get("warmup_style", "constant")
+    if warmup_style == "constant":
+        scheduler = get_constant_schedule_with_warmup(optimizer=optimizer, num_warmup_steps=num_warmup_steps)
+    elif warmup_style == "cosine":
+        scheduler = get_cosine_schedule_with_warmup(
+            optimizer=optimizer,
+            num_warmup_steps=num_warmup_steps,
+            num_training_steps=total_steps,
+            min_lr_ratio=optim_config.get("min_lr_ratio", 0.0),
+            num_cycles=optim_config.get("num_cycles", 0.5),
+        )
+    else:
+        raise NotImplementedError(f"Warmup style {warmup_style} is not supported")
+
+    return optimizer, scheduler, num_warmup_steps
+
+
+class _PhaseStateShim:
+    """Presents both phases' optimizers (or schedulers) as one state_dict-able object.
+
+    FSDPCheckpointManager owns a single optimizer and a single scheduler. It calls
+    state_dict() inside the FSDP SHARDED_STATE_DICT context, so delegation must happen
+    there rather than through a synthetic param_groups wrapper.
+    """
+
+    def __init__(self, members):
+        self._members = members
+
+    def state_dict(self):
+        return {phase: member.state_dict() for phase, member in self._members.items()}
+
+    def load_state_dict(self, state_dict):
+        missing = [phase for phase in self._members if phase not in state_dict]
+        if missing:
+            raise KeyError(f"checkpoint is missing phases {missing}; got {list(state_dict)}")
+        for phase, member in self._members.items():
+            member.load_state_dict(state_dict[phase])
 
 
 class EchoActorRolloutRefWorker(ActorRolloutRefWorker):
@@ -36,23 +91,18 @@ class EchoActorRolloutRefWorker(ActorRolloutRefWorker):
         use_fused_kernels = self.config.model.get("use_fused_kernels", False)
 
         if self._is_actor or self._is_rollout:
-            if self._is_actor:
-                optim_config = self.config.actor.optim
-                fsdp_config = self.config.actor.fsdp_config
-            else:
-                optim_config = None
-                fsdp_config = OmegaConf.create()
+            fsdp_config = self.config.actor.fsdp_config if self._is_actor else OmegaConf.create()
 
             local_path = copy_to_local(self.config.model.path, use_shm=use_shm)
             (
                 self.actor_module_fsdp,
-                self.actor_optimizer,
-                self.actor_lr_scheduler,
+                _,
+                _,
                 self.actor_model_config,
             ) = self._build_model_optimizer(
                 model_path=local_path,
                 fsdp_config=fsdp_config,
-                optim_config=optim_config,
+                optim_config=None,
                 override_model_config=override_model_config,
                 use_remove_padding=use_remove_padding,
                 use_fused_kernels=use_fused_kernels,
@@ -66,12 +116,31 @@ class EchoActorRolloutRefWorker(ActorRolloutRefWorker):
             if fsdp_version(self.actor_module_fsdp) == 1:
                 self.actor_module = self.actor_module_fsdp._fsdp_wrapped_module
 
+            if self._is_actor:
+                # Two AdamWs over the same FSDP parameters: independent moments and LR
+                # schedules. LL runs N_LL times per outer cycle, HL once.
+                n_hl = int(self.config.phases.high_level.num_iters)
+                n_ll = int(self.config.phases.low_level.num_iters)
+                phase_total_steps = {"high_level": n_hl, "low_level": n_hl * n_ll}
+                self.phase_optims = {}
+                for phase in PHASE_NAMES:
+                    total_steps = phase_total_steps[phase]
+                    optimizer, scheduler, num_warmup_steps = _build_phase_optimizer(
+                        self.actor_module_fsdp.parameters(),
+                        self.config.phases[phase].optim,
+                        total_steps,
+                    )
+                    self.phase_optims[phase] = (optimizer, scheduler)
+                    if self.rank == 0:
+                        print(f"[{phase}] Total steps: {total_steps}, num_warmup_steps: {num_warmup_steps}")
+
             if self._is_offload_param:
                 offload_fsdp_model_to_cpu(self.actor_module_fsdp)
                 log_gpu_memory_usage("After offload actor model during init", logger=logger)
 
             if self._is_offload_optimizer:
-                offload_fsdp_optimizer(optimizer=self.actor_optimizer)
+                for optimizer, _ in self.phase_optims.values():
+                    offload_fsdp_optimizer(optimizer=optimizer)
                 log_gpu_memory_usage("After offload actor optimizer during init", logger=logger)
 
         if self._is_actor:
@@ -82,7 +151,7 @@ class EchoActorRolloutRefWorker(ActorRolloutRefWorker):
             self.actor = DataParallelECHOActor(
                 config=self.config.actor,
                 actor_module=self.actor_module_fsdp,
-                actor_optimizer=self.actor_optimizer,
+                phase_optims=self.phase_optims,
             )
 
         if self._is_rollout:
@@ -113,8 +182,8 @@ class EchoActorRolloutRefWorker(ActorRolloutRefWorker):
             self.flops_counter = FlopsCounter(self.actor_model_config)
             self.checkpoint_manager = FSDPCheckpointManager(
                 model=self.actor_module_fsdp,
-                optimizer=self.actor.actor_optimizer,
-                lr_scheduler=self.actor_lr_scheduler,
+                optimizer=_PhaseStateShim({phase: opt for phase, (opt, _) in self.phase_optims.items()}),
+                lr_scheduler=_PhaseStateShim({phase: sched for phase, (_, sched) in self.phase_optims.items()}),
                 processing_class=self.processor if self.processor is not None else self.tokenizer,
                 checkpoint_contents=self.config.actor.checkpoint.contents,
             )
@@ -173,12 +242,11 @@ class EchoActorRolloutRefWorker(ActorRolloutRefWorker):
         data = data.to(get_torch_device().current_device())
 
         assert self._is_actor
+        actor_optimizer, actor_lr_scheduler = self.phase_optims[data.meta_info["phase"]]
         if self._is_offload_param:
             load_fsdp_model_to_gpu(self.actor_module_fsdp)
         if self._is_offload_optimizer:
-            load_fsdp_optimizer(optimizer=self.actor_optimizer, device_id=get_torch_device().current_device())
-
-        skip_lr_step = bool(data.meta_info.get("skip_lr_step", False))
+            load_fsdp_optimizer(optimizer=actor_optimizer, device_id=get_torch_device().current_device())
 
         with self.ulysses_sharding_manager:
             data = self.ulysses_sharding_manager.preprocess_data(data=data)
@@ -192,10 +260,9 @@ class EchoActorRolloutRefWorker(ActorRolloutRefWorker):
             metrics["perf/max_memory_reserved_gb"] = get_torch_device().max_memory_reserved() / (1024**3)
             metrics["perf/cpu_memory_used_gb"] = psutil.virtual_memory().used / (1024**3)
 
-            lr = self.actor_lr_scheduler.get_last_lr()[0]
+            lr = actor_lr_scheduler.get_last_lr()[0]
             metrics["actor/lr"] = lr
-            if not skip_lr_step:
-                self.actor_lr_scheduler.step()
+            actor_lr_scheduler.step()
 
             output = DataProto(meta_info={"metrics": metrics})
             output = self.ulysses_sharding_manager.postprocess_data(data=output)
@@ -205,7 +272,21 @@ class EchoActorRolloutRefWorker(ActorRolloutRefWorker):
             offload_fsdp_model_to_cpu(self.actor_module_fsdp)
             log_gpu_memory_usage("After offload actor model during update_actor", logger=logger)
         if self._is_offload_optimizer:
-            offload_fsdp_optimizer(optimizer=self.actor_optimizer)
+            offload_fsdp_optimizer(optimizer=actor_optimizer)
             log_gpu_memory_usage("After offload actor optimizer during update_actor", logger=logger)
 
         return output
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def load_checkpoint(self, local_path, hdfs_path=None, del_local_after_load=False):
+        if self._is_offload_param:
+            load_fsdp_model_to_gpu(self.actor_module_fsdp)
+
+        self.checkpoint_manager.load_checkpoint(local_path=local_path, hdfs_path=hdfs_path, del_local_after_load=del_local_after_load)
+
+        if self._is_offload_param:
+            offload_fsdp_model_to_cpu(self.actor_module_fsdp)
+
+        if self._is_offload_optimizer:
+            for optimizer, _ in self.phase_optims.values():
+                offload_fsdp_optimizer(optimizer=optimizer)

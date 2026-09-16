@@ -10,8 +10,7 @@ defaults:
   - _self_
 
 data:
-  # Dataloader read size per fetch; keep equal to train_batch_size unless you intentionally over-fetch.
-  gen_batch_size: ${data.train_batch_size}
+  # Prompt batch sizes are derived per phase from len(train_dataset) / phases.*.num_iters.
   # Which system prompt candidate to inject at runtime (via rl_dataset.py).
   # Set to the suffix number of the desired system_prompt_N key below, or null to skip.
   active_system_prompt: 1
@@ -21,53 +20,104 @@ data:
 reward_model:
   # Start ECHO with a dedicated manager key so we can evolve reward logic independently.
   reward_manager: echo
-  # Order in which the hierarchical phases are executed within each training
-  # step. The first phase in this list runs its full GRPO pipeline
-  # (rollout -> reward -> advantage -> actor/critic update) before the second
-  # phase starts. Phases whose rollout budget is 0 are skipped regardless of
-  # order. Must be a permutation of {"high_level", "low_level"}.
-  phase_order: ["high_level", "low_level"]
-  # Number of full phase updates to run before switching to the next phase in
-  # phase_order. Each repeated phase update counts as one training/global step.
-  phase_update_repeats:
-    high_level: 1
-    low_level: 1
-  # Per-phase advantage algorithm (how token advantages are formed for the PG loss):
-  #   grpo    -> Use GRPO advantages from scorer reward as-is.
-  #   entropy -> Replace with scaled normalized entropy: A = alpha * H_norm.
-  #   aepo    -> Modulate GRPO advantages by entropy: A = A_grpo * (1 + alpha * H_norm).
-  # use_sign_cond_clip enables asymmetric clip bounds (clip_ratio_*_pos/neg) using
-  # the same advantages fed to the PG loss (token advantage sign).
-  # use_aepo_clip applies the ratio-adaptive upper bound on top of whichever fixed
-  # bounds sign-cond or global clip selected; the two flags compose independently.
-  phase_rewards:
-    high_level:
-      advantage_algorithm: grpo
-      kl_loss_coef: 0.0
-      use_aepo_clip: false
-      use_sign_cond_clip: false
-      entropy:
-        # How entropy is z-scored before use as an advantage signal:
-        #   token_pool -> z-score over all valid tokens in the micro-batch (AEPO-style).
-        #   group      -> reduce to per-sample mean, GRPO-normalize within prompt group,
-        #                 then broadcast back to tokens.
-        normalization: token_pool
-        # Scaling weight for entropy-based advantage shaping (entropy and aepo).
-        alpha: 0.2
-        # Direct entropy regularizer: L_actor = L_PG - reg_coeff * mean(H) on the
-        # phase loss mask. 0.0 disables. Applies to all advantage_algorithms.
-        reg_coeff: 0.0
-    low_level:
-      advantage_algorithm: entropy
-      kl_loss_coef: 0.0
-      use_aepo_clip: false
-      use_sign_cond_clip: false
-      entropy:
-        normalization: token_pool
-        alpha: 0.2
-        reg_coeff: 0.0
+
+# Nested loop: for each of phases.high_level.num_iters outer cycles, run
+# phases.low_level.num_iters low-level iterations and then one high-level iteration.
+# Every knob a phase owns lives here: prompt-stream length, GRPO group size,
+# PPO batch splits, optimizer/scheduler, rollout strategy and loss shaping.
+phases:
+  high_level:
+    # Number of outer cycles. Prompt batch = (len(train_dataset) // num_iters) floored to a
+    # multiple of the rank count; HL sees the dataset once over the whole run.
+    num_iters: 1
+    # GRPO group size (trajectories per prompt) for this phase's rollouts.
+    group_size: 8
+    # PPO update splits within one iteration's collected rollouts.
+    ppo_mini_batch_size: 16
+    ppo_micro_batch_size_per_gpu: null
+    # Independent AdamW + LR schedule over the shared FSDP parameters.
+    # Scheduler horizon is derived: HL = num_iters, LL = N_HL * N_LL.
+    optim:
+      lr: 1e-6
+      lr_warmup_steps: -1  # Prioritized. Negative means use lr_warmup_steps_ratio.
+      lr_warmup_steps_ratio: 0.0
+      warmup_style: constant  # constant/cosine
+      min_lr_ratio: 0.0   # cosine only
+      num_cycles: 0.5     # cosine only
+      weight_decay: 0.01
+    # Rollout generation strategy. Only affects generate_sequences; update is unchanged.
+    #   default -> flat temperature sampling with group_size trajectories.
+    #   aepo    -> AEPO entropy-guided initial budget + adaptive branching.
+    # The aepo sub-block is only read when strategy == "aepo".
+    rollout:
+      strategy: default
+      aepo:
+        enable_dynamic_rollouts: false
+        initial_rollouts: 8
+        beam_size: 2
+        branch_probability: 0.5
+        entropy_weight: 0.2
+        initial_entropy_tokens: 50
+    # How token advantages are formed for the PG loss:
+    #   grpo    -> Use GRPO advantages from scorer reward as-is.
+    #   entropy -> Replace with scaled normalized entropy: A = alpha * H_norm.
+    #   aepo    -> Modulate GRPO advantages by entropy: A = A_grpo * (1 + alpha * H_norm).
+    advantage_algorithm: grpo
+    kl_loss_coef: 0.0
+    # use_sign_cond_clip enables asymmetric clip bounds (clip_ratio_*_pos/neg) using
+    # the same advantages fed to the PG loss (token advantage sign).
+    # use_aepo_clip applies the ratio-adaptive upper bound on top of whichever fixed
+    # bounds sign-cond or global clip selected; the two flags compose independently.
+    use_sign_cond_clip: false
+    use_aepo_clip: false
+    entropy:
+      # How entropy is z-scored before use as an advantage signal:
+      #   token_pool -> z-score over all valid tokens in the micro-batch (AEPO-style).
+      #   group      -> reduce to per-sample mean, GRPO-normalize within prompt group,
+      #                 then broadcast back to tokens.
+      normalization: token_pool
+      # Scaling weight for entropy-based advantage shaping (entropy and aepo).
+      alpha: 0.2
+      # Direct entropy regularizer: L_actor = L_PG - reg_coeff * mean(H) on the
+      # phase loss mask. 0.0 disables. Applies to all advantage_algorithms.
+      reg_coeff: 0.0
+  low_level:
+    # Inner iterations per outer cycle. Prompt batch derived as above;
+    # LL covers the dataset once per outer cycle.
+    num_iters: 1
+    group_size: 8
+    ppo_mini_batch_size: 16
+    ppo_micro_batch_size_per_gpu: null
+    optim:
+      lr: 1e-6
+      lr_warmup_steps: -1
+      lr_warmup_steps_ratio: 0.0
+      warmup_style: constant
+      min_lr_ratio: 0.0
+      num_cycles: 0.5
+      weight_decay: 0.01
+    rollout:
+      strategy: default
+      aepo:
+        enable_dynamic_rollouts: false
+        initial_rollouts: 8
+        beam_size: 2
+        branch_probability: 0.5
+        entropy_weight: 0.2
+        initial_entropy_tokens: 50
+    advantage_algorithm: entropy
+    kl_loss_coef: 0.0
+    use_sign_cond_clip: false
+    use_aepo_clip: false
+    entropy:
+      normalization: token_pool
+      alpha: 0.2
+      reg_coeff: 0.0
 
 actor_rollout_ref:
+  # Worker groups are constructed from this subtree alone, so mirror the phase tree in.
+  # main_echo resolves the config before workers spawn, which materializes the copy.
+  phases: ${phases}
   actor:
     clip_ratio_low: 0.2
     clip_ratio_high: 0.2
@@ -82,35 +132,6 @@ actor_rollout_ref:
     # If true, phase-level masks (high/low/tool) exclude tag boundary tokens
     # (<think>, </think>, <tool>, ...).
     exclude_tag_tokens_from_phase_masks: true
-    high_level_budget: 0
-    low_level_budget: 0
-    # When true, the second phase reuses rollouts from the first phase instead
-    # of generating fresh ones. Both phases still compute their own rewards.
-    reuse_phase_rollouts: false
-    # Per-phase rollout generation strategy. Only affects how trajectories are
-    # sampled during generate_sequences; policy update is unchanged.
-    #   default -> flat temperature sampling with rollout_n_override trajectories.
-    #   aepo    -> AEPO entropy-guided initial budget + adaptive branching.
-    # The aepo sub-block is only read when strategy == "aepo" for that phase.
-    phase_rollouts:
-      high_level:
-        strategy: default
-        aepo:
-          enable_dynamic_rollouts: false
-          initial_rollouts: 8
-          beam_size: 2
-          branch_probability: 0.5
-          entropy_weight: 0.2
-          initial_entropy_tokens: 50
-      low_level:
-        strategy: default
-        aepo:
-          enable_dynamic_rollouts: false
-          initial_rollouts: 8
-          beam_size: 2
-          branch_probability: 0.5
-          entropy_weight: 0.2
-          initial_entropy_tokens: 50
     # Which token category feeds into which hierarchical level ("high", "low", "both", "none").
     # "result" blocks are always excluded. Prompt-5 schema: think/tool/search|python/answer.
     mask_categories:
@@ -154,6 +175,3 @@ trainer:
   # Metric family to track for best checkpoint.
   # Supported: {val-core/reward, val-aux/f1-score}
   best_checkpoint_metric: val-core/reward
-  # If one phase budget is zero, still compute that phase's logging metrics
-  # from the other phase's rollouts (no extra rollout generation, no updates).
-  log_zero_budget_phase_metrics: true

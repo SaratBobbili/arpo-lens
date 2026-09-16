@@ -6,9 +6,11 @@ is this number actually telling me?".
 
 This file covers **two trainers**:
 
-- **ECHO** (`ECHO/training/`) — two-phase trainer that runs separate HL / LL
-  GRPO updates per step. Metrics are split by phase using `high_level/`
-  and `low_level/` prefixes.
+- **ECHO** (`ECHO/training/`) — nested two-phase trainer. One outer cycle is
+  `phases.low_level.num_iters` LL iterations followed by one HL iteration, and
+  each iteration is its own global step with its own prompt chunk, rollouts and
+  optimizer step. Metrics are split by phase using `high_level/` and
+  `low_level/` prefixes, so a given step only carries one phase's keys.
 - **ARPO baseline** (`verl/trainer/ppo/`) — single-phase GRPO. Metrics are
   flat (no phase prefix). ECHO is a strict superset of ARPO's logging plus
   the per-phase split, so the bulk of this doc is written for ECHO and
@@ -16,8 +18,9 @@ This file covers **two trainers**:
 
 The metrics fall into four buckets:
 
-1. **Validation** — quality on the held-out set, run every `test_freq` steps.
-2. **Per-phase training** — what's happening in each step's HL / LL update
+1. **Validation** — quality on the held-out set, run every `test_freq` **outer
+   cycles** (always on the closing HL iteration, never mid-LL).
+2. **Per-phase training** — what's happening in this step's HL or LL update
    (for ARPO, drop the phase prefix).
 3. **Rollout & tools** — how the model is using tools during training rollouts.
 4. **System** — throughput, timing, batch balancing.
@@ -80,7 +83,7 @@ validator channel anymore.
 | `<phase>/actor/entropy_old_policy` | How "spread out" the model's distribution is over its phase-mask tokens, measured before the update. Higher = more exploration. **ARPO calls this `actor/entropy_loss`.** |
 | `<phase>/actor/kl_loss` / `<phase>/actor/ppo_kl` | KL between the current policy and either the reference (`kl_loss`, gated on `kl_loss_coef`) or the old policy used for the rollout (`ppo_kl`). If KL blows up the policy is moving too fast per step. |
 | `<phase>/actor/pg_clipfrac` | Share of tokens where the PPO ratio hit the clip range. Healthy is small but non-zero; near 1.0 means the trust region is too tight. |
-| `<phase>/actor/lr` | Current learning rate (after warmup / schedule). |
+| `<phase>/actor/lr` | Current learning rate of **that phase's own** optimizer / schedule. HL and LL have independent AdamW moments and horizons (`N_HL` vs `N_HL * N_LL`), so the two curves move independently. |
 | `<phase>/actor/entropy_reg_loss` | **ECHO only.** The entropy term added to actor loss when the entropy regularizer is on for that phase. Compare `entropy_reg_loss × reg_coeff` to `pg_loss`. |
 | `<phase>/training/rollout_probs_diff_mean` | How much the rollout engine (vLLM) and the actor disagree per token, on average. Should stay small; if it grows, rollouts and training are drifting apart. |
 | `<phase>/training/rollout_probs_diff_max` | Worst-case version of the above. Useful for catching tokenizer / templating bugs. |
@@ -119,8 +122,8 @@ metrics only show up when a learned critic is enabled (`use_critic=True`).
 | `<phase>/tools/total_retries` / `tools/max_retries` | Retry stats from the tool harness. Climbing retries ⇒ flaky tool API. |
 | `<phase>/tools/call_limit_reached_count` | How many rollouts hit `tools.call_limit`. If high, either the limit is too low or the model is looping. |
 | `<phase>/training/rollout_probs_diff_*` | See above — also a rollout-side signal. |
-| `training/high_level_rollout_budget` | **ECHO only.** How many rollouts/prompt are routed to the HL update this step. Set by `high_level_budget` in the launch script. |
-| `training/low_level_rollout_budget` | **ECHO only.** Mirror of above for LL (= `rollout.n − high_level_budget`). |
+| `<phase>/training/group_size` | **ECHO only.** GRPO trajectories per prompt for this phase (`phases.<phase>.group_size`). Constant per phase; log it to confirm the launch profile took effect. |
+| `<phase>/training/num_prompts` | **ECHO only.** Prompts in this iteration's chunk, derived as `(len(train_dataset) // num_iters)` floored to a multiple of the rank count. Sequences rolled out = `num_prompts × group_size`. |
 
 ---
 
@@ -128,8 +131,8 @@ metrics only show up when a learned critic is enabled (`use_critic=True`).
 
 | Metric | What it means |
 |---|---|
-| `training/global_step` | Current optimizer step. |
-| `training/epoch` | Current epoch index. |
+| `training/global_step` | Current optimizer step. Counts every iteration of either phase, so the run ends at `N_HL * (N_LL + 1)`. |
+| `training/hl_cycle` | **ECHO only.** Index of the outer cycle this step belongs to (0-based). `test_freq` / `save_freq` are counted in these. |
 | `timing_s/high_level_gen` / `timing_s/low_level_gen` | Wall time spent generating rollouts for that phase (ECHO embeds the phase in the timer name). ARPO uses `timing_s/gen`. |
 | `timing_s/<phase>_reward` | Wall time spent scoring those rollouts (e.g. `timing_s/high_level_reward`). ARPO: `timing_s/reward`. |
 | `timing_s/<phase>_update_actor` | Wall time on the actor update. ARPO: `timing_s/update_actor`. |
@@ -160,9 +163,15 @@ Compared to ECHO:
   rather than as a prefix, so ECHO `timing_s/high_level_gen` ↔ ARPO
   `timing_s/gen`, ECHO `timing_s/low_level_update_actor` ↔ ARPO
   `timing_s/update_actor`, etc.
-- **No phase-budget knobs.** `training/high_level_rollout_budget` and
-  `training/low_level_rollout_budget` don't exist; every rollout goes
-  through the one update. The total count is just `rollout.n`.
+- **No nested loop.** ARPO has one update per prompt batch and counts epochs
+  (`training/epoch`); ECHO has `training/hl_cycle` plus
+  `<phase>/training/{group_size,num_prompts}`, and no epoch index at all.
+  ARPO's group size is the single global `rollout.n`, and its prompt batch is
+  the configured `data.train_batch_size` rather than a value derived from
+  `num_iters`.
+- **One optimizer.** ARPO has a single AdamW / schedule, so `actor/lr` is one
+  curve; ECHO logs `high_level/actor/lr` and `low_level/actor/lr` from two
+  independent optimizers over the same parameters.
 - **Scorer fields.** ARPO's scorer reports a smaller set; ECHO's
   `deep_research_echo` emits `score`, `f1_score`, `format_valid`, and
   `no_tool_calls`. Both share the same F1 (+ optional multi-tool bonus) scale.
@@ -217,7 +226,10 @@ have no ARPO counterpart at all.
 | Validation F1 (no `-1` penalty) | `val-aux/<dataset>/f1_score/mean@1` | `val-aux/<dataset>/f1_score/mean@1` |
 | Format pass / fail rates on training rollouts | `reward/bad_format_rate` | `<phase>/reward/{format_pass_rate, bad_format_rate, format_valid_rate}` |
 | No-tool rate | — (if emitted) | `<phase>/reward/no_tool_rate` |
-| Per-phase rollout budgets | — (single budget = `rollout.n`) | `training/{high_level,low_level}_rollout_budget` (ECHO-only) |
+| GRPO group size | — (global `rollout.n`) | `<phase>/training/group_size` (per phase, ECHO-only) |
+| Prompt batch size | — (configured `data.train_batch_size`) | `<phase>/training/num_prompts` (derived from `num_iters`, ECHO-only) |
+| Loop position | `training/epoch` | `training/hl_cycle` (ECHO-only; no epoch index) |
+| Learning rate | `actor/lr` (one optimizer) | `<phase>/actor/lr` (two independent optimizers) |
 | Multi-tool +0.1 bonus baked into score | yes (shifts `score` up to `1.1`) | yes (same rule as ARPO) |
 
 ## TL;DR — which metrics to watch

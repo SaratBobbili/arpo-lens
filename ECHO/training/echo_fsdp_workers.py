@@ -55,6 +55,27 @@ def _build_phase_optimizer(parameters, optim_config, total_steps):
     return optimizer, scheduler, num_warmup_steps
 
 
+def _normalize_phase_batch_sizes(phases_cfg, dp_size):
+    """Prompt-space mini batches -> per-rank sequence counts, using each phase's own group_size."""
+    batch_sizes = {}
+    for phase in PHASE_NAMES:
+        phase_cfg = phases_cfg[phase]
+        mini_batch_size = int(phase_cfg.ppo_mini_batch_size) * int(phase_cfg.group_size) // dp_size
+        assert mini_batch_size > 0, (
+            f"phases.{phase}: ppo_mini_batch_size {phase_cfg.ppo_mini_batch_size} x group_size "
+            f"{phase_cfg.group_size} is smaller than the dp size {dp_size}"
+        )
+        micro_batch_size_per_gpu = phase_cfg.ppo_micro_batch_size_per_gpu
+        if micro_batch_size_per_gpu is not None:
+            micro_batch_size_per_gpu = int(micro_batch_size_per_gpu)
+            assert mini_batch_size % micro_batch_size_per_gpu == 0, (
+                f"phases.{phase}: normalized ppo_mini_batch_size {mini_batch_size} is not divisible by "
+                f"ppo_micro_batch_size_per_gpu {micro_batch_size_per_gpu}"
+            )
+        batch_sizes[phase] = (mini_batch_size, micro_batch_size_per_gpu)
+    return batch_sizes
+
+
 class _PhaseStateShim:
     """Presents both phases' optimizers (or schedulers) as one state_dict-able object.
 
@@ -78,6 +99,17 @@ class _PhaseStateShim:
 
 
 class EchoActorRolloutRefWorker(ActorRolloutRefWorker):
+    def __init__(self, config, role):
+        super().__init__(config, role)
+        if not self._is_actor:
+            return
+        # The parent normalized config.actor.ppo_mini_batch_size with the global
+        # rollout.n; ECHO ignores it in favour of per-phase sizes.
+        self.phase_batch_sizes = _normalize_phase_batch_sizes(
+            self.config.phases,
+            self.device_mesh.size() // self.ulysses_sequence_parallel_size,
+        )
+
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def init_model(self):
         import_external_libs(self.config.model.get("external_lib", None))
@@ -152,6 +184,7 @@ class EchoActorRolloutRefWorker(ActorRolloutRefWorker):
                 config=self.config.actor,
                 actor_module=self.actor_module_fsdp,
                 phase_optims=self.phase_optims,
+                phase_batch_sizes=self.phase_batch_sizes,
             )
 
         if self._is_rollout:

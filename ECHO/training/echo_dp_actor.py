@@ -15,14 +15,17 @@ logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
 
 class DataParallelECHOActor(DataParallelPPOActor):
-    def __init__(self, config, actor_module, phase_optims):
+    def __init__(self, config, actor_module, phase_optims, phase_batch_sizes):
         super().__init__(config, actor_module, actor_optimizer=None)
         self.phase_optims = phase_optims
+        self.phase_batch_sizes = phase_batch_sizes
 
     @GPUMemoryLogger(role="dp actor", logger=logger)
     def update_policy(self, data: DataProto):
+        phase = data.meta_info["phase"]
         # _optimizer_step() and zero_grad() below act on the phase's own AdamW.
-        self.actor_optimizer, _ = self.phase_optims[data.meta_info["phase"]]
+        self.actor_optimizer, _ = self.phase_optims[phase]
+        mini_batch_size, micro_batch_size_per_gpu = self.phase_batch_sizes[phase]
         self.actor_module.train()
 
         temperature = data.meta_info["temperature"]
@@ -59,30 +62,33 @@ class DataParallelECHOActor(DataParallelPPOActor):
         selected = data.select(batch_keys=select_keys, non_tensor_batch_keys=non_tensor_select_keys)
         batch = selected.batch
         if use_dataproto_batches:
-            num_mini_batches = selected.batch.batch_size[0] // self.config.ppo_mini_batch_size
+            num_mini_batches = selected.batch.batch_size[0] // mini_batch_size
             dataloader = selected.chunk(num_mini_batches)
         else:
-            dataloader = batch.split(self.config.ppo_mini_batch_size)
+            dataloader = batch.split(mini_batch_size)
 
         metrics = {}
         for epoch in range(self.config.ppo_epochs):
             for batch_idx, data in enumerate(dataloader):
                 mini_batch = data
                 if use_dataproto_batches:
+                    mini_batch_seqs = mini_batch.batch.batch_size[0]
                     if self.config.use_dynamic_bsz:
                         max_token_len = self.config.ppo_max_token_len_per_gpu * self.ulysses_sequence_parallel_size
                         _, micro_bsz_idx = rearrange_micro_batches(batch=mini_batch.batch, max_token_len=max_token_len)
                         micro_batches = [mini_batch.select_idxs(partition) for partition in micro_bsz_idx]
                     else:
-                        self.gradient_accumulation = self.config.ppo_mini_batch_size // self.config.ppo_micro_batch_size_per_gpu
-                        num_micro_batches = mini_batch.batch.batch_size[0] // self.config.ppo_micro_batch_size_per_gpu
+                        self.gradient_accumulation = mini_batch_size // micro_batch_size_per_gpu
+                        num_micro_batches = mini_batch_seqs // micro_batch_size_per_gpu
                         micro_batches = mini_batch.chunk(num_micro_batches)
-                elif self.config.use_dynamic_bsz:
-                    max_token_len = self.config.ppo_max_token_len_per_gpu * self.ulysses_sequence_parallel_size
-                    micro_batches, _ = rearrange_micro_batches(batch=mini_batch, max_token_len=max_token_len)
                 else:
-                    self.gradient_accumulation = self.config.ppo_mini_batch_size // self.config.ppo_micro_batch_size_per_gpu
-                    micro_batches = mini_batch.split(self.config.ppo_micro_batch_size_per_gpu)
+                    mini_batch_seqs = mini_batch.batch_size[0]
+                    if self.config.use_dynamic_bsz:
+                        max_token_len = self.config.ppo_max_token_len_per_gpu * self.ulysses_sequence_parallel_size
+                        micro_batches, _ = rearrange_micro_batches(batch=mini_batch, max_token_len=max_token_len)
+                    else:
+                        self.gradient_accumulation = mini_batch_size // micro_batch_size_per_gpu
+                        micro_batches = mini_batch.split(micro_batch_size_per_gpu)
 
                 self.actor_optimizer.zero_grad()
 
@@ -179,7 +185,7 @@ class DataParallelECHOActor(DataParallelPPOActor):
                         metrics["actor/kl_coef"] = float(kl_loss_coef)
 
                     if self.config.use_dynamic_bsz:
-                        loss = policy_loss * (len(data) / self.config.ppo_mini_batch_size)
+                        loss = policy_loss * (responses.size(0) / mini_batch_seqs)
                     else:
                         loss = policy_loss / self.gradient_accumulation
                     loss.backward()

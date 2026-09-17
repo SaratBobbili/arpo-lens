@@ -1,5 +1,6 @@
 #!/bin/bash
-# Usage: bash train.sh training_config/<config>.yaml
+# Usage: bash train.sh training_config/<config>.yaml [key=value ...]
+# Trailing key=value args override the profile; keys must be in VALID_LAUNCH_KEYS.
 set -e
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
@@ -65,6 +66,14 @@ VALID_LAUNCH_KEYS=(
 python3 -c 'import sys,yaml; cfg=yaml.safe_load(open(sys.argv[1])) or {}; unknown=sorted(set(cfg)-set(sys.argv[2:])); sys.stderr.write("Unknown or unused launch config keys: " + ", ".join(unknown) + "\n") if unknown else None; sys.exit(1 if unknown else 0)' "${LAUNCH_CONFIG_PATH}" "${VALID_LAUNCH_KEYS[@]}"
 # Parse YAML config — all keys are uppercased and exported as shell variables
 eval "$(python3 -c 'import yaml,sys,shlex;cfg=yaml.safe_load(open(sys.argv[1]));[print(k.upper()+"="+shlex.quote("null" if v is None else "true" if isinstance(v,bool) and v else "false" if isinstance(v,bool) else str(v))) for k,v in cfg.items()]' "${LAUNCH_CONFIG_PATH}")"
+
+# Per-run overrides from the caller, applied before any path is derived below.
+LAUNCH_OVERRIDES=("${@:2}")
+for override in "${LAUNCH_OVERRIDES[@]}"; do
+    key="${override%%=*}"
+    printf '%s\n' "${VALID_LAUNCH_KEYS[@]}" | grep -qxF -- "${key}" || { echo "Unknown launch override key: ${key}" >&2; exit 1; }
+    eval "${key^^}=$(printf '%q' "${override#*=}")"
+done
 
 # Construct full paths from roots (defined in secrets.sh) + relative paths from config
 TRAIN_FILES="${ARPO_ROOT}/${TRAIN_FILES}"
@@ -203,6 +212,7 @@ CONFIG_SNAPSHOT_DIR="${SAVE_PATH}/training_config"
 mkdir -p "${CONFIG_SNAPSHOT_DIR}"
 cp "${SCRIPT_PATH}" "${CONFIG_SNAPSHOT_DIR}/launch_script.sh"
 cp "${LAUNCH_CONFIG_PATH}" "${CONFIG_SNAPSHOT_DIR}/launch_config.yaml"
+printf '%s\n' "${LAUNCH_OVERRIDES[@]}" > "${CONFIG_SNAPSHOT_DIR}/launch_overrides.txt"
 cp -r "${CONFIG_PATH}" "${CONFIG_SNAPSHOT_DIR}/config"
 
 RAG_SIDECAR_PID=""

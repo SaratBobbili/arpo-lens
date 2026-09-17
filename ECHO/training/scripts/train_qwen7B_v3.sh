@@ -11,11 +11,11 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 BASE_PROFILE="training_config/config1.yaml"
 
 PROJECT_NAME="${PROJECT_NAME:-qwen25_7B}"
-EXPERIMENT_NAME="${EXPERIMENT_NAME:-echo7BInstruct_lr1e8}"
+EXPERIMENT_NAME="${EXPERIMENT_NAME:-echo7BInstruct_lr3e8}"
 # HF weights resolved as ${SFT_ROOT}/${ACTOR_MODEL_SUBPATH} (SFT_ROOT from secrets.sh).
-ACTOR_MODEL_SUBPATH="${ACTOR_MODEL_SUBPATH:-checkpoints/Qwen2.5-7B-Instruct-lr1e8-ep1}"
+ACTOR_MODEL_SUBPATH="${ACTOR_MODEL_SUBPATH:-checkpoints/Qwen2.5-7B-Instruct-lr3e8-ep1}"
 # Query -> SERP cache is model-independent, so share the largest one for hit rate.
-SEARCH_CACHE_FILE="${SEARCH_CACHE_FILE:-search_cache_final_3B.json}"
+SEARCH_CACHE_FILE="${SEARCH_CACHE_FILE:-search_cache_echo_3B.json}"
 
 bash "${SCRIPT_DIR}/train.sh" "${BASE_PROFILE}" \
     project_name="${PROJECT_NAME}" \

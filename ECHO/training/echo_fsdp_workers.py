@@ -153,7 +153,11 @@ class EchoActorRolloutRefWorker(ActorRolloutRefWorker):
                 # schedules. LL runs N_LL times per outer cycle, HL once.
                 n_hl = int(self.config.phases.high_level.num_iters)
                 n_ll = int(self.config.phases.low_level.num_iters)
-                phase_total_steps = {"high_level": n_hl, "low_level": n_hl * n_ll}
+                if bool(self.config.phases.get("shared_prompt_stream", False)):
+                    e = int(self.config.total_epochs)
+                    phase_total_steps = {"high_level": e * n_hl, "low_level": e * n_hl * n_ll}
+                else:
+                    phase_total_steps = {"high_level": n_hl, "low_level": n_hl * n_ll}
                 self.phase_optims = {}
                 for phase in PHASE_NAMES:
                     total_steps = phase_total_steps[phase]

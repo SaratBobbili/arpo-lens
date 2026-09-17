@@ -299,10 +299,10 @@ class RayECHOTrainer(RayPPOTrainer):
         return RandomSampler(data_source=self.train_dataset, generator=generator)
 
     def _create_dataloader(self, train_dataset, val_dataset, collate_fn, train_sampler):
-        """One prompt stream per phase; batch size derived from len(train_dataset) / num_iters.
+        """Build prompt stream(s); batch size floored to a multiple of world_size.
 
-        Batches are floored to a multiple of world_size because every worker-group call
-        chunks the batch across ranks (`DataProto.chunk` requires exact divisibility).
+        Shared mode: one dataloader sized by steps_per_epoch = N_HL*(N_LL+1).
+        Legacy: one dataloader per phase sized by that phase's num_iters.
         """
         from verl.trainer.main_ppo import create_rl_dataset
 
@@ -324,30 +324,59 @@ class RayECHOTrainer(RayPPOTrainer):
         num_workers = self.config.data.get("dataloader_num_workers", 8)
         base_seed = self.config.data.get("seed", 1)
 
+        num_hl_iters = int(self._phase_cfg("high_level").num_iters)
+        num_ll_iters = int(self._phase_cfg("low_level").num_iters)
+        self._shared_prompt_stream = bool(self.config.phases.get("shared_prompt_stream", False))
         self._phase_dataloaders = {}
         self._phase_iters = {}
-        for seed_offset, phase_name in enumerate(self._PHASE_NAMES):
-            num_iters = int(self._phase_cfg(phase_name).num_iters)
-            assert 1 <= num_iters <= dataset_size, (
-                f"phases.{phase_name}.num_iters must be in [1, {dataset_size}], got {num_iters}."
+
+        if self._shared_prompt_stream:
+            steps_per_epoch = num_hl_iters * (num_ll_iters + 1)
+            assert 1 <= steps_per_epoch <= dataset_size, (
+                f"shared steps_per_epoch=N_HL*(N_LL+1) must be in [1, {dataset_size}], got {steps_per_epoch}."
             )
-            batch_size = (dataset_size // num_iters) // world_size * world_size
+            batch_size = (dataset_size // steps_per_epoch) // world_size * world_size
             assert batch_size >= world_size, (
-                f"phases.{phase_name}.num_iters={num_iters} leaves {dataset_size // num_iters} prompts per iteration, "
-                f"fewer than one per rank ({world_size}); lower num_iters."
+                f"shared steps_per_epoch={steps_per_epoch} leaves {dataset_size // steps_per_epoch} prompts per step, "
+                f"fewer than one per rank ({world_size}); lower N_HL/N_LL."
             )
-            self._phase_dataloaders[phase_name] = StatefulDataLoader(
+            shared_loader = StatefulDataLoader(
                 dataset=self.train_dataset,
                 batch_size=batch_size,
                 num_workers=num_workers,
                 drop_last=True,
                 collate_fn=collate_fn,
-                sampler=self._phase_sampler(seed=base_seed + seed_offset),
+                sampler=self._phase_sampler(seed=base_seed),
             )
+            for phase_name in self._PHASE_NAMES:
+                self._phase_dataloaders[phase_name] = shared_loader
             print(
-                f"[{phase_name}] num_iters={num_iters}, prompt_batch_size={batch_size}, "
-                f"batches_per_dataset_pass={len(self._phase_dataloaders[phase_name])}"
+                f"[shared] steps_per_epoch={steps_per_epoch}, prompt_batch_size={batch_size}, "
+                f"batches_per_dataset_pass={len(shared_loader)}"
             )
+        else:
+            for seed_offset, phase_name in enumerate(self._PHASE_NAMES):
+                num_iters = int(self._phase_cfg(phase_name).num_iters)
+                assert 1 <= num_iters <= dataset_size, (
+                    f"phases.{phase_name}.num_iters must be in [1, {dataset_size}], got {num_iters}."
+                )
+                batch_size = (dataset_size // num_iters) // world_size * world_size
+                assert batch_size >= world_size, (
+                    f"phases.{phase_name}.num_iters={num_iters} leaves {dataset_size // num_iters} prompts per iteration, "
+                    f"fewer than one per rank ({world_size}); lower num_iters."
+                )
+                self._phase_dataloaders[phase_name] = StatefulDataLoader(
+                    dataset=self.train_dataset,
+                    batch_size=batch_size,
+                    num_workers=num_workers,
+                    drop_last=True,
+                    collate_fn=collate_fn,
+                    sampler=self._phase_sampler(seed=base_seed + seed_offset),
+                )
+                print(
+                    f"[{phase_name}] num_iters={num_iters}, prompt_batch_size={batch_size}, "
+                    f"batches_per_dataset_pass={len(self._phase_dataloaders[phase_name])}"
+                )
 
         # The base checkpointer saves/loads `self.train_dataloader.state_dict()`.
         self.train_dataloader = _PhaseDataloaders(self._phase_dataloaders)
@@ -365,21 +394,24 @@ class RayECHOTrainer(RayPPOTrainer):
         )
         assert len(self.val_dataloader) >= 1, "Validation dataloader is empty!"
 
-        num_hl_iters = int(self._phase_cfg("high_level").num_iters)
-        num_ll_iters = int(self._phase_cfg("low_level").num_iters)
-        self.total_training_steps = num_hl_iters * (num_ll_iters + 1)
+        if self._shared_prompt_stream:
+            total_epochs = int(self.config.trainer.total_epochs)
+            self.total_training_steps = total_epochs * num_hl_iters * (num_ll_iters + 1)
+        else:
+            self.total_training_steps = num_hl_iters * (num_ll_iters + 1)
         print(f"Total training steps: {self.total_training_steps}")
 
     def _next_batch_dict(self, phase_name: str):
-        data_iter = self._phase_iters.get(phase_name)
+        iter_key = "_shared" if self._shared_prompt_stream else phase_name
+        data_iter = self._phase_iters.get(iter_key)
         if data_iter is None:
             data_iter = iter(self._phase_dataloaders[phase_name])
-            self._phase_iters[phase_name] = data_iter
+            self._phase_iters[iter_key] = data_iter
         try:
             return next(data_iter)
         except StopIteration:
             data_iter = iter(self._phase_dataloaders[phase_name])
-            self._phase_iters[phase_name] = data_iter
+            self._phase_iters[iter_key] = data_iter
             return next(data_iter)
 
     @staticmethod
@@ -653,9 +685,16 @@ class RayECHOTrainer(RayPPOTrainer):
                     )
 
             # Validation and checkpointing land on the high-level update that closes an outer
-            # cycle; test_freq / save_freq count outer cycles, never low-level iterations.
+            # cycle. Shared: save/test_freq count global_steps. Legacy: count outer cycles.
             if end_of_cycle:
-                if self.val_reward_fn is not None and self.config.trainer.test_freq > 0 and (is_last_step or (hl_cycle + 1) % self.config.trainer.test_freq == 0):
+                if self._shared_prompt_stream:
+                    test_due = self.config.trainer.test_freq > 0 and self.global_steps % self.config.trainer.test_freq == 0
+                    save_due = self.config.trainer.save_freq > 0 and self.global_steps % self.config.trainer.save_freq == 0
+                else:
+                    test_due = self.config.trainer.test_freq > 0 and (hl_cycle + 1) % self.config.trainer.test_freq == 0
+                    save_due = self.config.trainer.save_freq > 0 and (hl_cycle + 1) % self.config.trainer.save_freq == 0
+
+                if self.val_reward_fn is not None and (is_last_step or test_due):
                     with _timer("testing", timing_raw):
                         val_metrics: dict = self._validate()
                         self._last_val_metrics = val_metrics
@@ -688,11 +727,7 @@ class RayECHOTrainer(RayPPOTrainer):
                         metrics["training/best_checkpoint_metric_best"] = self._best_metric_value
                         metrics["training/best_checkpoint_metric_best_step"] = float(self._best_metric_step)
 
-                if (
-                    not saved_checkpoint_this_step
-                    and self.config.trainer.save_freq > 0
-                    and (is_last_step or (hl_cycle + 1) % self.config.trainer.save_freq == 0)
-                ):
+                if not saved_checkpoint_this_step and (is_last_step or save_due):
                     with _timer("save_checkpoint", timing_raw):
                         self._save_checkpoint()
 
@@ -702,6 +737,8 @@ class RayECHOTrainer(RayPPOTrainer):
                 "training/hl_cycle": hl_cycle,
             }
         )
+        if self._shared_prompt_stream:
+            metrics["training/epoch"] = self._current_epoch
         metrics.update(compute_timing_metrics(batch=phase_batch, timing_raw=timing_raw))
         n_gpus = self.resource_pool_manager.get_n_gpus()
         metrics.update(compute_throughout_metrics(batch=phase_batch, timing_raw=timing_raw, n_gpus=n_gpus))
@@ -714,7 +751,10 @@ class RayECHOTrainer(RayPPOTrainer):
 
     def fit(self):
         """Nested-phase GRPO: `num_iters[low_level]` low-level iterations inside each of
-        `num_iters[high_level]` outer cycles, each cycle closed by one high-level iteration."""
+        `num_iters[high_level]` outer cycles, each cycle closed by one high-level iteration.
+
+        Shared mode wraps that cycle loop in `trainer.total_epochs` outer epochs.
+        """
         from omegaconf import OmegaConf
 
         from verl.utils.tracking import Tracking
@@ -733,6 +773,7 @@ class RayECHOTrainer(RayPPOTrainer):
         self._best_metric_step = -1
         self._best_metric_key = None
         self._last_val_metrics = None
+        self._current_epoch = 0
 
         self._init_logging_data()
 
@@ -751,20 +792,34 @@ class RayECHOTrainer(RayPPOTrainer):
 
         num_hl_iters = int(self._phase_cfg("high_level").num_iters)
         num_ll_iters = int(self._phase_cfg("low_level").num_iters)
+        cycle_len = num_ll_iters + 1
+        steps_per_epoch = num_hl_iters * cycle_len
 
         progress_bar = tqdm(total=self.total_training_steps, initial=self.global_steps, desc="Training Progress")
 
         # Checkpoints only land on the high-level iteration that closes a cycle, so the
         # resumed step count maps back to a whole number of completed outer cycles.
-        start_cycle = self.global_steps // (num_ll_iters + 1)
-
         # we start from step 1
         self.global_steps += 1
 
-        for hl_cycle in range(start_cycle, num_hl_iters):
+        def _run_cycle(hl_cycle: int) -> None:
             for _ in range(num_ll_iters):
                 self._run_phase_iteration("low_level", hl_cycle, end_of_cycle=False, logger=logger, progress_bar=progress_bar)
             self._run_phase_iteration("high_level", hl_cycle, end_of_cycle=True, logger=logger, progress_bar=progress_bar)
+
+        if self._shared_prompt_stream:
+            total_epochs = int(self.config.trainer.total_epochs)
+            start_epoch = (self.global_steps - 1) // steps_per_epoch
+            start_cycle = ((self.global_steps - 1) % steps_per_epoch) // cycle_len
+            for epoch in range(start_epoch, total_epochs):
+                self._current_epoch = epoch
+                cycle_start = start_cycle if epoch == start_epoch else 0
+                for hl_cycle in range(cycle_start, num_hl_iters):
+                    _run_cycle(hl_cycle)
+        else:
+            start_cycle = (self.global_steps - 1) // cycle_len
+            for hl_cycle in range(start_cycle, num_hl_iters):
+                _run_cycle(hl_cycle)
 
         pprint(f"Final validation metrics: {self._last_val_metrics}")
         progress_bar.close()

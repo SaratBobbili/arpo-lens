@@ -47,6 +47,7 @@ VALID_LAUNCH_KEYS=(
     conda_path conda_env brightdata_api_key brightdata_zone brightdata_location wandb_api_key
     output_root sft_root
     save_freq test_freq save_best_checkpoint best_checkpoint_metric max_actor_ckpt_to_keep resume_mode
+    shared_prompt_stream total_epochs
     hl_num_iters ll_num_iters hl_group_size ll_group_size
     hl_ppo_mini_batch_size ll_ppo_mini_batch_size
     hl_ppo_micro_batch_size_per_gpu ll_ppo_micro_batch_size_per_gpu
@@ -148,6 +149,7 @@ ARGS=(
     actor_rollout_ref.ref.fsdp_config.param_offload=True
     reward_model.reward_manager="${REWARD_MANAGER}"
     actor_rollout_ref.rollout.tools.skip_training_on_tool_failure="${SKIP_TRAINING_ON_TOOL_FAILURE:-false}"
+    phases.shared_prompt_stream="${SHARED_PROMPT_STREAM:-true}"
     "phases.high_level.num_iters=${HL_NUM_ITERS}"
     "phases.low_level.num_iters=${LL_NUM_ITERS}"
     "phases.high_level.group_size=${HL_GROUP_SIZE}"
@@ -202,6 +204,7 @@ ARGS=(
     trainer.nnodes="${NNODES}"
     trainer.save_freq="${SAVE_FREQ}"
     trainer.test_freq="${TEST_FREQ}"
+    trainer.total_epochs="${TOTAL_EPOCHS:-4}"
     trainer.save_best_checkpoint="${SAVE_BEST_CHECKPOINT:-false}"
     trainer.best_checkpoint_metric="${BEST_CHECKPOINT_METRIC:-val-core/reward}"
     trainer.max_actor_ckpt_to_keep="${MAX_ACTOR_CKPT_TO_KEEP}"

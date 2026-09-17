@@ -17,6 +17,12 @@ export TMPDIR=/tmp/saratb_ray
 export RAY_TMPDIR=/tmp/saratb_ray
 mkdir -p "$TMPDIR"
 
+# Login nodes cap nproc at 4096 (limits.d, 2026-09-02) and srun propagates it;
+# Ray prestarts one worker per node CPU, so worker threads hit the cap and abort.
+ulimit -u "$(ulimit -Hu)"
+
+# stdout is a pipe (tee below), so without this every print() is block-buffered.
+export PYTHONUNBUFFERED=1
 export VERL_LOGGING_LEVEL=WARN
 export RAY_BACKEND_LOG_LEVEL=warning
 export RAY_memory_usage_threshold=0.8

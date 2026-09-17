@@ -26,8 +26,8 @@ search_class_path: verl.workers.agent.tools.search_tool.BingSearchTool
 brightdata_timeout: 90
 tool_call_limit: 3
 
-save_freq: 72
-test_freq: 72
+save_freq: 1
+test_freq: 1
 save_best_checkpoint: true
 best_checkpoint_metric: val-core/reward
 max_actor_ckpt_to_keep: 1

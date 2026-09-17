@@ -684,15 +684,16 @@ class RayECHOTrainer(RayPPOTrainer):
                         dump_path=rollout_data_dir,
                     )
 
-            # Validation and checkpointing land on the high-level update that closes an outer
-            # cycle. Shared: save/test_freq count global_steps. Legacy: count outer cycles.
+            # Validation and checkpointing only after HL updates (end_of_cycle).
+            # Shared + legacy: save/test_freq count HL updates (shared spans epochs).
             if end_of_cycle:
                 if self._shared_prompt_stream:
-                    test_due = self.config.trainer.test_freq > 0 and self.global_steps % self.config.trainer.test_freq == 0
-                    save_due = self.config.trainer.save_freq > 0 and self.global_steps % self.config.trainer.save_freq == 0
+                    n_hl = int(self._phase_cfg("high_level").num_iters)
+                    hl_done = self._current_epoch * n_hl + hl_cycle + 1
                 else:
-                    test_due = self.config.trainer.test_freq > 0 and (hl_cycle + 1) % self.config.trainer.test_freq == 0
-                    save_due = self.config.trainer.save_freq > 0 and (hl_cycle + 1) % self.config.trainer.save_freq == 0
+                    hl_done = hl_cycle + 1
+                test_due = self.config.trainer.test_freq > 0 and hl_done % self.config.trainer.test_freq == 0
+                save_due = self.config.trainer.save_freq > 0 and hl_done % self.config.trainer.save_freq == 0
 
                 if self.val_reward_fn is not None and (is_last_step or test_due):
                     with _timer("testing", timing_raw):

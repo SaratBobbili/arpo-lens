@@ -84,6 +84,11 @@ phases:
       # Direct entropy regularizer: L_actor = L_PG - reg_coeff * mean(H) on the
       # phase loss mask. 0.0 disables. Applies to all advantage_algorithms.
       reg_coeff: 0.0
+    # On-Policy Entropy Flow Optimization (arXiv:2605.11491). When true, replace
+    # clipped PPO PG with -log_prob·A reweighted by adaptive λ* from Theorem-1 ΔH.
+    # Requires actor_rollout_ref.model.use_fused_kernels=false.
+    opefo:
+      enabled: false
   low_level:
     # Inner iterations per outer cycle. Prompt batch derived as above;
     # LL covers the dataset once per outer cycle.
@@ -116,6 +121,8 @@ phases:
       normalization: token_pool
       alpha: 0.2
       reg_coeff: 0.0
+    opefo:
+      enabled: false
 
 actor_rollout_ref:
   # Worker groups are constructed from this subtree alone, so mirror the phase tree in.

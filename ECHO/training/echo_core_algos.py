@@ -626,6 +626,57 @@ def compute_policy_loss(
     return pg_loss, pg_clipfrac, ppo_kl, pg_clipfrac_lower
 
 
+def compute_entropy_flow_E(logits: torch.Tensor):
+    """Per-token E_t in Theorem 1 / Eq. 6 (expectation over vocab; no advantage)."""
+    log_pi = torch.log_softmax(logits, dim=-1)
+    pi = log_pi.exp()
+    H = -(pi * log_pi).sum(dim=-1)
+    return (pi * (1.0 - pi).square() * (log_pi + H.unsqueeze(-1))).sum(dim=-1)
+
+
+def compute_delta_H_theorem1(logits: torch.Tensor, advantages: torch.Tensor, response_mask: torch.Tensor = None):
+    """Theorem 1 / Eq. 6 first-order entropy change with η=1.
+
+    logits: (..., V), advantages: (...) matching leading dims.
+    """
+    delta_H = -advantages * compute_entropy_flow_E(logits)
+    if response_mask is not None:
+        delta_H = delta_H * response_mask.to(dtype=delta_H.dtype)
+    return delta_H
+
+
+def compute_opefo_policy_loss(
+    log_prob: torch.Tensor,
+    advantages: torch.Tensor,
+    delta_H: torch.Tensor,
+    response_mask: torch.Tensor,
+    loss_agg_mode: str = "token-mean",
+    eps: float = 1e-12,
+):
+    """Paper Fig. 3 OPEFO PG: -log_prob·A reweighted by λ* on S+/S-."""
+    pg = -log_prob * advantages
+    mask = response_mask.bool()
+    pos = mask & (delta_H > 0)
+    neg = mask & (delta_H < 0)
+    pos_mag = torch.where(pos, delta_H, torch.zeros_like(delta_H)).sum()
+    neg_mag = torch.where(neg, delta_H.abs(), torch.zeros_like(delta_H)).sum()
+    lambda_s = (neg_mag - pos_mag) / (neg_mag + pos_mag).clamp_min(eps)
+    pg = torch.where(pos, pg * (1.0 + lambda_s), pg)
+    pg = torch.where(neg, pg * (1.0 - lambda_s), pg)
+    pg_loss = agg_loss(loss_mat=pg, loss_mask=response_mask, loss_agg_mode=loss_agg_mode)
+
+    n_valid = mask.float().sum().clamp_min(1.0)
+    diagnostics = {
+        "opefo_lambda": lambda_s.detach(),
+        "opefo_delta_H_net": torch.where(mask, delta_H, torch.zeros_like(delta_H)).sum().detach(),
+        "opefo_pos_mag": pos_mag.detach(),
+        "opefo_neg_mag": neg_mag.detach(),
+        "opefo_frac_pos": pos.float().sum().detach() / n_valid,
+        "opefo_frac_neg": neg.float().sum().detach() / n_valid,
+    }
+    return pg_loss, diagnostics
+
+
 def compute_entropy_loss(logits, response_mask, loss_agg_mode: str = "token-mean"):
     """Compute categorical entropy loss (For backward compatibility)
 

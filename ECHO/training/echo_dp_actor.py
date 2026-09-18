@@ -1,14 +1,31 @@
 import logging
 import os
 
+import torch
+import verl.utils.torch_functional as verl_F
 from verl import DataProto
 from verl.utils.debug import GPUMemoryLogger
-from verl.utils.device import get_torch_device
+from verl.utils.device import get_torch_device, is_cuda_available, is_npu_available
 from verl.utils.py_functional import append_to_dict
 from verl.utils.seqlen_balancing import rearrange_micro_batches
+from verl.utils.torch_functional import logprobs_from_logits
+from verl.utils.ulysses import gather_outpus_and_unpad, ulysses_pad, ulysses_pad_and_slice_inputs
 from verl.workers.actor.dp_actor import DataParallelPPOActor
 
-from .echo_core_algos import agg_loss, compute_entropy_normalized, compute_policy_loss, kl_penalty, resolve_advantage_signal
+from .echo_core_algos import (
+    agg_loss,
+    compute_entropy_flow_E,
+    compute_entropy_normalized,
+    compute_opefo_policy_loss,
+    compute_policy_loss,
+    kl_penalty,
+    resolve_advantage_signal,
+)
+
+if is_cuda_available:
+    from flash_attn.bert_padding import index_first_axis, pad_input, rearrange, unpad_input
+elif is_npu_available:
+    from transformers.integrations.npu_flash_attention import index_first_axis, pad_input, rearrange, unpad_input
 
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
@@ -19,6 +36,133 @@ class DataParallelECHOActor(DataParallelPPOActor):
         super().__init__(config, actor_module, actor_optimizer=None)
         self.phase_optims = phase_optims
         self.phase_batch_sizes = phase_batch_sizes
+
+    def _forward_micro_batch_opefo(self, micro_batch, temperature):
+        """Forward like parent non-fused path; entropy-flow E on rmpad logits then pad (no full (B,T,V))."""
+        assert not self.use_fused_kernels, "OPEFO requires use_fused_kernels=false"
+
+        response_length = micro_batch["responses"].size(-1)
+        multi_modal_inputs = {}
+        if "multi_modal_inputs" in micro_batch:
+            for key in micro_batch["multi_modal_inputs"][0].keys():
+                multi_modal_inputs[key] = torch.cat(
+                    [inputs[key] for inputs in micro_batch["multi_modal_inputs"]], dim=0
+                )
+
+        with torch.autocast(device_type=self.device_name, dtype=torch.bfloat16):
+            input_ids = micro_batch["input_ids"]
+            batch_size, seqlen = input_ids.shape
+            attention_mask = micro_batch["attention_mask"]
+            position_ids = micro_batch["position_ids"]
+            if position_ids.dim() == 3:
+                position_ids = position_ids.transpose(0, 1)
+
+            if self.use_remove_padding:
+                input_ids_rmpad, indices, *_ = unpad_input(input_ids.unsqueeze(-1), attention_mask)
+                input_ids_rmpad = input_ids_rmpad.transpose(0, 1)
+
+                if position_ids.dim() == 3:
+                    position_ids_rmpad = (
+                        index_first_axis(rearrange(position_ids, "c b s ... -> (b s) c ..."), indices)
+                        .transpose(0, 1)
+                        .unsqueeze(1)
+                    )
+                else:
+                    position_ids_rmpad = index_first_axis(
+                        rearrange(position_ids.unsqueeze(-1), "b s ... -> (b s) ..."), indices
+                    ).transpose(0, 1)
+
+                input_ids_rmpad_rolled = torch.roll(input_ids_rmpad, shifts=-1, dims=1)
+
+                if self.use_ulysses_sp:
+                    is_vlm_model = "multi_modal_inputs" in micro_batch
+                    if is_vlm_model:
+                        input_ids_rmpad, position_ids_rmpad, pad_size = ulysses_pad(
+                            input_ids_rmpad,
+                            position_ids_rmpad=position_ids_rmpad,
+                            sp_size=self.ulysses_sequence_parallel_size,
+                        )
+                    else:
+                        input_ids_rmpad, position_ids_rmpad, pad_size = ulysses_pad_and_slice_inputs(
+                            input_ids_rmpad,
+                            position_ids_rmpad=position_ids_rmpad,
+                            sp_size=self.ulysses_sequence_parallel_size,
+                        )
+                    input_ids_rmpad_rolled, _, _ = ulysses_pad_and_slice_inputs(
+                        input_ids_rmpad_rolled,
+                        position_ids_rmpad=None,
+                        sp_size=self.ulysses_sequence_parallel_size,
+                    )
+
+                input_ids_rmpad_rolled = input_ids_rmpad_rolled.squeeze(0)
+
+                output = self.actor_module(
+                    input_ids=input_ids_rmpad,
+                    attention_mask=None,
+                    position_ids=position_ids_rmpad,
+                    **multi_modal_inputs,
+                    use_cache=False,
+                )
+
+                logits_rmpad = output.logits.squeeze(0)
+                logits_rmpad.div_(temperature)
+
+                log_probs = logprobs_from_logits(
+                    logits=logits_rmpad,
+                    labels=input_ids_rmpad_rolled,
+                    inplace_backward=False,
+                )
+                entropy_rmpad = self.compute_entropy_from_logits(logits_rmpad)
+
+                with torch.no_grad():
+                    flow_E_rmpad = compute_entropy_flow_E(logits_rmpad.detach())
+
+                if self.use_ulysses_sp:
+                    log_probs = gather_outpus_and_unpad(
+                        log_probs, gather_dim=0, unpad_dim=0, padding_size=pad_size
+                    )
+                    entropy_rmpad = gather_outpus_and_unpad(
+                        entropy_rmpad, gather_dim=0, unpad_dim=0, padding_size=pad_size
+                    )
+                    flow_E_rmpad = gather_outpus_and_unpad(
+                        flow_E_rmpad, gather_dim=0, unpad_dim=0, padding_size=pad_size
+                    )
+
+                entropy = pad_input(
+                    hidden_states=entropy_rmpad.unsqueeze(-1),
+                    indices=indices,
+                    batch=batch_size,
+                    seqlen=seqlen,
+                ).squeeze(-1)[:, -response_length - 1 : -1]
+                log_probs = pad_input(
+                    hidden_states=log_probs.unsqueeze(-1),
+                    indices=indices,
+                    batch=batch_size,
+                    seqlen=seqlen,
+                ).squeeze(-1)[:, -response_length - 1 : -1]
+                flow_E = pad_input(
+                    hidden_states=flow_E_rmpad.unsqueeze(-1),
+                    indices=indices,
+                    batch=batch_size,
+                    seqlen=seqlen,
+                ).squeeze(-1)[:, -response_length - 1 : -1]
+            else:
+                output = self.actor_module(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                    **multi_modal_inputs,
+                    use_cache=False,
+                )
+                logits = output.logits
+                logits.div_(temperature)
+                logits = logits[:, -response_length - 1 : -1, :]
+                log_probs = logprobs_from_logits(logits, micro_batch["responses"])
+                entropy = verl_F.entropy_from_logits(logits)
+                with torch.no_grad():
+                    flow_E = compute_entropy_flow_E(logits.detach())
+
+            return entropy, log_probs, flow_E
 
     @GPUMemoryLogger(role="dp actor", logger=logger)
     def update_policy(self, data: DataProto):
@@ -39,7 +183,11 @@ class DataParallelECHOActor(DataParallelPPOActor):
         kl_loss_coef_override = data.meta_info.get("kl_loss_coef_override", None)
         use_aepo_clip = bool(data.meta_info.get("use_aepo_clip_override", False))
         use_sign_cond_clip = bool(data.meta_info.get("use_sign_cond_clip_override", False))
+        opefo_enabled = bool(data.meta_info.get("opefo_enabled", False))
         needs_entropy_norm = advantage_algorithm in ("entropy", "aepo")
+
+        if opefo_enabled:
+            assert not self.use_fused_kernels, "OPEFO requires use_fused_kernels=false"
 
         select_keys = ["responses", "input_ids", "attention_mask", "position_ids", "old_log_probs", "advantages"]
         if multi_turn or "loss_mask" in data.batch.keys():
@@ -123,8 +271,14 @@ class DataParallelECHOActor(DataParallelPPOActor):
                     entropy_coeff = entropy_coeff_override if entropy_coeff_override is not None else self.config.entropy_coeff
                     loss_agg_mode = self.config.loss_agg_mode
 
-                    # Always compute fresh entropy from the current policy.
-                    entropy, log_prob = self._forward_micro_batch(micro_batch=data, temperature=temperature, calculate_entropy=True)
+                    if opefo_enabled:
+                        entropy, log_prob, flow_E = self._forward_micro_batch_opefo(
+                            micro_batch=data, temperature=temperature
+                        )
+                    else:
+                        entropy, log_prob = self._forward_micro_batch(
+                            micro_batch=data, temperature=temperature, calculate_entropy=True
+                        )
 
                     if needs_entropy_norm:
                         entropy_norm = compute_entropy_normalized(
@@ -137,26 +291,53 @@ class DataParallelECHOActor(DataParallelPPOActor):
                             advantage_algorithm, grpo_advantages, entropy_norm, entropy_alpha
                         )
 
-                    clip_sign_advantages = advantages if use_sign_cond_clip else None
-
-                    pg_loss, pg_clipfrac, ppo_kl, pg_clipfrac_lower = compute_policy_loss(
-                        old_log_prob=old_log_prob,
-                        log_prob=log_prob,
-                        advantages=advantages,
-                        response_mask=response_mask,
-                        cliprange=clip_ratio,
-                        cliprange_low=clip_ratio_low,
-                        cliprange_high=clip_ratio_high,
-                        clip_ratio_c=clip_ratio_c,
-                        use_aepo_clip=use_aepo_clip,
-                        use_sign_cond_clip=use_sign_cond_clip,
-                        clip_sign_advantages=clip_sign_advantages,
-                        cliprange_low_pos=clip_ratio_low_pos,
-                        cliprange_high_pos=clip_ratio_high_pos,
-                        cliprange_low_neg=clip_ratio_low_neg,
-                        cliprange_high_neg=clip_ratio_high_neg,
-                        loss_agg_mode=loss_agg_mode,
-                    )
+                    if opefo_enabled:
+                        delta_H = -advantages * flow_E
+                        delta_H = delta_H * response_mask.to(dtype=delta_H.dtype)
+                        pg_loss, opefo_diag = compute_opefo_policy_loss(
+                            log_prob=log_prob,
+                            advantages=advantages,
+                            delta_H=delta_H,
+                            response_mask=response_mask,
+                            loss_agg_mode=loss_agg_mode,
+                        )
+                        negative_approx_kl = log_prob - old_log_prob
+                        ppo_kl = verl_F.masked_mean(-negative_approx_kl, response_mask)
+                        zero = torch.zeros((), device=pg_loss.device, dtype=pg_loss.dtype)
+                        pg_clipfrac = zero
+                        pg_clipfrac_lower = zero
+                        append_to_dict(
+                            metrics,
+                            {
+                                "actor/opefo_lambda": opefo_diag["opefo_lambda"].item(),
+                                "actor/opefo_delta_H_net": opefo_diag["opefo_delta_H_net"].item(),
+                                "actor/opefo_pos_mag": opefo_diag["opefo_pos_mag"].item(),
+                                "actor/opefo_neg_mag": opefo_diag["opefo_neg_mag"].item(),
+                                "actor/opefo_frac_pos": opefo_diag["opefo_frac_pos"].item(),
+                                "actor/opefo_frac_neg": opefo_diag["opefo_frac_neg"].item(),
+                                "actor/opefo_pg_loss": pg_loss.detach().item(),
+                            },
+                        )
+                    else:
+                        clip_sign_advantages = advantages if use_sign_cond_clip else None
+                        pg_loss, pg_clipfrac, ppo_kl, pg_clipfrac_lower = compute_policy_loss(
+                            old_log_prob=old_log_prob,
+                            log_prob=log_prob,
+                            advantages=advantages,
+                            response_mask=response_mask,
+                            cliprange=clip_ratio,
+                            cliprange_low=clip_ratio_low,
+                            cliprange_high=clip_ratio_high,
+                            clip_ratio_c=clip_ratio_c,
+                            use_aepo_clip=use_aepo_clip,
+                            use_sign_cond_clip=use_sign_cond_clip,
+                            clip_sign_advantages=clip_sign_advantages,
+                            cliprange_low_pos=clip_ratio_low_pos,
+                            cliprange_high_pos=clip_ratio_high_pos,
+                            cliprange_low_neg=clip_ratio_low_neg,
+                            cliprange_high_neg=clip_ratio_high_neg,
+                            loss_agg_mode=loss_agg_mode,
+                        )
 
                     if entropy_coeff != 0:
                         if entropy_loss_mask_key is not None:

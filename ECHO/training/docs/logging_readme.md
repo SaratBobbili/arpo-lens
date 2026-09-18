@@ -85,6 +85,11 @@ validator channel anymore.
 | `<phase>/actor/pg_clipfrac` | Share of tokens where the PPO ratio hit the clip range. Healthy is small but non-zero; near 1.0 means the trust region is too tight. |
 | `<phase>/actor/lr` | Current learning rate of **that phase's own** optimizer / schedule. HL and LL have independent AdamW moments and horizons (`N_HL` vs `N_HL * N_LL`), so the two curves move independently. |
 | `<phase>/actor/entropy_reg_loss` | **ECHO only.** The entropy term added to actor loss when the entropy regularizer is on for that phase. Compare `entropy_reg_loss × reg_coeff` to `pg_loss`. |
+| `<phase>/actor/opefo_lambda` | **ECHO only (OPEFO).** Adaptive balancing coefficient `λ*` from Eq. 9. In `(-1, 1)`. Emitted when `phases.<phase>.opefo.enabled=true`. |
+| `<phase>/actor/opefo_delta_H_net` | **ECHO only (OPEFO).** Masked sum of Theorem-1 token entropy changes `ΔH` over the micro-batch. |
+| `<phase>/actor/opefo_pos_mag` / `<phase>/actor/opefo_neg_mag` | **ECHO only (OPEFO).** Sum of positive `ΔH` and sum of `|ΔH|` on negative tokens (the two sides of `λ*`). |
+| `<phase>/actor/opefo_frac_pos` / `<phase>/actor/opefo_frac_neg` | **ECHO only (OPEFO).** Fraction of valid tokens in `S+` (`ΔH>0`) and `S-` (`ΔH<0`). |
+| `<phase>/actor/opefo_pg_loss` | **ECHO only (OPEFO).** OPEFO policy-gradient scalar before entropy-reg / KL. Same value is also logged as `<phase>/actor/pg_loss` on this path. |
 | `<phase>/training/rollout_probs_diff_mean` | How much the rollout engine (vLLM) and the actor disagree per token, on average. Should stay small; if it grows, rollouts and training are drifting apart. |
 | `<phase>/training/rollout_probs_diff_max` | Worst-case version of the above. Useful for catching tokenizer / templating bugs. |
 
@@ -212,6 +217,7 @@ have no ARPO counterpart at all.
 | Old-policy entropy on the loss mask (diagnostic) | `actor/entropy_loss` | `<phase>/actor/entropy_old_policy` |
 | Differentiable entropy regularizer term in the actor loss | `actor/entropy_loss` (overloaded with above when `entropy_coeff != 0`) | `low_level/actor/entropy_reg_loss` (clean separation) |
 | Policy-gradient loss | `actor/pg_loss` | `<phase>/actor/pg_loss` |
+| OPEFO adaptive λ* / ΔH diagnostics | — | `<phase>/actor/opefo_{lambda,delta_H_net,pos_mag,neg_mag,frac_pos,frac_neg,pg_loss}` (ECHO-only; when `opefo.enabled`) |
 | Gradient norm | `actor/grad_norm` | `<phase>/actor/grad_norm` |
 | KL between current and reference policy | `actor/kl_loss` | `<phase>/actor/kl_loss` |
 | KL between current and rollout (old) policy | `actor/ppo_kl` | `<phase>/actor/ppo_kl` |
@@ -238,4 +244,5 @@ have no ARPO counterpart at all.
 - **Is the format collapsing?** → `<phase>/reward/format_pass_rate` (want ↑) and `<phase>/reward/bad_format_rate` (want ↓).
 - **Is the LL phase actually using tools?** → `low_level/reward/no_tool_rate` (want ↓) and `low_level/tools/total_calls` (want > 0 and stable).
 - **Is the entropy regularizer / advantage reshape doing anything?** → Compare `<phase>/actor/entropy_reg_loss × reg_coeff` to `<phase>/actor/pg_loss` when `reg_coeff > 0`, and watch `<phase>/actor/entropy_old_policy`. ARPO: `actor/entropy_loss`.
+- **Is OPEFO balancing entropy flow?** → When `opefo.enabled`, watch `<phase>/actor/opefo_lambda` (in `(-1,1)`), `<phase>/actor/opefo_delta_H_net` (toward 0 when balanced), and `opefo_pos_mag` vs `opefo_neg_mag`.
 - **Is training stable?** → `<phase>/actor/grad_norm` and `<phase>/training/rollout_probs_diff_mean` (drop `<phase>/` for ARPO).

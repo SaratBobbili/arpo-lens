@@ -663,6 +663,10 @@ class RayECHOTrainer(RayPPOTrainer):
                         phase_cfg.entropy.get("normalization", "token_pool")
                     )
                     phase_batch.meta_info["entropy_alpha"] = float(phase_cfg.entropy.get("alpha", 0.2))
+                    opefo_cfg = phase_cfg.get("opefo", None)
+                    phase_batch.meta_info["opefo_enabled"] = bool(
+                        opefo_cfg.get("enabled", False) if opefo_cfg is not None else False
+                    )
                     if self._uses_entropy_regularizer(phase_cfg):
                         phase_batch.meta_info["entropy_coeff_override"] = self._entropy_reg_coeff(phase_cfg)
                         phase_batch.meta_info["entropy_loss_mask_key"] = "entropy_reg_loss_mask"

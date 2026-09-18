@@ -17,12 +17,6 @@ export TMPDIR=/tmp/saratb_ray
 export RAY_TMPDIR=/tmp/saratb_ray
 mkdir -p "$TMPDIR"
 
-# Login nodes cap nproc at 4096 (limits.d, 2026-09-02) and srun propagates it;
-# Ray prestarts one worker per node CPU, so worker threads hit the cap and abort.
-ulimit -u "$(ulimit -Hu)"
-
-# stdout is a pipe (tee below), so without this every print() is block-buffered.
-export PYTHONUNBUFFERED=1
 export VERL_LOGGING_LEVEL=WARN
 export RAY_BACKEND_LOG_LEVEL=warning
 export RAY_memory_usage_threshold=0.8
@@ -32,7 +26,7 @@ export TORCHDYNAMO_DISABLE=1
 unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES
 export PYTHONPATH="${VERL_ROOT}:${ECHO_TOP}:$PYTHONPATH"
 
-source "${SCRIPT_DIR}/secrets.sh"
+source "${SCRIPT_DIR}/secrets.sh" ; OUTPUT_ROOT="/scratch/user/saratb_tamu.edu/research/arpo-lens/ECHO/training/.s2_dryrun_work/out"
 
 LAUNCH_CONFIG_PATH="${ECHO_ROOT}/$1"
 VALID_LAUNCH_KEYS=(
@@ -47,7 +41,6 @@ VALID_LAUNCH_KEYS=(
     conda_path conda_env brightdata_api_key brightdata_zone brightdata_location wandb_api_key
     output_root sft_root
     save_freq test_freq save_best_checkpoint best_checkpoint_metric max_actor_ckpt_to_keep resume_mode
-    shared_prompt_stream total_epochs
     hl_num_iters ll_num_iters hl_group_size ll_group_size
     hl_ppo_mini_batch_size ll_ppo_mini_batch_size
     hl_ppo_micro_batch_size_per_gpu ll_ppo_micro_batch_size_per_gpu
@@ -92,7 +85,7 @@ SEARCH_CACHE_PATH="${ECHO_TOP}/search_cache/${SEARCH_CACHE_FILE}"
 SAVE_PATH="${OUTPUT_ROOT}/checkpoints/${EXPERIMENT_NAME}"
 ROLLOUT_SAVE_PATH="${SAVE_PATH}/rollout"
 mkdir -p "${SAVE_PATH}" "${ROLLOUT_SAVE_PATH}"
-wandb login --relogin "${WANDB_API_KEY}"
+true
 export WANDB_DIR="${SAVE_PATH}"
 
 ARGS=(
@@ -150,7 +143,6 @@ ARGS=(
     actor_rollout_ref.ref.fsdp_config.param_offload=True
     reward_model.reward_manager="${REWARD_MANAGER}"
     actor_rollout_ref.rollout.tools.skip_training_on_tool_failure="${SKIP_TRAINING_ON_TOOL_FAILURE:-false}"
-    phases.shared_prompt_stream="${SHARED_PROMPT_STREAM:-true}"
     "phases.high_level.num_iters=${HL_NUM_ITERS}"
     "phases.low_level.num_iters=${LL_NUM_ITERS}"
     "phases.high_level.group_size=${HL_GROUP_SIZE}"
@@ -207,7 +199,6 @@ ARGS=(
     trainer.nnodes="${NNODES}"
     trainer.save_freq="${SAVE_FREQ}"
     trainer.test_freq="${TEST_FREQ}"
-    trainer.total_epochs="${TOTAL_EPOCHS:-4}"
     trainer.save_best_checkpoint="${SAVE_BEST_CHECKPOINT:-false}"
     trainer.best_checkpoint_metric="${BEST_CHECKPOINT_METRIC:-val-core/reward}"
     trainer.max_actor_ckpt_to_keep="${MAX_ACTOR_CKPT_TO_KEEP}"
@@ -275,4 +266,4 @@ fi
 
 printf '%s\n' "${ARGS[@]:2}" > "${CONFIG_SNAPSHOT_DIR}/launch_hydra_overrides.txt"
 
-python3 -m training.main_echo "${ARGS[@]}" 2>&1 | tee "${SAVE_PATH}/run.log"
+printf '%s\n' "${ARGS[@]}" > "/scratch/user/saratb_tamu.edu/research/arpo-lens/ECHO/training/.s2_dryrun_work/hydra_args.txt"

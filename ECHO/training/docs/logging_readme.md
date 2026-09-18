@@ -57,11 +57,32 @@ wandb curve for π_θ.
 | `policy/entropy` | Mean Shannon H on the **full response mask** (attention on response tokens — not phase `loss_mask`). True policy peakedness. |
 | `policy/ppo_kl` | KL vs rollout (old) policy. Blow-up ⇒ step too large. |
 | `policy/pg_clipfrac` | PPO clip hit rate (0 on pure OPEFO). |
-| `policy/rollout_probs_diff_mean` | \|vLLM − actor\| prob gap. Should stay small. |
 | `policy/response_length_mean` | Mean generated length. |
 | `policy/response_length_clip_ratio` | Fraction hitting `max_response_length`. |
-| `policy/tools_total_calls` | `<search>` + `<python>` calls this step. |
-| `policy/tools_successful_calls` | Successful tool returns. |
+| `policy/group_zero_std_frac` | Fraction of GRPO groups whose members all score the same. Those contribute **zero gradient** — the sharpest read on a dying signal. |
+| `policy/tool_calls_per_traj_mean` | Mean `<search>`+`<python>` calls per trajectory. Batch-correct. |
+| `policy/budget_exhausted_rate` | Fraction that spent the whole `tools.call_limit`. Batch-correct. |
+| `policy/fail_answer_count_0` | Format failures with no `<answer>` at all. This was 0.43 at step 1 of the Sept-2026 runs — the tool-budget bug. |
+| `policy/fail_unclosed_tag` | Format failures from an unclosed tag. |
+| `policy/fail_no_boxed` | Format failures from a missing/malformed `\boxed{}`. |
+| `policy/fail_other` | Remaining format failures (ordering violations etc.). |
+| `policy/tools_total_calls` | `<search>` + `<python>` calls this step. **Rank-0 only** — see caveat below. |
+| `policy/tools_successful_calls` | Successful tool returns. **Rank-0 only.** |
+
+> **`tools/*` counters report a single data-parallel shard.** They ride in the rollout's
+> `meta_info`, and `DataProto.concat` keeps `meta_info` from rank 0 only
+> (`verl/protocol.py:710`), so with 8 GPUs they under-report by roughly 8x. At step 1 of
+> `echo7BInstruct_lr5e8` the logged `tools/call_limit_reached_count` was 127 while the rollout dump
+> held 1728 — which is a large part of why the tool-budget bug went unnoticed for six runs. Use
+> them for relative trends only. `policy/tool_calls_per_traj_mean` and
+> `policy/budget_exhausted_rate` are computed from per-sample arrays and are batch-correct.
+>
+> `policy/rollout_probs_diff_mean` was removed: the ECHO rollout sets `self.logprobs = 0` and never
+> emits `rollout_log_probs`, so it could never fire. Re-add it together with vLLM logprobs if the
+> vLLM/actor mismatch check is ever needed.
+>
+> **Ground truth for anything about reward or format is `<run>/rollout/<step>.jsonl`**, which holds
+> per-sample `score`, `reason`, `format_valid` and `f1_score`.
 
 ---
 
@@ -76,6 +97,7 @@ entropy reg). Prefixed so HL and LL stay separable.
 | `<phase>/actor/grad_norm` | Grad norm before clip. Spikes ⇒ instability; ~0 ⇒ no signal. |
 | `<phase>/actor/lr` | That phase's AdamW / schedule LR. |
 | `<phase>/actor/entropy_reg_loss` | Entropy regularizer term when `reg_coeff > 0`. Compare `× reg_coeff` to `pg_loss`. |
+| `<phase>/actor/entropy_phase_mask` | Mean Shannon H over **that phase's loss mask** — the entropy of the tokens this phase actually optimizes (HL: think+answer, LL: tool+search+python). Always emitted; compare against the whole-policy `policy/entropy`. |
 | `<phase>/actor/opefo_lambda` | OPEFO λ* ∈ (−1,1) when `opefo.enabled`. |
 | `<phase>/actor/opefo_delta_H_net` | Masked sum of Theorem-1 ΔH. Toward 0 when balanced. |
 | `<phase>/actor/opefo_pos_mag` / `opefo_neg_mag` | Positive / \|negative\| ΔH masses for λ*. |
@@ -103,7 +125,7 @@ ARPO is single-phase GRPO. Flat keys map roughly as:
 | ECHO | ARPO |
 |---|---|
 | `policy/reward_mean`, `policy/f1_mean`, … | `reward/*` / `critic/score/*` (broader legacy set) |
-| `policy/entropy` (full response mask) | `actor/entropy_loss` (often on `loss_mask` / `response_mask`) |
+| `policy/entropy` (full response mask), plus `<phase>/actor/entropy_phase_mask` (phase mask) | `actor/entropy_loss` (often on `loss_mask` / `response_mask`) |
 | `policy/ppo_kl`, `policy/pg_clipfrac` | `actor/ppo_kl`, `actor/pg_clipfrac` |
 | `<phase>/actor/pg_loss`, `grad_norm`, `lr` | `actor/pg_loss`, `grad_norm`, `lr` (one optimizer) |
 | `val-core/...` | same |
@@ -119,8 +141,9 @@ tools appear), so `score` can reach `1.1`.
 ## TL;DR — which metrics to watch
 
 - **Getting better?** → `val-core/<dataset>/reward/mean@1`
-- **Format / tools sane?** → `policy/bad_format_rate` ↓, `policy/no_tool_rate` ↓, `policy/tools_total_calls` > 0
-- **Reward / GRPO alive?** → `policy/reward_mean` ↑, `policy/in_group_reward_std` and `policy/advantage_std` not ≈ 0
-- **Policy peakedness?** → `policy/entropy` (full-mask Shannon H)
-- **Update stable?** → `policy/ppo_kl`, `policy/pg_clipfrac`, `policy/rollout_probs_diff_mean`; phase `grad_norm`
+- **Format / tools sane?** → `policy/bad_format_rate` ↓, `policy/no_tool_rate` ↓, `policy/tool_calls_per_traj_mean` > 0
+- **Format failing — why?** → the `policy/fail_*` breakdown, not `bad_format_rate` alone. A single scalar hid the tool-budget bug for six runs.
+- **Reward / GRPO alive?** → `policy/reward_mean` ↑, `policy/in_group_reward_std` and `policy/advantage_std` not ≈ 0, `policy/group_zero_std_frac` low
+- **Policy peakedness?** → `policy/entropy` (full response mask) vs `<phase>/actor/entropy_phase_mask` (the tokens that phase actually optimizes). They differ; say which one you mean.
+- **Update stable?** → `policy/ppo_kl`, `policy/pg_clipfrac`; phase `grad_norm`
 - **Entropy reg / OPEFO?** → `<phase>/actor/entropy_reg_loss` when `reg_coeff > 0`; `<phase>/actor/opefo_{lambda,delta_H_net,pos_mag,neg_mag}` when enabled

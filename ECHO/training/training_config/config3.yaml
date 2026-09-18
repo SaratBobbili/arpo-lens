@@ -1,3 +1,13 @@
+# PARKED -- NOT LAUNCHED BY ANYTHING.
+# train_qwen7B_v2.sh / _v3.sh were meant to use config2 / config3, but all three launch scripts set
+# BASE_PROFILE="training_config/config1.yaml". This profile has therefore NEVER been run; do not
+# read past results as evidence for or against it.
+# Sole delta vs config1.yaml:
+#   low_level_advantage_algorithm: aepo     (A = A_grpo * (1 + alpha * H_norm))
+# To actually run it, pass the profile explicitly:
+#   bash scripts/train.sh training_config/config3.yaml experiment_name=echo7B_ll_aepo
+# Keep it out of the SFT-init sweep: varying the advantage algorithm and the SFT checkpoint in the
+# same set of runs confounds the two.
 # shared
 project_name: Qwen2.5-7B-Instruct
 experiment_name: Experiment-3

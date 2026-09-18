@@ -86,6 +86,10 @@ class RayECHOTrainer(RayPPOTrainer):
         "actor/pg_clipfrac": "policy/pg_clipfrac",
     }
 
+    # WARNING: these come from the rollout's meta_info, and DataProto.concat keeps meta_info from
+    # rank 0 only (verl/protocol.py:710), so they report a SINGLE data-parallel shard, not the
+    # batch. Treat them as relative trends only. policy/tool_calls_per_traj_mean and
+    # policy/budget_exhausted_rate are computed from per-sample arrays and are batch-correct.
     _TOOL_TO_POLICY = {
         "tools/total_calls": "policy/tools_total_calls",
         "tools/successful_calls": "policy/tools_successful_calls",
@@ -99,6 +103,7 @@ class RayECHOTrainer(RayPPOTrainer):
             ("grad_norm.jsonl", "actor/grad_norm"),
             ("opefo_lambda.jsonl", "actor/opefo_lambda"),
             ("opefo_delta_H_net.jsonl", "actor/opefo_delta_H_net"),
+            ("entropy_phase_mask.jsonl", "actor/entropy_phase_mask"),
         ],
         "high_level": [
             ("pg_loss.jsonl", "actor/pg_loss"),
@@ -106,6 +111,7 @@ class RayECHOTrainer(RayPPOTrainer):
             ("grad_norm.jsonl", "actor/grad_norm"),
             ("opefo_lambda.jsonl", "actor/opefo_lambda"),
             ("opefo_delta_H_net.jsonl", "actor/opefo_delta_H_net"),
+            ("entropy_phase_mask.jsonl", "actor/entropy_phase_mask"),
         ],
         "policy": [
             ("reward.jsonl", "reward_mean"),
@@ -117,12 +123,18 @@ class RayECHOTrainer(RayPPOTrainer):
             ("advantage_std.jsonl", "advantage_std"),
             ("ppo_kl.jsonl", "ppo_kl"),
             ("pg_clipfrac.jsonl", "pg_clipfrac"),
-            ("rollout_probs_diff_mean.jsonl", "rollout_probs_diff_mean"),
             ("response_length_mean.jsonl", "response_length_mean"),
             ("response_length_clip_ratio.jsonl", "response_length_clip_ratio"),
             ("tools_total_calls.jsonl", "tools_total_calls"),
             ("tools_successful_calls.jsonl", "tools_successful_calls"),
             ("entropy.jsonl", "entropy"),
+            ("group_zero_std_frac.jsonl", "group_zero_std_frac"),
+            ("budget_exhausted_rate.jsonl", "budget_exhausted_rate"),
+            ("tool_calls_per_traj_mean.jsonl", "tool_calls_per_traj_mean"),
+            ("fail_answer_count_0.jsonl", "fail_answer_count_0"),
+            ("fail_unclosed_tag.jsonl", "fail_unclosed_tag"),
+            ("fail_no_boxed.jsonl", "fail_no_boxed"),
+            ("fail_other.jsonl", "fail_other"),
         ],
     }
 
@@ -201,7 +213,48 @@ class RayECHOTrainer(RayPPOTrainer):
             fmt_valid = torch.tensor(reward_extra_info["format_valid"], dtype=torch.float32)
             metrics["policy/format_valid_rate"] = fmt_valid.mean().item()
 
+        # A single bad_format_rate scalar hid a reward bug for six runs: ~86% of step-1 format
+        # failures were tool-budget truncations scored -1, not real schema errors. Bucket the
+        # scorer's own reason string so the next one is visible in one glance.
+        reasons = reward_extra_info.get("reason")
+        if reasons:
+            total = float(len(reasons))
+            buckets = {"answer_count_0": 0, "unclosed_tag": 0, "no_boxed": 0, "other": 0}
+            for raw in reasons:
+                reason = str(raw)
+                if not reason.startswith("bad format: ") and "cannot extract answer" not in reason and "boxed" not in reason:
+                    continue
+                detail = reason[len("bad format: "):] if reason.startswith("bad format: ") else reason
+                if detail.startswith("answer_count=0"):
+                    buckets["answer_count_0"] += 1
+                elif "is not closed" in detail:
+                    buckets["unclosed_tag"] += 1
+                elif "boxed" in detail:
+                    buckets["no_boxed"] += 1
+                else:
+                    buckets["other"] += 1
+            for name, count in buckets.items():
+                metrics[f"policy/fail_{name}"] = count / total
+
         return metrics
+
+    @staticmethod
+    def _rollout_behavior_metrics(phase_batch: DataProto) -> dict:
+        """Tool-use metrics computed from per-sample arrays, not from the rollout's counters.
+
+        tools/* counters ride in meta_info, and DataProto.concat keeps meta_info from rank 0
+        only (verl/protocol.py:710), so every tools/* number in the logs is a single shard.
+        These are the world-size-correct versions.
+        """
+        out: dict = {}
+        calls = phase_batch.non_tensor_batch.get("tool_calls_made")
+        if calls is not None:
+            calls_t = torch.tensor(np.asarray(calls, dtype=np.float32))
+            out["policy/tool_calls_per_traj_mean"] = calls_t.mean().item()
+        exhausted = phase_batch.non_tensor_batch.get("tool_budget_exhausted")
+        if exhausted is not None:
+            out["policy/budget_exhausted_rate"] = float(np.asarray(exhausted, dtype=np.float32).mean())
+        return out
 
     @staticmethod
     def _policy_from_data_metrics(data_metrics: dict, phase_batch: DataProto) -> dict:
@@ -230,18 +283,55 @@ class RayECHOTrainer(RayPPOTrainer):
             return
         dev = phase_batch.batch[phase_mask_key].device
         keep = (~torch.tensor(flags.astype(np.bool_), device=dev)).float().unsqueeze(-1)
-        phase_batch.batch[phase_mask_key] = phase_batch.batch[phase_mask_key] * keep
+        masked = phase_batch.batch[phase_mask_key] * keep
+        phase_batch.batch[phase_mask_key] = masked
+        # loss_mask / response_mask were aliased to the same tensor object at rollout-to-batch
+        # time. Rebinding phase_mask_key above leaves them pointing at the unmasked original, so
+        # zeroing the phase mask would silently not reach the loss. Rebind them too.
+        for alias in ("loss_mask", "response_mask"):
+            if alias in phase_batch.batch.keys():
+                phase_batch.batch[alias] = masked
+
+    def _budget_exhausted_and_invalid(self, phase_batch: DataProto) -> np.ndarray | None:
+        """Samples that spent the tool budget and still failed the format gate.
+
+        A rollout that exhausts its tool budget now gets a masked notice and a final turn to
+        answer (see vllm_rollout_echo). One that answers legally is real data and is scored
+        normally -- a wrong answer earns 0, which is the honest signal. This is only the residual
+        safety net for the ones that still produce nothing scoreable, so they contribute 0 instead
+        of the -1 that used to teach the policy to stop calling tools.
+        """
+        if not bool(self._echo_rollout_tools_cfg().get("skip_training_on_budget_exhausted", True)):
+            return None
+        exhausted = phase_batch.non_tensor_batch.get("tool_budget_exhausted")
+        if exhausted is None:
+            return None
+        fmt_valid = phase_batch.non_tensor_batch.get("format_valid")
+        if fmt_valid is None:
+            return None
+        flags = np.asarray(exhausted, dtype=np.bool_) & ~np.asarray(fmt_valid, dtype=np.bool_)
+        return flags if np.any(flags) else None
 
     def _apply_tool_failure_before_grpo(self, phase_batch: DataProto) -> None:
-        if not bool(self._echo_rollout_tools_cfg().get("skip_training_on_tool_failure", False)):
-            return
-        flags = phase_batch.non_tensor_batch.get("tool_rollout_failed")
+        flags = None
+        if bool(self._echo_rollout_tools_cfg().get("skip_training_on_tool_failure", False)):
+            tool_failed = phase_batch.non_tensor_batch.get("tool_rollout_failed")
+            if tool_failed is not None and np.any(tool_failed):
+                flags = np.asarray(tool_failed, dtype=np.bool_)
+
+        budget_flags = self._budget_exhausted_and_invalid(phase_batch)
+        if budget_flags is not None:
+            flags = budget_flags if flags is None else (flags | budget_flags)
+
         if flags is None or not np.any(flags):
             return
+
         dev = phase_batch.batch["token_level_rewards"].device
-        failed = torch.tensor(flags.astype(np.bool_), device=dev)
+        failed = torch.tensor(flags, device=dev)
         phase_batch.batch["token_level_rewards"][failed] = 0
         phase_batch.batch["token_level_scores"][failed] = 0
+        # Fresh uid per dropped sample: a singleton group has mean 0, so its advantage is 0 and it
+        # cannot shift the baseline of the group it came from.
         uids = phase_batch.non_tensor_batch["uid"].copy()
         for i in np.flatnonzero(flags):
             uids[i] = str(uuid.uuid4())
@@ -281,7 +371,13 @@ class RayECHOTrainer(RayPPOTrainer):
         for indices in uid_to_indices.values():
             if len(indices) > 1:
                 group_stds.append(seq_rewards[indices].std().item())
-        return sum(group_stds) / len(group_stds) if group_stds else 0.0
+        if not group_stds:
+            return 0.0, 0.0
+        # A group whose members all score the same yields advantage 0 for every member, i.e. it
+        # contributes no gradient. The fraction of such groups is the direct read on whether the
+        # GRPO signal is still alive.
+        zero_std_frac = sum(1 for std in group_stds if std < 1e-6) / len(group_stds)
+        return sum(group_stds) / len(group_stds), zero_std_frac
 
     @staticmethod
     def _canonical_best_metric_selector(selector: str) -> str:
@@ -580,20 +676,22 @@ class RayECHOTrainer(RayPPOTrainer):
             response_length = responses.size(1)
             full_response_mask = attention_mask[:, -response_length:]
             loss_agg_mode = self.config.actor_rollout_ref.actor.loss_agg_mode
+            # policy/entropy is the whole-policy number over every response token, including the
+            # <result> spans the loss never sees. The phase-mask version below is the entropy of
+            # what this phase actually optimizes; report both so the two are never confused.
             metrics["policy/entropy"] = agg_loss(
                 loss_mat=entropys, loss_mask=full_response_mask, loss_agg_mode=loss_agg_mode
+            ).detach().item()
+            metrics[f"{phase_name}/actor/entropy_phase_mask"] = agg_loss(
+                loss_mat=entropys, loss_mask=phase_batch.batch[phase_mask_key], loss_agg_mode=loss_agg_mode
             ).detach().item()
             old_log_prob.batch.pop("entropys")
             phase_batch = phase_batch.union(old_log_prob)
 
-            if "rollout_log_probs" in phase_batch.batch.keys():
-                rollout_old_log_probs = phase_batch.batch["rollout_log_probs"]
-                actor_old_log_probs = phase_batch.batch["old_log_probs"]
-                rollout_probs = torch.exp(rollout_old_log_probs)
-                actor_probs = torch.exp(actor_old_log_probs)
-                rollout_probs_diff = torch.abs(rollout_probs - actor_probs)
-                rollout_probs_diff = torch.masked_select(rollout_probs_diff, full_response_mask.bool())
-                metrics["policy/rollout_probs_diff_mean"] = torch.mean(rollout_probs_diff).detach().item()
+            # NOTE: the ECHO rollout never emits rollout_log_probs (vllm_rollout_echo sets
+            # self.logprobs = 0), so the old policy/rollout_probs_diff_mean metric could never
+            # fire. It was removed rather than left as a silent no-op in the dashboard; re-add it
+            # together with vLLM logprobs if the vLLM/actor mismatch check is ever needed.
 
         if self._uses_entropy_regularizer(phase_cfg):
             phase_batch.batch["entropy_reg_loss_mask"] = phase_batch.batch[phase_mask_key].to(torch.float32)
@@ -620,6 +718,7 @@ class RayECHOTrainer(RayPPOTrainer):
         if phase_reward_extra_infos_dict:
             phase_batch.non_tensor_batch.update({k: np.array(v) for k, v in phase_reward_extra_infos_dict.items()})
             metrics.update(self._build_scorer_metrics(phase_reward_extra_infos_dict))
+        metrics.update(self._rollout_behavior_metrics(phase_batch))
 
         if self.config.algorithm.use_kl_in_reward:
             phase_batch, _kl_metrics = apply_kl_penalty(
@@ -658,7 +757,9 @@ class RayECHOTrainer(RayPPOTrainer):
             torch.cuda.empty_cache()
 
             with _timer(f"{phase_name}_adv", timing_raw):
-                metrics["policy/in_group_reward_std"] = self._compute_in_group_reward_std(phase_batch)
+                in_group_std, zero_std_frac = self._compute_in_group_reward_std(phase_batch)
+                metrics["policy/in_group_reward_std"] = in_group_std
+                metrics["policy/group_zero_std_frac"] = zero_std_frac
                 self._apply_tool_failure_before_grpo(phase_batch)
 
                 phase_batch = compute_advantage(

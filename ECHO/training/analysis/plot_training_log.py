@@ -27,8 +27,9 @@ import matplotlib.pyplot as plt
 # =============================================================================
 
 # Root directory written by the trainer (matches `${SAVE_PATH}/logging_data`).
+# Point this at "${SAVE_PATH}/logging_data" for the run you want to plot.
 LOG_DIR = Path(
-    "/scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ECHO/checkpoints/echo3B-rerun-hybrid-entropy-1.0-bfp0/logging_data"
+    "/scratch/project/prj-02-llm-reasoning-shakkottai/saratb/ECHO/checkpoints/echo7BInstruct_lr5e8/logging_data"
 )
 # Destination PNG for this invocation. Parent dirs are created if missing.
 OUTPUT_PNG = Path("./echo_training_plot.png")
@@ -51,7 +52,13 @@ PLOT_POLICY_NO_TOOL_RATE = False
 PLOT_POLICY_ADVANTAGE_STD = False
 PLOT_POLICY_PPO_KL = False
 PLOT_POLICY_PG_CLIPFRAC = False
-PLOT_POLICY_ROLLOUT_PROBS_DIFF = False
+PLOT_POLICY_GROUP_ZERO_STD_FRAC = False
+PLOT_POLICY_BUDGET_EXHAUSTED_RATE = False
+PLOT_POLICY_TOOL_CALLS_PER_TRAJ = False
+PLOT_POLICY_FAIL_ANSWER_COUNT_0 = False
+PLOT_POLICY_FAIL_UNCLOSED_TAG = False
+PLOT_POLICY_FAIL_NO_BOXED = False
+PLOT_POLICY_FAIL_OTHER = False
 PLOT_POLICY_RESPONSE_LENGTH_MEAN = False
 PLOT_POLICY_RESPONSE_LENGTH_CLIP = False
 PLOT_POLICY_TOOLS_TOTAL_CALLS = False
@@ -69,6 +76,8 @@ PLOT_LL_OPEFO_LAMBDA = False
 PLOT_HL_OPEFO_LAMBDA = False
 PLOT_LL_OPEFO_DELTA_H_NET = False
 PLOT_HL_OPEFO_DELTA_H_NET = False
+PLOT_LL_ENTROPY_PHASE_MASK = False
+PLOT_HL_ENTROPY_PHASE_MASK = False
 
 # =============================================================================
 # Series registry. (toggle, jsonl_relative_path, label_in_legend, field).
@@ -87,7 +96,13 @@ SERIES = [
     (PLOT_POLICY_ENTROPY,                "policy/entropy.jsonl",                     "policy entropy",                "value"),
     (PLOT_POLICY_PPO_KL,                 "policy/ppo_kl.jsonl",                      "policy ppo_kl",                 "value"),
     (PLOT_POLICY_PG_CLIPFRAC,            "policy/pg_clipfrac.jsonl",                 "policy pg_clipfrac",            "value"),
-    (PLOT_POLICY_ROLLOUT_PROBS_DIFF,     "policy/rollout_probs_diff_mean.jsonl",     "policy rollout_probs_diff",     "value"),
+    (PLOT_POLICY_GROUP_ZERO_STD_FRAC,    "policy/group_zero_std_frac.jsonl",         "policy group_zero_std_frac",    "value"),
+    (PLOT_POLICY_BUDGET_EXHAUSTED_RATE,  "policy/budget_exhausted_rate.jsonl",       "policy budget_exhausted_rate",  "value"),
+    (PLOT_POLICY_TOOL_CALLS_PER_TRAJ,    "policy/tool_calls_per_traj_mean.jsonl",    "policy tool_calls_per_traj",    "value"),
+    (PLOT_POLICY_FAIL_ANSWER_COUNT_0,    "policy/fail_answer_count_0.jsonl",         "policy fail answer_count=0",    "value"),
+    (PLOT_POLICY_FAIL_UNCLOSED_TAG,      "policy/fail_unclosed_tag.jsonl",           "policy fail unclosed_tag",      "value"),
+    (PLOT_POLICY_FAIL_NO_BOXED,          "policy/fail_no_boxed.jsonl",               "policy fail no_boxed",          "value"),
+    (PLOT_POLICY_FAIL_OTHER,             "policy/fail_other.jsonl",                  "policy fail other",             "value"),
     (PLOT_POLICY_RESPONSE_LENGTH_MEAN,   "policy/response_length_mean.jsonl",        "policy response_length_mean",   "value"),
     (PLOT_POLICY_RESPONSE_LENGTH_CLIP,   "policy/response_length_clip_ratio.jsonl",  "policy response_length_clip",   "value"),
     (PLOT_POLICY_TOOLS_TOTAL_CALLS,      "policy/tools_total_calls.jsonl",           "policy tools_total_calls",      "value"),
@@ -102,6 +117,8 @@ SERIES = [
     (PLOT_HL_OPEFO_LAMBDA,               "high_level/opefo_lambda.jsonl",            "HL opefo_lambda",               "value"),
     (PLOT_LL_OPEFO_DELTA_H_NET,          "low_level/opefo_delta_H_net.jsonl",        "LL opefo_delta_H_net",          "value"),
     (PLOT_HL_OPEFO_DELTA_H_NET,          "high_level/opefo_delta_H_net.jsonl",       "HL opefo_delta_H_net",          "value"),
+    (PLOT_LL_ENTROPY_PHASE_MASK,         "low_level/entropy_phase_mask.jsonl",       "LL entropy (phase mask)",       "value"),
+    (PLOT_HL_ENTROPY_PHASE_MASK,         "high_level/entropy_phase_mask.jsonl",      "HL entropy (phase mask)",       "value"),
 ]
 
 

@@ -161,6 +161,14 @@ actor_rollout_ref:
       # tool_instances.search.params.request_timeout, and override tools.retry_count / tools.timeout from the launch script as needed.
       # When true, rollouts where any tool exhausted retries emit tool_rollout_failed; ECHO zeros phase masks/rewards and isolates uid so GRPO skips them. When false (default), failed tool rollouts train normally.
       skip_training_on_tool_failure: false
+      # When a rollout spends its whole tool budget it now receives a masked <result> notice and a
+      # final turn to answer (see vllm_rollout_echo), instead of a bare EOS mid-call. A bare EOS
+      # left no <answer>, which the scorer's format gate punished with -1 -- turning "ran out of
+      # tool budget" into a format penalty and teaching the policy to stop calling tools. When this
+      # flag is true, any rollout that still fails the format gate after that final turn has its
+      # reward zeroed and its uid isolated, so it contributes 0 rather than -1. Rollouts that
+      # exhaust the budget and DO answer legally are scored normally.
+      skip_training_on_budget_exhausted: true
       verbose_logging: false
       fail_on_error: false
       tool_instances:

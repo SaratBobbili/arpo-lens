@@ -55,7 +55,7 @@ VALID_LAUNCH_KEYS=(
     hl_warmup_style ll_warmup_style hl_lr_warmup_steps_ratio ll_lr_warmup_steps_ratio
     high_level_advantage_algorithm low_level_advantage_algorithm
     norm_adv_by_std_in_grpo
-    skip_training_on_tool_failure
+    skip_training_on_tool_failure skip_training_on_budget_exhausted
     mask_tool mask_think mask_answer mask_search mask_python
     clip_ratio_low clip_ratio_high clip_ratio_c clip_ratio_low_pos clip_ratio_high_pos clip_ratio_low_neg clip_ratio_high_neg
     hl_kl_loss_coef ll_kl_loss_coef hl_use_aepo_clip ll_use_aepo_clip
@@ -150,6 +150,7 @@ ARGS=(
     actor_rollout_ref.ref.fsdp_config.param_offload=True
     reward_model.reward_manager="${REWARD_MANAGER}"
     actor_rollout_ref.rollout.tools.skip_training_on_tool_failure="${SKIP_TRAINING_ON_TOOL_FAILURE:-false}"
+    actor_rollout_ref.rollout.tools.skip_training_on_budget_exhausted="${SKIP_TRAINING_ON_BUDGET_EXHAUSTED:-true}"
     phases.shared_prompt_stream="${SHARED_PROMPT_STREAM:-true}"
     "phases.high_level.num_iters=${HL_NUM_ITERS}"
     "phases.low_level.num_iters=${LL_NUM_ITERS}"

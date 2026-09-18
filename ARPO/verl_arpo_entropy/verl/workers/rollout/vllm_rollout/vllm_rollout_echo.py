@@ -56,6 +56,29 @@ _TAG_INFO = {
 _TAG_MATCH_ORDER = tuple(t for t in _TAG_INFO if t.startswith("</")) + tuple(t for t in _TAG_INFO if not t.startswith("</"))
 
 _VALID_MASK_LEVELS = {"high", "low", "both", "none"}
+
+# Injected into a masked <result> block when a rollout can make no further tool
+# calls. Without it the rollout used to stop mid-call with a bare EOS, leaving no
+# <answer>; deep_research_echo.validate_format then scores that -1, i.e. a format
+# penalty for what is really "ran out of tool budget". The notice names the schema
+# tags so the SFT'd policy closes out legally. It carries result_mask 0, so it is
+# excluded from every loss mask and is never trained on.
+# IMPORTANT: no literal schema tags in these strings. validate_format scans the raw response and
+# does not skip <result> spans, so an "<answer>" written inside a notice is counted as a real
+# answer block and the trajectory fails with answer_count=2. Name the blocks in prose instead.
+_BUDGET_EXHAUSTED_NOTICE = (
+    "Tool budget exhausted: no further tool calls are available. Using only the evidence "
+    "gathered so far, write your final think block, then a tool block explaining why no further "
+    "tool is needed, then the answer block with the final answer enclosed in \\boxed{}."
+)
+
+# Same idea for a tool call whose content could not be extracted, which previously
+# dropped the sample silently with no result, no EOS and no counter.
+_UNPARSED_CALL_NOTICE = (
+    "The previous tool call could not be parsed and was not executed. Using only the evidence "
+    "gathered so far, write your final think block, then a tool block explaining why no further "
+    "tool is needed, then the answer block with the final answer enclosed in \\boxed{}."
+)
 _DEFAULT_MASK_CATEGORIES = {
     "tool": "low",
     "think": "high",
@@ -257,13 +280,30 @@ class vLLMRolloutECHO(vLLMRollout):
                 retry_count += 1
 
         execution_time = time.time() - start_time
-        logger.warning(f"Tool({tool.trigger_tag}) execution failed after {self.tool_retry_count} retries. Appending EOS.")
+        # NB: this path does NOT append EOS. It returns an empty result, and
+        # _process_tool_futures substitutes a "returned empty output" <result> block and
+        # lets the rollout continue. The old "Appending EOS" wording was wrong.
+        logger.warning(
+            f"Tool({tool.trigger_tag}) execution failed after {self.tool_retry_count} retries. "
+            "Substituting an empty-output <result> and continuing."
+        )
         return {
             "success": False,
             "retry_count": retry_count,
             "execution_time": execution_time,
             "result": "",
         }
+
+    def _append_masked_result(self, curr_inputs: list, result_masks: list, idx: int, result_text: str) -> None:
+        """Append a ``<result>`` block that is excluded from every loss mask.
+
+        Environment-authored text (tool output, budget notices) must never receive a
+        gradient, so its tokens carry result_mask 0.
+        """
+        formatted_result = f" <result>\n{result_text}\n</result>"
+        result_tokens = self.tokenizer.encode(formatted_result)
+        curr_inputs[idx].extend(result_tokens)
+        result_masks[idx].extend([0] * len(result_tokens))
 
     @staticmethod
     def _init_tool_metrics() -> dict:
@@ -277,6 +317,7 @@ class vLLMRolloutECHO(vLLMRollout):
             "tools/max_retries": 0,
             "tools/total_retries": 0,
             "tools/call_limit_reached_count": 0,
+            "tools/unparsed_call_count": 0,
         }
 
     def _prepare_rollout_sampling_kwargs(self, prompts: DataProto, kwargs: dict) -> tuple[bool, bool]:
@@ -359,10 +400,7 @@ class vLLMRolloutECHO(vLLMRollout):
                 if rollout_tool_failed is not None:
                     rollout_tool_failed[idx] = True
 
-            formatted_result = f" <result>\n{result_text}\n</result>"
-            result_tokens = self.tokenizer.encode(formatted_result)
-            curr_inputs[idx].extend(result_tokens)
-            result_masks[idx].extend([0] * len(result_tokens))
+            self._append_masked_result(curr_inputs, result_masks, idx, result_text)
 
     def _collect_hierarchical_outputs(
         self,
@@ -417,6 +455,8 @@ class vLLMRolloutECHO(vLLMRollout):
         do_sample: bool,
         sample_to_indices: dict,
         rollout_tool_failed: list | None,
+        tool_budget_exhausted: list,
+        tool_calls_made: list,
         output_sequences: list,
         output_result_masks: list,
         output_high_level_masks: list,
@@ -485,6 +525,19 @@ class vLLMRolloutECHO(vLLMRollout):
                 [rollout_tool_failed[idx] for i in range(batch_size) for idx in sample_to_indices[i][:num_samples]],
                 dtype=np.bool_,
             )
+
+        # Per-sample so they survive DataParallel concat. tool_metrics cannot: DataProto.concat
+        # keeps meta_info from rank 0 only (verl/protocol.py:710), so every tools/* counter in the
+        # logs reports a single shard. Anything the trainer needs to act on or aggregate correctly
+        # must ride in non_tensor_batch instead.
+        non_tensor_batch["tool_budget_exhausted"] = np.array(
+            [tool_budget_exhausted[idx] for i in range(batch_size) for idx in sample_to_indices[i][:num_samples]],
+            dtype=np.bool_,
+        )
+        non_tensor_batch["tool_calls_made"] = np.array(
+            [tool_calls_made[idx] for i in range(batch_size) for idx in sample_to_indices[i][:num_samples]],
+            dtype=np.int32,
+        )
 
         final_batch_size = input_ids.size(0)
         seq = torch.cat([input_ids, response], dim=-1)
@@ -763,6 +816,10 @@ class vLLMRolloutECHO(vLLMRollout):
                 i: [i * num_samples + j for j in range(num_samples)] for i in range(batch_size)
             }
             rollout_tool_failed = [False] * len(curr_inputs) if self.skip_training_on_tool_failure else None
+            # Per-sample, so downstream metrics and masking are world-size correct:
+            # tool_metrics is a plain dict and DataProto.concat keeps only rank 0's meta_info.
+            budget_nudged = [False] * len(curr_inputs)
+            tool_budget_exhausted = [False] * len(curr_inputs)
 
             max_len = self.config.response_length
 
@@ -798,20 +855,38 @@ class vLLMRolloutECHO(vLLMRollout):
 
                     if is_tool_call:
                         tag = stop_reason.strip("</>")
-                        if call_counters[out_idx] < self.tool_call_limit:
+                        budget_left = call_counters[out_idx] < self.tool_call_limit
+                        content = ""
+                        if budget_left:
                             call_counters[out_idx] += 1
                             full_text = self.tokenizer.decode(curr_inputs[out_idx])
                             content = self._extract_content(full_text, tag)
-                            if content:
-                                tool_requests[tag].append({"index": out_idx, "content": content})
-                                next_active_indices.append(out_idx)
-                                tool_metrics["tools/total_calls"] += 1
-                                calls_per_tool[tag] += 1
+
+                        if budget_left and content:
+                            tool_requests[tag].append({"index": out_idx, "content": content})
+                            next_active_indices.append(out_idx)
+                            tool_metrics["tools/total_calls"] += 1
+                            calls_per_tool[tag] += 1
+                        elif not budget_nudged[out_idx]:
+                            # The call cannot be served. Give the sample one masked <result>
+                            # notice and a final turn to answer, rather than appending a bare
+                            # EOS mid-call: that left the trajectory with no <answer>, which
+                            # validate_format scores -1, turning "ran out of tool budget" into
+                            # a format penalty and teaching the policy to stop calling tools.
+                            budget_nudged[out_idx] = True
+                            if budget_left:
+                                tool_metrics["tools/unparsed_call_count"] += 1
+                                notice = _UNPARSED_CALL_NOTICE
+                            else:
+                                tool_budget_exhausted[out_idx] = True
+                                tool_metrics["tools/call_limit_reached_count"] += 1
+                                notice = _BUDGET_EXHAUSTED_NOTICE
+                            self._append_masked_result(curr_inputs, result_masks, out_idx, notice)
+                            next_active_indices.append(out_idx)
                         else:
-                            logger.warning(f"Tool call limit reached for sample {out_idx}. Appending EOS.")
+                            # Already nudged once and still asking for a tool: terminate.
                             curr_inputs[out_idx].append(eos_token_id)
                             result_masks[out_idx].append(1)
-                            tool_metrics["tools/call_limit_reached_count"] += 1
 
                     elif finish_reason == "length":
                         if len(curr_inputs[out_idx]) - len(init_inputs[out_idx]) < max_len:
@@ -878,6 +953,8 @@ class vLLMRolloutECHO(vLLMRollout):
             do_sample,
             sample_to_indices,
             rollout_tool_failed,
+            tool_budget_exhausted,
+            call_counters,
             output_sequences,
             output_result_masks,
             output_high_level_masks,
@@ -946,6 +1023,10 @@ class vLLMRolloutECHO(vLLMRollout):
                 current_idx += initial_rollouts
 
             rollout_tool_failed = [False] * len(curr_inputs) if self.skip_training_on_tool_failure else None
+            # Per-sample, so downstream metrics and masking are world-size correct:
+            # tool_metrics is a plain dict and DataProto.concat keeps only rank 0's meta_info.
+            budget_nudged = [False] * len(curr_inputs)
+            tool_budget_exhausted = [False] * len(curr_inputs)
             max_len = self.config.response_length
             vocab_size = len(self.tokenizer.get_vocab())
             entropy_norm_factor = math.log(vocab_size)
@@ -988,20 +1069,38 @@ class vLLMRolloutECHO(vLLMRollout):
 
                     if is_tool_call:
                         tag = stop_reason.strip("</>")
-                        if call_counters[out_idx] < self.tool_call_limit:
+                        budget_left = call_counters[out_idx] < self.tool_call_limit
+                        content = ""
+                        if budget_left:
                             call_counters[out_idx] += 1
                             full_text = self.tokenizer.decode(curr_inputs[out_idx])
                             content = self._extract_content(full_text, tag)
-                            if content:
-                                tool_requests[tag].append({"index": out_idx, "content": content})
-                                next_active_indices.append(out_idx)
-                                tool_metrics["tools/total_calls"] += 1
-                                calls_per_tool[tag] += 1
+
+                        if budget_left and content:
+                            tool_requests[tag].append({"index": out_idx, "content": content})
+                            next_active_indices.append(out_idx)
+                            tool_metrics["tools/total_calls"] += 1
+                            calls_per_tool[tag] += 1
+                        elif not budget_nudged[out_idx]:
+                            # The call cannot be served. Give the sample one masked <result>
+                            # notice and a final turn to answer, rather than appending a bare
+                            # EOS mid-call: that left the trajectory with no <answer>, which
+                            # validate_format scores -1, turning "ran out of tool budget" into
+                            # a format penalty and teaching the policy to stop calling tools.
+                            budget_nudged[out_idx] = True
+                            if budget_left:
+                                tool_metrics["tools/unparsed_call_count"] += 1
+                                notice = _UNPARSED_CALL_NOTICE
+                            else:
+                                tool_budget_exhausted[out_idx] = True
+                                tool_metrics["tools/call_limit_reached_count"] += 1
+                                notice = _BUDGET_EXHAUSTED_NOTICE
+                            self._append_masked_result(curr_inputs, result_masks, out_idx, notice)
+                            next_active_indices.append(out_idx)
                         else:
-                            logger.warning(f"Tool call limit reached for sample {out_idx}. Appending EOS.")
+                            # Already nudged once and still asking for a tool: terminate.
                             curr_inputs[out_idx].append(eos_token_id)
                             result_masks[out_idx].append(1)
-                            tool_metrics["tools/call_limit_reached_count"] += 1
 
                     elif finish_reason == "length":
                         if len(curr_inputs[out_idx]) - len(init_inputs[out_idx]) < max_len:
@@ -1037,6 +1136,8 @@ class vLLMRolloutECHO(vLLMRollout):
                 new_init_inputs = []
                 new_result_masks = []
                 new_call_counters = []
+                new_budget_nudged = []
+                new_budget_exhausted = []
                 new_sample_origins = []
 
                 active_by_sample = {}
@@ -1071,6 +1172,10 @@ class vLLMRolloutECHO(vLLMRollout):
                             new_init_inputs.append(init_inputs[source_idx].copy())
                             new_result_masks.append(result_masks[source_idx].copy())
                             new_call_counters.append(call_counters[source_idx])
+                            # A branch continues an existing trajectory, so it inherits both the
+                            # spent budget and whether that trajectory was already nudged.
+                            new_budget_nudged.append(budget_nudged[source_idx])
+                            new_budget_exhausted.append(tool_budget_exhausted[source_idx])
                             new_sample_origins.append(orig_sample)
                             rollouts_per_sample[orig_sample] += 1
                             branches_created += 1
@@ -1088,6 +1193,9 @@ class vLLMRolloutECHO(vLLMRollout):
                             new_init_inputs.append(init_inputs[source_idx].copy())
                             new_result_masks.append([])
                             new_call_counters.append(0)
+                            # Restarted from the prompt, so budget state resets too.
+                            new_budget_nudged.append(False)
+                            new_budget_exhausted.append(False)
                             new_sample_origins.append(orig_sample)
                             rollouts_per_sample[orig_sample] += 1
 
@@ -1097,6 +1205,8 @@ class vLLMRolloutECHO(vLLMRollout):
                     init_inputs.extend(new_init_inputs)
                     result_masks.extend(new_result_masks)
                     call_counters.extend(new_call_counters)
+                    budget_nudged.extend(new_budget_nudged)
+                    tool_budget_exhausted.extend(new_budget_exhausted)
                     if rollout_tool_failed is not None:
                         rollout_tool_failed.extend([False] * len(new_inputs))
                     final_active_indices.extend(range(start_idx, start_idx + len(new_inputs)))
@@ -1160,6 +1270,8 @@ class vLLMRolloutECHO(vLLMRollout):
             do_sample,
             padded_sample_to_indices,
             rollout_tool_failed,
+            tool_budget_exhausted,
+            call_counters,
             output_sequences,
             output_result_masks,
             output_high_level_masks,

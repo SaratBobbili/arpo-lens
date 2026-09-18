@@ -68,37 +68,75 @@ class RayECHOTrainer(RayPPOTrainer):
     _PHASE_NAMES = ("low_level", "high_level")
     _PHASE_MASK_KEYS = {"low_level": "low_level_loss_mask", "high_level": "high_level_loss_mask"}
 
-    # Per-phase JSONL dump spec consumed by `_dump_logging_data`.
+    # Phase-owned optimizer signals only (prefixed high_level/|low_level/).
+    _PHASE_OWNED_KEYS = frozenset({
+        "actor/lr",
+        "actor/pg_loss",
+        "actor/grad_norm",
+        "actor/entropy_reg_loss",
+        "actor/entropy_reg_coef",
+        "actor/opefo_lambda",
+        "actor/opefo_delta_H_net",
+        "actor/opefo_pos_mag",
+        "actor/opefo_neg_mag",
+    })
+
+    _ACTOR_TO_POLICY = {
+        "actor/ppo_kl": "policy/ppo_kl",
+        "actor/pg_clipfrac": "policy/pg_clipfrac",
+    }
+
+    _TOOL_TO_POLICY = {
+        "tools/total_calls": "policy/tools_total_calls",
+        "tools/successful_calls": "policy/tools_successful_calls",
+    }
+
+    # JSONL dump spec: phase-owned under {phase}/, shared health under policy/.
     _LOGGING_SPEC = {
         "low_level": [
-            ("reward.jsonl", "reward/effective_reward_mean"),
-            ("format_penalty.jsonl", "reward/bad_format_rate"),
-            ("in_group_reward_std.jsonl", "reward/in_group_reward_std"),
             ("pg_loss.jsonl", "actor/pg_loss"),
             ("entropy_reg_loss.jsonl", "actor/entropy_reg_loss"),
             ("grad_norm.jsonl", "actor/grad_norm"),
-            ("entropy_old_policy.jsonl", "actor/entropy_old_policy"),
-            ("format_valid_rate.jsonl", "reward/format_valid_rate"),
-            ("tools_total_calls.jsonl", "tools/total_calls"),
-            ("tools_successful_calls.jsonl", "tools/successful_calls"),
+            ("opefo_lambda.jsonl", "actor/opefo_lambda"),
+            ("opefo_delta_H_net.jsonl", "actor/opefo_delta_H_net"),
         ],
         "high_level": [
-            ("reward.jsonl", "reward/effective_reward_mean"),
-            ("format_penalty.jsonl", "reward/bad_format_rate"),
-            ("in_group_reward_std.jsonl", "reward/in_group_reward_std"),
             ("pg_loss.jsonl", "actor/pg_loss"),
             ("entropy_reg_loss.jsonl", "actor/entropy_reg_loss"),
             ("grad_norm.jsonl", "actor/grad_norm"),
-            ("entropy_old_policy.jsonl", "actor/entropy_old_policy"),
-            ("format_valid_rate.jsonl", "reward/format_valid_rate"),
-            ("tools_total_calls.jsonl", "tools/total_calls"),
-            ("tools_successful_calls.jsonl", "tools/successful_calls"),
+            ("opefo_lambda.jsonl", "actor/opefo_lambda"),
+            ("opefo_delta_H_net.jsonl", "actor/opefo_delta_H_net"),
+        ],
+        "policy": [
+            ("reward.jsonl", "reward_mean"),
+            ("format_penalty.jsonl", "bad_format_rate"),
+            ("in_group_reward_std.jsonl", "in_group_reward_std"),
+            ("format_valid_rate.jsonl", "format_valid_rate"),
+            ("f1_mean.jsonl", "f1_mean"),
+            ("no_tool_rate.jsonl", "no_tool_rate"),
+            ("advantage_std.jsonl", "advantage_std"),
+            ("ppo_kl.jsonl", "ppo_kl"),
+            ("pg_clipfrac.jsonl", "pg_clipfrac"),
+            ("rollout_probs_diff_mean.jsonl", "rollout_probs_diff_mean"),
+            ("response_length_mean.jsonl", "response_length_mean"),
+            ("response_length_clip_ratio.jsonl", "response_length_clip_ratio"),
+            ("tools_total_calls.jsonl", "tools_total_calls"),
+            ("tools_successful_calls.jsonl", "tools_successful_calls"),
+            ("entropy.jsonl", "entropy"),
         ],
     }
 
     @staticmethod
-    def _prefix_metrics(metrics_dict: dict, prefix: str) -> dict:
-        return {f"{prefix}{key}": value for key, value in metrics_dict.items()}
+    def _prefix_phase_owned(metrics_dict: dict, phase_prefix: str) -> dict:
+        return {
+            f"{phase_prefix}{key}": value
+            for key, value in metrics_dict.items()
+            if key in RayECHOTrainer._PHASE_OWNED_KEYS
+        }
+
+    @staticmethod
+    def _remap_to_policy(metrics_dict: dict, mapping: dict) -> dict:
+        return {dst: metrics_dict[src] for src, dst in mapping.items() if src in metrics_dict}
 
     def _phase_cfg(self, phase_name: str):
         return self.config.phases[phase_name]
@@ -148,24 +186,38 @@ class RayECHOTrainer(RayPPOTrainer):
 
         if "score" in reward_extra_info:
             scores = torch.tensor(reward_extra_info["score"], dtype=torch.float32)
-            metrics["reward/score_mean"] = scores.mean().item()
-            metrics["reward/effective_reward_mean"] = scores.mean().item()
-            metrics["reward/bad_format_rate"] = (scores < 0.0).to(torch.float32).mean().item()
-            metrics["reward/format_pass_rate"] = (scores >= 0.0).to(torch.float32).mean().item()
+            metrics["policy/reward_mean"] = scores.mean().item()
+            metrics["policy/bad_format_rate"] = (scores < 0.0).to(torch.float32).mean().item()
 
         if "f1_score" in reward_extra_info:
             f1_scores = torch.tensor(reward_extra_info["f1_score"], dtype=torch.float32)
-            metrics["reward/f1_mean"] = f1_scores.mean().item()
+            metrics["policy/f1_mean"] = f1_scores.mean().item()
 
         if "no_tool_calls" in reward_extra_info:
             no_tool = torch.tensor(reward_extra_info["no_tool_calls"], dtype=torch.float32)
-            metrics["reward/no_tool_rate"] = no_tool.mean().item()
+            metrics["policy/no_tool_rate"] = no_tool.mean().item()
 
         if "format_valid" in reward_extra_info:
             fmt_valid = torch.tensor(reward_extra_info["format_valid"], dtype=torch.float32)
-            metrics["reward/format_valid_rate"] = fmt_valid.mean().item()
+            metrics["policy/format_valid_rate"] = fmt_valid.mean().item()
 
         return metrics
+
+    @staticmethod
+    def _policy_from_data_metrics(data_metrics: dict, phase_batch: DataProto) -> dict:
+        out: dict = {}
+        if "response_length/mean" in data_metrics:
+            out["policy/response_length_mean"] = data_metrics["response_length/mean"]
+        if "response_length/clip_ratio" in data_metrics:
+            out["policy/response_length_clip_ratio"] = data_metrics["response_length/clip_ratio"]
+        advantages = phase_batch.batch["advantages"]
+        max_response_length = phase_batch.batch["responses"].shape[-1]
+        response_mask = phase_batch.batch["attention_mask"][:, -max_response_length:].bool()
+        valid_adv = torch.masked_select(advantages, response_mask)
+        out["policy/advantage_std"] = (
+            torch.std(valid_adv).detach().item() if valid_adv.numel() > 1 else 0.0
+        )
+        return out
 
     def _echo_rollout_tools_cfg(self):
         return self.config.actor_rollout_ref.rollout.tools
@@ -440,7 +492,6 @@ class RayECHOTrainer(RayPPOTrainer):
         timing_raw: dict,
         metrics: dict,
     ):
-        phase_prefix = f"{phase_name}/"
         phase_cfg = self._phase_cfg(phase_name)
         advantage_algorithm = str(phase_cfg.get("advantage_algorithm", "grpo"))
         phase_reward_extra_infos_dict: dict = {}
@@ -473,7 +524,7 @@ class RayECHOTrainer(RayPPOTrainer):
                 gen_batch_output = self.async_rollout_manager.generate_sequences(phase_gen_batch)
                 self.async_rollout_manager.sleep()
             if gen_batch_output.meta_info and "metrics" in gen_batch_output.meta_info:
-                metrics.update(self._prefix_metrics(gen_batch_output.meta_info["metrics"], phase_prefix))
+                metrics.update(self._remap_to_policy(gen_batch_output.meta_info["metrics"], self._TOOL_TO_POLICY))
 
         if self.config.algorithm.adv_estimator == AdvantageEstimator.REMAX:
             with _timer(f"{phase_name}_gen_max", timing_raw):
@@ -505,9 +556,7 @@ class RayECHOTrainer(RayPPOTrainer):
         phase_batch.batch["response_mask"] = phase_batch.batch[phase_mask_key]
 
         if self.config.trainer.balance_batch:
-            phase_balance_metrics = {}
-            self._balance_batch(phase_batch, metrics=phase_balance_metrics)
-            metrics.update(self._prefix_metrics(phase_balance_metrics, phase_prefix))
+            self._balance_batch(phase_batch, metrics={})
 
         self._apply_tool_failure_phase_masks(phase_batch, phase_mask_key)
         phase_batch.meta_info["global_token_num"] = torch.sum(phase_batch.batch["attention_mask"], dim=-1).tolist()
@@ -523,32 +572,28 @@ class RayECHOTrainer(RayPPOTrainer):
                 reward_tensor, phase_reward_extra_infos_dict = compute_reward(phase_batch, self.reward_fn)
 
         with _timer(f"{phase_name}_old_log_prob", timing_raw):
-            # Always compute old-policy entropy for logging; it's a free byproduct of compute_log_prob.
             phase_batch.meta_info["calculate_entropy"] = True
             old_log_prob = self.actor_rollout_wg.compute_log_prob(phase_batch)
+            entropys = old_log_prob.batch["entropys"]
+            attention_mask = phase_batch.batch["attention_mask"]
+            responses = phase_batch.batch["responses"]
+            response_length = responses.size(1)
+            full_response_mask = attention_mask[:, -response_length:]
             loss_agg_mode = self.config.actor_rollout_ref.actor.loss_agg_mode
-            entropys = old_log_prob.batch.pop("entropys", None)
-            if entropys is not None:
-                entropy_loss = agg_loss(
-                    loss_mat=entropys, loss_mask=phase_batch.batch["loss_mask"], loss_agg_mode=loss_agg_mode
-                )
-                metrics[f"{phase_prefix}actor/entropy_old_policy"] = entropy_loss.detach().item()
+            metrics["policy/entropy"] = agg_loss(
+                loss_mat=entropys, loss_mask=full_response_mask, loss_agg_mode=loss_agg_mode
+            ).detach().item()
+            old_log_prob.batch.pop("entropys")
             phase_batch = phase_batch.union(old_log_prob)
 
             if "rollout_log_probs" in phase_batch.batch.keys():
                 rollout_old_log_probs = phase_batch.batch["rollout_log_probs"]
                 actor_old_log_probs = phase_batch.batch["old_log_probs"]
-                attention_mask = phase_batch.batch["attention_mask"]
-                responses = phase_batch.batch["responses"]
-                response_length = responses.size(1)
-                response_mask = attention_mask[:, -response_length:]
                 rollout_probs = torch.exp(rollout_old_log_probs)
                 actor_probs = torch.exp(actor_old_log_probs)
                 rollout_probs_diff = torch.abs(rollout_probs - actor_probs)
-                rollout_probs_diff = torch.masked_select(rollout_probs_diff, response_mask.bool())
-                metrics[f"{phase_prefix}training/rollout_probs_diff_max"] = torch.max(rollout_probs_diff).detach().item()
-                metrics[f"{phase_prefix}training/rollout_probs_diff_mean"] = torch.mean(rollout_probs_diff).detach().item()
-                metrics[f"{phase_prefix}training/rollout_probs_diff_std"] = torch.std(rollout_probs_diff).detach().item()
+                rollout_probs_diff = torch.masked_select(rollout_probs_diff, full_response_mask.bool())
+                metrics["policy/rollout_probs_diff_mean"] = torch.mean(rollout_probs_diff).detach().item()
 
         if self._uses_entropy_regularizer(phase_cfg):
             phase_batch.batch["entropy_reg_loss_mask"] = phase_batch.batch[phase_mask_key].to(torch.float32)
@@ -568,26 +613,20 @@ class RayECHOTrainer(RayPPOTrainer):
 
         if self.config.reward_model.launch_reward_fn_async:
             reward_tensor, phase_reward_extra_infos_dict = ray.get(future_reward)
-        metrics[f"{phase_prefix}reward/effective_reward_mean"] = (
+        metrics["policy/reward_mean"] = (
             reward_tensor.to(torch.float32).sum(dim=-1).mean().detach().item()
         )
         phase_batch.batch["token_level_scores"] = reward_tensor
         if phase_reward_extra_infos_dict:
             phase_batch.non_tensor_batch.update({k: np.array(v) for k, v in phase_reward_extra_infos_dict.items()})
-            metrics.update(
-                self._prefix_metrics(
-                    self._build_scorer_metrics(phase_reward_extra_infos_dict),
-                    phase_prefix,
-                )
-            )
+            metrics.update(self._build_scorer_metrics(phase_reward_extra_infos_dict))
 
         if self.config.algorithm.use_kl_in_reward:
-            phase_batch, kl_metrics = apply_kl_penalty(
+            phase_batch, _kl_metrics = apply_kl_penalty(
                 phase_batch,
                 kl_ctrl=self.kl_ctrl_in_reward,
                 kl_penalty=self.config.algorithm.kl_penalty,
             )
-            metrics.update(self._prefix_metrics(kl_metrics, phase_prefix))
         else:
             phase_batch.batch["token_level_rewards"] = phase_batch.batch["token_level_scores"]
 
@@ -603,7 +642,7 @@ class RayECHOTrainer(RayPPOTrainer):
         phase_cfg = self._phase_cfg(phase_name)
         phase_rollout_n = int(phase_cfg.group_size)
         phase_mask_key = self._PHASE_MASK_KEYS[phase_name]
-        metrics = {f"{phase_prefix}training/group_size": phase_rollout_n}
+        metrics = {}
         timing_raw = {}
         is_last_step = self.global_steps >= self.total_training_steps
         saved_checkpoint_this_step = False
@@ -611,7 +650,6 @@ class RayECHOTrainer(RayPPOTrainer):
         with _timer("step", timing_raw):
             batch_dict = self._next_batch_dict(phase_name)
             gen_batch, prompt_batch = self._pop_gen_batch(DataProto.from_single_dict(batch_dict))
-            metrics[f"{phase_prefix}training/num_prompts"] = gen_batch.batch.batch_size[0]
             phase_batch, phase_reward_extra_infos_dict = self._phase_rollout_to_scored_batch(
                 gen_batch, prompt_batch, phase_name, phase_rollout_n, phase_mask_key, timing_raw, metrics,
             )
@@ -620,7 +658,7 @@ class RayECHOTrainer(RayPPOTrainer):
             torch.cuda.empty_cache()
 
             with _timer(f"{phase_name}_adv", timing_raw):
-                metrics[f"{phase_prefix}reward/in_group_reward_std"] = self._compute_in_group_reward_std(phase_batch)
+                metrics["policy/in_group_reward_std"] = self._compute_in_group_reward_std(phase_batch)
                 self._apply_tool_failure_before_grpo(phase_batch)
 
                 phase_batch = compute_advantage(
@@ -635,18 +673,12 @@ class RayECHOTrainer(RayPPOTrainer):
                     pf_ppo_reweight_method=self.config.algorithm.pf_ppo.reweight_method,
                     pf_ppo_weight_pow=self.config.algorithm.pf_ppo.weight_pow,
                 )
-                metrics.update(
-                    self._prefix_metrics(
-                        compute_data_metrics(batch=phase_batch, use_critic=self.use_critic),
-                        phase_prefix,
-                    )
-                )
+                data_metrics = compute_data_metrics(batch=phase_batch, use_critic=self.use_critic)
+                metrics.update(self._policy_from_data_metrics(data_metrics, phase_batch))
 
             if self.use_critic:
                 with _timer(f"{phase_name}_update_critic", timing_raw):
-                    critic_output = self.critic_wg.update_critic(phase_batch)
-                critic_output_metrics = reduce_metrics(critic_output.meta_info["metrics"])
-                metrics.update(self._prefix_metrics(critic_output_metrics, phase_prefix))
+                    self.critic_wg.update_critic(phase_batch)
 
             if self.config.trainer.critic_warmup <= self.global_steps:
                 with _timer(f"{phase_name}_update_actor", timing_raw):
@@ -672,7 +704,9 @@ class RayECHOTrainer(RayPPOTrainer):
                         phase_batch.meta_info["entropy_loss_mask_key"] = "entropy_reg_loss_mask"
                     actor_output = self.actor_rollout_wg.update_actor(phase_batch)
                 actor_output_metrics = reduce_metrics(actor_output.meta_info["metrics"])
-                metrics.update(self._prefix_metrics(actor_output_metrics, phase_prefix))
+                metrics.update(self._prefix_phase_owned(actor_output_metrics, phase_prefix))
+                metrics.update(self._remap_to_policy(actor_output_metrics, self._ACTOR_TO_POLICY))
+                metrics.update({k: v for k, v in actor_output_metrics.items() if k.startswith("perf/")})
 
             rollout_data_dir = self.config.trainer.get("rollout_data_dir", None)
             if rollout_data_dir:
@@ -744,7 +778,9 @@ class RayECHOTrainer(RayPPOTrainer):
         )
         if self._shared_prompt_stream:
             metrics["training/epoch"] = self._current_epoch
-        metrics.update(compute_timing_metrics(batch=phase_batch, timing_raw=timing_raw))
+        timing_metrics = compute_timing_metrics(batch=phase_batch, timing_raw=timing_raw)
+        if "timing_s/step" in timing_metrics:
+            metrics["timing_s/step"] = timing_metrics["timing_s/step"]
         n_gpus = self.resource_pool_manager.get_n_gpus()
         metrics.update(compute_throughout_metrics(batch=phase_batch, timing_raw=timing_raw, n_gpus=n_gpus))
 

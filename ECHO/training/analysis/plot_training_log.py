@@ -9,7 +9,7 @@
 """Per-step training-trace plotter for the ECHO recipe.
 
 Reads the JSONL traces produced by `RayECHOTrainer._dump_logging_data` under
-`{SAVE_PATH}/logging_data/{low_level,high_level}/<metric>.jsonl` and overlays
+`{SAVE_PATH}/logging_data/{low_level,high_level,policy}/<metric>.jsonl` and overlays
 all enabled metric series on a single PNG. Each enabled toggle below adds one
 line to the figure; flip multiple toggles on simultaneously to compare them on
 the same axes (x = global step, y = metric value or step-over-step gain).
@@ -39,67 +39,73 @@ OUTPUT_PNG = Path("./echo_training_plot.png")
 # the raw `value` field. Toggle independently of each other.
 # =============================================================================
 
-# --- Reward channels (the headline gain metric) ---------------------------------
-PLOT_LL_REWARD = True              # LL effective_reward_mean (scorer score used by GRPO)
-PLOT_LL_REWARD_GAIN = True         # Δ of LL reward vs previous step
-PLOT_LL_FORMAT_PENALTY = False     # LL bad_format_rate (share of samples with score < 0)
-PLOT_LL_FORMAT_PENALTY_GAIN = False
-PLOT_HL_REWARD = False             # HL effective_reward_mean (same scorer)
-PLOT_HL_REWARD_GAIN = False
-PLOT_HL_FORMAT_PENALTY = False     # HL bad_format_rate
-PLOT_HL_FORMAT_PENALTY_GAIN = False
+# --- Shared policy health (policy/*) -------------------------------------------
+PLOT_POLICY_REWARD = True
+PLOT_POLICY_REWARD_GAIN = True
+PLOT_POLICY_FORMAT_PENALTY = False
+PLOT_POLICY_FORMAT_PENALTY_GAIN = False
+PLOT_POLICY_IN_GROUP_REWARD_STD = False
+PLOT_POLICY_FORMAT_VALID_RATE = False
+PLOT_POLICY_F1_MEAN = False
+PLOT_POLICY_NO_TOOL_RATE = False
+PLOT_POLICY_ADVANTAGE_STD = False
+PLOT_POLICY_PPO_KL = False
+PLOT_POLICY_PG_CLIPFRAC = False
+PLOT_POLICY_ROLLOUT_PROBS_DIFF = False
+PLOT_POLICY_RESPONSE_LENGTH_MEAN = False
+PLOT_POLICY_RESPONSE_LENGTH_CLIP = False
+PLOT_POLICY_TOOLS_TOTAL_CALLS = False
+PLOT_POLICY_TOOLS_SUCCESSFUL_CALLS = False
+PLOT_POLICY_ENTROPY = False
 
-# --- Optimization metrics (raw values; gains usually less interesting here) ----
-PLOT_LL_PG_LOSS = False            # LL PPO clipped policy-gradient loss
+# --- Phase-owned optimizer signals --------------------------------------------
+PLOT_LL_PG_LOSS = False
 PLOT_HL_PG_LOSS = False
-PLOT_LL_ENTROPY_REG_LOSS = False   # LL differentiable entropy regularizer term (HL has no file)
-PLOT_LL_GRAD_NORM = False          # LL pre-step gradient norm
+PLOT_LL_ENTROPY_REG_LOSS = False
+PLOT_HL_ENTROPY_REG_LOSS = False
+PLOT_LL_GRAD_NORM = False
 PLOT_HL_GRAD_NORM = False
-PLOT_LL_ENTROPY_OLD_POLICY = False # LL diagnostic: old-policy entropy on loss_mask
-PLOT_HL_ENTROPY_OLD_POLICY = False
-
-# --- Validity / tool diagnostics ------------------------------------------------
-PLOT_LL_FORMAT_VALID_RATE = False  # LL phase: shared format_valid rate
-PLOT_HL_FORMAT_VALID_RATE = False  # HL phase: shared format_valid rate
-PLOT_LL_TOOLS_TOTAL_CALLS = False
-PLOT_HL_TOOLS_TOTAL_CALLS = False
-PLOT_LL_TOOLS_SUCCESSFUL_CALLS = False
-PLOT_HL_TOOLS_SUCCESSFUL_CALLS = False
+PLOT_LL_OPEFO_LAMBDA = False
+PLOT_HL_OPEFO_LAMBDA = False
+PLOT_LL_OPEFO_DELTA_H_NET = False
+PLOT_HL_OPEFO_DELTA_H_NET = False
 
 # =============================================================================
 # Series registry. (toggle, jsonl_relative_path, label_in_legend, field).
-# `field` is "value" (raw) or "gain" (Δ vs previous step). One row per toggle.
 # =============================================================================
 
 SERIES = [
-    (PLOT_LL_REWARD,                 "low_level/reward.jsonl",                  "LL reward",                  "value"),
-    (PLOT_LL_REWARD_GAIN,            "low_level/reward.jsonl",                  "LL reward (gain)",           "gain"),
-    (PLOT_LL_FORMAT_PENALTY,         "low_level/format_penalty.jsonl",          "LL format penalty",          "value"),
-    (PLOT_LL_FORMAT_PENALTY_GAIN,    "low_level/format_penalty.jsonl",          "LL format penalty (gain)",   "gain"),
-    (PLOT_HL_REWARD,                 "high_level/reward.jsonl",                 "HL reward",                  "value"),
-    (PLOT_HL_REWARD_GAIN,            "high_level/reward.jsonl",                 "HL reward (gain)",           "gain"),
-    (PLOT_HL_FORMAT_PENALTY,         "high_level/format_penalty.jsonl",         "HL format penalty",          "value"),
-    (PLOT_HL_FORMAT_PENALTY_GAIN,    "high_level/format_penalty.jsonl",         "HL format penalty (gain)",   "gain"),
-    (PLOT_LL_PG_LOSS,                "low_level/pg_loss.jsonl",                 "LL pg_loss",                 "value"),
-    (PLOT_HL_PG_LOSS,                "high_level/pg_loss.jsonl",                "HL pg_loss",                 "value"),
-    (PLOT_LL_ENTROPY_REG_LOSS,       "low_level/entropy_reg_loss.jsonl",        "LL entropy_reg_loss",        "value"),
-    (PLOT_LL_GRAD_NORM,              "low_level/grad_norm.jsonl",               "LL grad_norm",               "value"),
-    (PLOT_HL_GRAD_NORM,              "high_level/grad_norm.jsonl",              "HL grad_norm",               "value"),
-    (PLOT_LL_ENTROPY_OLD_POLICY,     "low_level/entropy_old_policy.jsonl",      "LL entropy_old_policy",      "value"),
-    (PLOT_HL_ENTROPY_OLD_POLICY,     "high_level/entropy_old_policy.jsonl",     "HL entropy_old_policy",      "value"),
-    (PLOT_LL_FORMAT_VALID_RATE,      "low_level/format_valid_rate.jsonl",       "LL format_valid_rate",       "value"),
-    (PLOT_HL_FORMAT_VALID_RATE,      "high_level/format_valid_rate.jsonl",      "HL format_valid_rate",       "value"),
-    (PLOT_LL_TOOLS_TOTAL_CALLS,      "low_level/tools_total_calls.jsonl",       "LL tools/total_calls",       "value"),
-    (PLOT_HL_TOOLS_TOTAL_CALLS,      "high_level/tools_total_calls.jsonl",      "HL tools/total_calls",       "value"),
-    (PLOT_LL_TOOLS_SUCCESSFUL_CALLS, "low_level/tools_successful_calls.jsonl",  "LL tools/successful_calls",  "value"),
-    (PLOT_HL_TOOLS_SUCCESSFUL_CALLS, "high_level/tools_successful_calls.jsonl", "HL tools/successful_calls",  "value"),
+    (PLOT_POLICY_REWARD,                 "policy/reward.jsonl",                      "policy reward",                 "value"),
+    (PLOT_POLICY_REWARD_GAIN,            "policy/reward.jsonl",                      "policy reward (gain)",          "gain"),
+    (PLOT_POLICY_FORMAT_PENALTY,         "policy/format_penalty.jsonl",              "policy format penalty",         "value"),
+    (PLOT_POLICY_FORMAT_PENALTY_GAIN,    "policy/format_penalty.jsonl",              "policy format penalty (gain)",  "gain"),
+    (PLOT_POLICY_IN_GROUP_REWARD_STD,    "policy/in_group_reward_std.jsonl",         "policy in_group_reward_std",    "value"),
+    (PLOT_POLICY_FORMAT_VALID_RATE,      "policy/format_valid_rate.jsonl",           "policy format_valid_rate",      "value"),
+    (PLOT_POLICY_F1_MEAN,                "policy/f1_mean.jsonl",                     "policy f1_mean",                "value"),
+    (PLOT_POLICY_NO_TOOL_RATE,           "policy/no_tool_rate.jsonl",                "policy no_tool_rate",           "value"),
+    (PLOT_POLICY_ADVANTAGE_STD,          "policy/advantage_std.jsonl",               "policy advantage_std",          "value"),
+    (PLOT_POLICY_ENTROPY,                "policy/entropy.jsonl",                     "policy entropy",                "value"),
+    (PLOT_POLICY_PPO_KL,                 "policy/ppo_kl.jsonl",                      "policy ppo_kl",                 "value"),
+    (PLOT_POLICY_PG_CLIPFRAC,            "policy/pg_clipfrac.jsonl",                 "policy pg_clipfrac",            "value"),
+    (PLOT_POLICY_ROLLOUT_PROBS_DIFF,     "policy/rollout_probs_diff_mean.jsonl",     "policy rollout_probs_diff",     "value"),
+    (PLOT_POLICY_RESPONSE_LENGTH_MEAN,   "policy/response_length_mean.jsonl",        "policy response_length_mean",   "value"),
+    (PLOT_POLICY_RESPONSE_LENGTH_CLIP,   "policy/response_length_clip_ratio.jsonl",  "policy response_length_clip",   "value"),
+    (PLOT_POLICY_TOOLS_TOTAL_CALLS,      "policy/tools_total_calls.jsonl",           "policy tools_total_calls",      "value"),
+    (PLOT_POLICY_TOOLS_SUCCESSFUL_CALLS, "policy/tools_successful_calls.jsonl",      "policy tools_successful_calls", "value"),
+    (PLOT_LL_PG_LOSS,                    "low_level/pg_loss.jsonl",                  "LL pg_loss",                    "value"),
+    (PLOT_HL_PG_LOSS,                    "high_level/pg_loss.jsonl",                 "HL pg_loss",                    "value"),
+    (PLOT_LL_ENTROPY_REG_LOSS,           "low_level/entropy_reg_loss.jsonl",         "LL entropy_reg_loss",           "value"),
+    (PLOT_HL_ENTROPY_REG_LOSS,           "high_level/entropy_reg_loss.jsonl",        "HL entropy_reg_loss",           "value"),
+    (PLOT_LL_GRAD_NORM,                  "low_level/grad_norm.jsonl",                "LL grad_norm",                  "value"),
+    (PLOT_HL_GRAD_NORM,                  "high_level/grad_norm.jsonl",               "HL grad_norm",                  "value"),
+    (PLOT_LL_OPEFO_LAMBDA,               "low_level/opefo_lambda.jsonl",             "LL opefo_lambda",               "value"),
+    (PLOT_HL_OPEFO_LAMBDA,               "high_level/opefo_lambda.jsonl",            "HL opefo_lambda",               "value"),
+    (PLOT_LL_OPEFO_DELTA_H_NET,          "low_level/opefo_delta_H_net.jsonl",        "LL opefo_delta_H_net",          "value"),
+    (PLOT_HL_OPEFO_DELTA_H_NET,          "high_level/opefo_delta_H_net.jsonl",       "HL opefo_delta_H_net",          "value"),
 ]
 
 
 def _read_series(path: Path, field: str) -> tuple[list[int], list[float]]:
-    # JSONL has one row per dumped training step with keys `step`, `value`,
-    # `gain`. `gain` is null on the very first dump for that key (no prior
-    # step), so those rows are dropped from the gain trace.
     steps: list[int] = []
     ys: list[float] = []
     with open(path) as f:

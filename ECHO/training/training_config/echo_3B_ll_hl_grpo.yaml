@@ -17,7 +17,12 @@ reward_manager: echo
 rollout_n: 16
 enable_multi_turn: false
 tensor_model_parallel_size: 1
-gpu_memory_utilization: 0.7
+# Lowered from 0.7 for headroom. The response sweep allocates a full-size gradient
+# buffer plus large per-parameter temporaries after the last natural empty_cache(),
+# and vLLM's wake_up() maps physical pages -- at 0.7 a 7B run OOMed there on the
+# first leader step (cumem_allocator.cpp:62). Raise once a run survives several
+# rounds and high_level/actor/response_mem_reserved_gb shows the margin.
+gpu_memory_utilization: 0.6
 rollout_name: vllm
 rollout_mode: sync_echo
 exclude_tag_tokens_from_phase_masks: false

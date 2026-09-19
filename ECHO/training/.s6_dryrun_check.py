@@ -349,6 +349,9 @@ for name, profile in profiles.items():
         f"{name}: lambda_ent H_tool should be off by default"
     assert profile["response_gradient"] is True, \
         f"{name}: the g_resp sweep should be on now that its seed survives the tool mask"
+    # The sweep's transient buffers are what OOMed vLLM's wake_up() at 0.7.
+    assert float(profile["gpu_memory_utilization"]) <= 0.6, \
+        f"{name}: leave headroom for the response sweep ({profile['gpu_memory_utilization']})"
     # Deviations from v10 Eqs. (30)/(31) must be stated in the profile, not discovered.
     assert "loss_agg_mode" in profile, f"{name}: loss_agg_mode must be explicit"
     assert "norm_adv_by_std_in_grpo" in profile, f"{name}: advantage normalization must be explicit"

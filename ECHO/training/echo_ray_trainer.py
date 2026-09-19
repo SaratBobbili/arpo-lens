@@ -79,6 +79,16 @@ class RayECHOTrainer(RayPPOTrainer):
         "actor/opefo_delta_H_net",
         "actor/opefo_pos_mag",
         "actor/opefo_neg_mag",
+        # Response term (Eqs. 15-16). response_to_direct_ratio is the empirical content of
+        # Proposition 1: how far the frozen-response stationary point sits from x*.
+        "actor/response_norm",
+        "actor/direct_norm",
+        "actor/response_to_direct_ratio",
+        "actor/response_direct_cosine",
+        "actor/response_c_mean",
+        "actor/response_c_std",
+        "actor/response_blocks",
+        "actor/follower_direction_pg_loss",
     })
 
     _ACTOR_TO_POLICY = {
@@ -112,6 +122,11 @@ class RayECHOTrainer(RayPPOTrainer):
             ("opefo_lambda.jsonl", "actor/opefo_lambda"),
             ("opefo_delta_H_net.jsonl", "actor/opefo_delta_H_net"),
             ("entropy_phase_mask.jsonl", "actor/entropy_phase_mask"),
+            ("response_norm.jsonl", "actor/response_norm"),
+            ("response_to_direct_ratio.jsonl", "actor/response_to_direct_ratio"),
+            ("response_direct_cosine.jsonl", "actor/response_direct_cosine"),
+            ("response_c_mean.jsonl", "actor/response_c_mean"),
+            ("response_c_std.jsonl", "actor/response_c_std"),
         ],
         "policy": [
             ("reward.jsonl", "reward_mean"),
@@ -153,6 +168,13 @@ class RayECHOTrainer(RayPPOTrainer):
     def _phase_cfg(self, phase_name: str):
         return self.config.phases[phase_name]
 
+    def _response_cfg(self):
+        return self.config.phases.get("response", None)
+
+    def _response_enabled(self) -> bool:
+        cfg = self._response_cfg()
+        return bool(cfg.get("enabled", False)) if cfg is not None else False
+
     def _phase_rollout_cfg(self, phase_name: str):
         return self.config.phases[phase_name].rollout
 
@@ -162,6 +184,11 @@ class RayECHOTrainer(RayPPOTrainer):
 
     @staticmethod
     def _uses_entropy_regularizer(phase_cfg) -> bool:
+        # lambda_ent H_tool in u_L (Eq. 2) is flag-gated and off by default, so out of the
+        # box each role is driven purely by its own return. reg_coeff alone no longer
+        # switches it on.
+        if not bool(phase_cfg.entropy.get("enabled", False)):
+            return False
         return RayECHOTrainer._entropy_reg_coeff(phase_cfg) > 0.0
 
     def _init_logging_data(self) -> None:
@@ -360,6 +387,31 @@ class RayECHOTrainer(RayPPOTrainer):
             if strategy == "aepo":
                 assert cfg.get("aepo") is not None, f"phases.{phase_name}.rollout.strategy=aepo requires an aepo block"
 
+    def _validate_response_config(self) -> None:
+        """Algorithm 1 takes one update per fresh group; the code must too.
+
+        C.3: "if a group is reused, each clipped optimizer epoch and its fixed behavior
+        snapshot is a separate substep of the adaptation map." With several mini-batches
+        per iteration the true adaptation map would be K x n_minibatch substeps, and the
+        stashed-record-to-substep correspondence the reverse sweep relies on would break.
+        Requiring one step per iteration keeps K = phases.low_level.num_iters exactly.
+        """
+        if not self._response_enabled():
+            return
+        ppo_epochs = int(self.config.actor_rollout_ref.actor.get("ppo_epochs", 1))
+        assert ppo_epochs == 1, (
+            f"phases.response.enabled requires actor.ppo_epochs=1, got {ppo_epochs}. Each "
+            "optimizer epoch over a reused group is a separate substep of the adaptation map."
+        )
+        for phase_name in self._PHASE_NAMES:
+            prompt_batch = self._phase_prompt_batch_sizes[phase_name]
+            mini = int(self._phase_cfg(phase_name).ppo_mini_batch_size)
+            assert mini == prompt_batch, (
+                f"phases.response.enabled requires one optimizer step per {phase_name} "
+                f"iteration: set phases.{phase_name}.ppo_mini_batch_size to that phase's "
+                f"prompt batch ({prompt_batch}), got {mini}."
+            )
+
     @staticmethod
     def _compute_in_group_reward_std(phase_batch: DataProto) -> float:
         seq_rewards = phase_batch.batch["token_level_rewards"].sum(dim=-1)
@@ -477,6 +529,9 @@ class RayECHOTrainer(RayPPOTrainer):
         self._shared_prompt_stream = bool(self.config.phases.get("shared_prompt_stream", False))
         self._phase_dataloaders = {}
         self._phase_iters = {}
+        # Prompt batch per phase iteration; the response term requires the phase's
+        # ppo_mini_batch_size to equal it, so one iteration is one optimizer step.
+        self._phase_prompt_batch_sizes = {}
 
         if self._shared_prompt_stream:
             steps_per_epoch = num_hl_iters * (num_ll_iters + 1)
@@ -498,6 +553,7 @@ class RayECHOTrainer(RayPPOTrainer):
             )
             for phase_name in self._PHASE_NAMES:
                 self._phase_dataloaders[phase_name] = shared_loader
+                self._phase_prompt_batch_sizes[phase_name] = batch_size
             print(
                 f"[shared] steps_per_epoch={steps_per_epoch}, prompt_batch_size={batch_size}, "
                 f"batches_per_dataset_pass={len(shared_loader)}"
@@ -513,6 +569,7 @@ class RayECHOTrainer(RayPPOTrainer):
                     f"phases.{phase_name}.num_iters={num_iters} leaves {dataset_size // num_iters} prompts per iteration, "
                     f"fewer than one per rank ({world_size}); lower num_iters."
                 )
+                self._phase_prompt_batch_sizes[phase_name] = batch_size
                 self._phase_dataloaders[phase_name] = StatefulDataLoader(
                     dataset=self.train_dataset,
                     batch_size=batch_size,
@@ -525,6 +582,9 @@ class RayECHOTrainer(RayPPOTrainer):
                     f"[{phase_name}] num_iters={num_iters}, prompt_batch_size={batch_size}, "
                     f"batches_per_dataset_pass={len(self._phase_dataloaders[phase_name])}"
                 )
+
+        # Needs the derived prompt batch sizes, so it runs after the loaders are built.
+        self._validate_response_config()
 
         # The base checkpointer saves/loads `self.train_dataloader.state_dict()`.
         self.train_dataloader = _PhaseDataloaders(self._phase_dataloaders)
@@ -599,6 +659,9 @@ class RayECHOTrainer(RayPPOTrainer):
         )
         phase_batch.meta_info["phase"] = phase_name
         phase_batch.meta_info["mask_categories"] = dict(self.config.actor_rollout_ref.rollout.mask_categories)
+        # Algorithm 1 scores u_L by r_valid (Eq. 2) and u_H by r_task (Eq. 3). Off, both
+        # phases share the task score, which is the pre-Algorithm-1 behavior.
+        phase_batch.meta_info["use_follower_return"] = self._response_enabled()
 
         with _timer(f"{phase_name}_gen", timing_raw):
             phase_gen_batch = deepcopy(gen_batch)
@@ -800,6 +863,13 @@ class RayECHOTrainer(RayPPOTrainer):
                     phase_batch.meta_info["opefo_enabled"] = bool(
                         opefo_cfg.get("enabled", False) if opefo_cfg is not None else False
                     )
+                    response_cfg = self._response_cfg()
+                    phase_batch.meta_info["response_enabled"] = self._response_enabled()
+                    if response_cfg is not None:
+                        phase_batch.meta_info["response_coef"] = float(response_cfg.get("coef", 1.0))
+                        phase_batch.meta_info["response_replay_fraction"] = float(
+                            response_cfg.get("replay_fraction", 1.0)
+                        )
                     if self._uses_entropy_regularizer(phase_cfg):
                         phase_batch.meta_info["entropy_coeff_override"] = self._entropy_reg_coeff(phase_cfg)
                         phase_batch.meta_info["entropy_loss_mask_key"] = "entropy_reg_loss_mask"
@@ -944,10 +1014,28 @@ class RayECHOTrainer(RayPPOTrainer):
         # we start from step 1
         self.global_steps += 1
 
+        def _open_round() -> None:
+            """Algorithm 1 line 2: commit to x_t, clone y_0 = y_init, fresh optimizer state.
+
+            y_init = 0, so the clone is implicit: snapshotting w_core + x_t is what makes
+            the follower coordinate recoverable at line 14. See the block comment on
+            EchoActorRolloutRefWorker.snapshot_leader_weights.
+            """
+            if not self._response_enabled():
+                return
+            self.actor_rollout_wg.snapshot_leader_weights()
+            self.actor_rollout_wg.reset_follower_optimizer()
+            self.actor_rollout_wg.clear_follower_records()
+
         def _run_cycle(hl_cycle: int) -> None:
+            _open_round()
             for _ in range(num_ll_iters):
                 self._run_phase_iteration("low_level", hl_cycle, end_of_cycle=False, logger=logger, progress_bar=progress_bar)
+            # The leader iteration restores W_x inside the worker between its last backward
+            # and its optimizer step, so the adapted follower is discarded there (line 14).
             self._run_phase_iteration("high_level", hl_cycle, end_of_cycle=True, logger=logger, progress_bar=progress_bar)
+            if self._response_enabled():
+                self.actor_rollout_wg.clear_follower_records()
 
         if self._shared_prompt_stream:
             total_epochs = int(self.config.trainer.total_epochs)
@@ -963,6 +1051,54 @@ class RayECHOTrainer(RayPPOTrainer):
             for hl_cycle in range(start_cycle, num_hl_iters):
                 _run_cycle(hl_cycle)
 
+        self._run_final_response(num_ll_iters, logger, progress_bar)
+
         pprint(f"Final validation metrics: {self._last_val_metrics}")
         progress_bar.close()
+
+    def _run_final_response(self, num_ll_iters: int, logger, progress_bar) -> None:
+        """Algorithm 1 line 16: return x_Nout *and* the response it induces.
+
+        The trained artifact the algorithm defines is the pair (x_Nout, xi_K(x_Nout)), not
+        the leader alone. Every checkpoint written during training holds w_core + x_t,
+        because the round discards its adapted follower before stepping; so after the loop
+        we adapt y_init to the final commitment under the same K-step protocol and save
+        that separately. The plain actor checkpoints are left untouched.
+        """
+        if not self._response_enabled():
+            return
+
+        print(f"[final_response] adapting y_init to x_Nout for K={num_ll_iters} follower steps")
+        self.actor_rollout_wg.snapshot_leader_weights()
+        self.actor_rollout_wg.reset_follower_optimizer()
+        self.actor_rollout_wg.clear_follower_records()
+        for _ in range(num_ll_iters):
+            # hl_cycle=-1 marks these steps as the post-training response in the logs;
+            # with end_of_cycle=False it is only used as a metric label.
+            self._run_phase_iteration(
+                "low_level", -1, end_of_cycle=False, logger=logger, progress_bar=progress_bar,
+            )
+
+        run_dir = self.config.trainer.default_local_dir
+        dst = os.path.join(run_dir, "final_response")
+        if os.path.isdir(dst):
+            shutil.rmtree(dst)
+        os.makedirs(dst, exist_ok=True)
+        self.actor_rollout_wg.save_checkpoint(
+            local_path=os.path.join(dst, "actor"),
+            hdfs_path=None,
+            global_step=self.global_steps,
+            max_ckpt_to_keep=None,
+        )
+        with open(os.path.join(dst, "README.txt"), "w") as f:
+            f.write(
+                "ECHO Algorithm 1 line 16: the adapted reasoning-tool pair.\n"
+                f"x from global_step_{self.global_steps}, then K={num_ll_iters} follower\n"
+                "GRPO steps from y_init under the same protocol used during training.\n"
+            )
+
+        # Put the leader back, so anything downstream sees x_Nout rather than x + y_K.
+        self.actor_rollout_wg.restore_leader_weights()
+        self.actor_rollout_wg.clear_follower_records()
+        print(f"[final_response] wrote {dst}")
 

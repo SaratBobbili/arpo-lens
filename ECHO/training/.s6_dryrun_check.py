@@ -120,6 +120,25 @@ off = _Probe(_compose(["phases.response.enabled=false"]), {"low_level": 136, "hi
 off.config.phases.low_level.ppo_mini_batch_size = 16
 off._validate_response_config()
 
+# --- 3b. line 14 rides with the structure, not the gradient ---------------------------
+#
+# The discard of y_K is what makes the leader step land on x_t and what makes the next
+# round's common base actually common. Gating it on the response gradient (as an earlier
+# version did) silently degrades the method to alternating GRPO while the structure flag
+# still reads True. Without the response gradient, discard-on = first-order MAML.
+import inspect
+
+from training.echo_dp_actor import DataParallelECHOActor
+
+src = inspect.getsource(DataParallelECHOActor.update_policy)
+assert 'data.meta_info.get("discard_follower"' in src, "the discard must have its own flag"
+assert "if do_discard_follower:" in src, "the discard must not be nested under the response path"
+discard_at = src.index("if do_discard_follower:")
+step_at = src.index("grad_norm = self._optimizer_step()")
+assert discard_at < step_at, "y_K must be discarded BEFORE the leader optimizer step"
+resp_at = src.index("if response_grad is not None:")
+assert resp_at < discard_at, "diagnostics read the response buffer before it is released"
+
 # --- 4. R_L: tool validity, gated on the schema ---------------------------------------
 GOOD = (
     "<think> Need a lookup. </think><tool> use search </tool><search> q </search>"

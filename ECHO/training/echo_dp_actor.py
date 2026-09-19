@@ -439,6 +439,12 @@ class DataParallelECHOActor(DataParallelPPOActor):
         replay_fraction = float(data.meta_info.get("response_replay_fraction", 1.0))
         stash_record = response_enabled and phase == "low_level"
         do_response = response_enabled and phase == "high_level"
+        # Algorithm 1 line 14 belongs to the ROUND STRUCTURE, not to the response
+        # gradient: the adapted follower must be discarded and the leader step applied to
+        # x_t whether or not g_resp was computed. Gating this on do_response would leave
+        # y_K in the weights, so the next round's "common base" would not be common and
+        # the leader step would land on w_core + x_t + y_K.
+        do_discard_follower = bool(data.meta_info.get("discard_follower", False)) and phase == "high_level"
 
         if opefo_enabled:
             assert not self.use_fused_kernels, "OPEFO requires use_fused_kernels=false"
@@ -668,19 +674,24 @@ class DataParallelECHOActor(DataParallelPPOActor):
                         "actor/pg_clipfrac_lower": pg_clipfrac_lower.detach().item(),
                     })
 
-                # Stage 5: discard y_K before stepping, so the gradient formed at
-                # (x_t, y_K) lands on x_t (Algorithm 1 lines 13-14).
                 if response_grad is not None:
                     metrics.update(self._response_diagnostics(response_grad))
                     # Release the scratch buffer before the step, so its segment is free
                     # for the empty_cache() below to return to the driver.
                     response_grad.clear()
                     response_grad = None
+
+                # Stage 5: discard y_K before stepping, so the gradient formed at
+                # (x_t, y_K) lands on x_t (Algorithm 1 lines 13-14). Without the response
+                # gradient this is exactly first-order MAML: adapt, evaluate the adapted
+                # pair, apply the outer gradient to the PRE-adaptation parameters.
+                if do_discard_follower:
                     assert self._restore_leader_weights is not None, (
                         "phases.response.enabled needs the worker's restore hook; "
                         "DataParallelECHOActor was built without restore_leader_weights."
                     )
                     self._restore_leader_weights()
+                    metrics["actor/follower_discarded"] = 1.0
 
                 grad_norm = self._optimizer_step()
                 append_to_dict(metrics, {"actor/grad_norm": grad_norm.detach().item()})

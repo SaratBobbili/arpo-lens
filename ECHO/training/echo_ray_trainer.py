@@ -89,6 +89,7 @@ class RayECHOTrainer(RayPPOTrainer):
         "actor/response_c_std",
         "actor/response_blocks",
         "actor/follower_direction_pg_loss",
+        "actor/follower_discarded",
         # Post-response allocator state. vLLM's wake_up() maps physical pages, so what
         # matters for the next generation is what is left RESERVED here, not allocated.
         "actor/response_mem_reserved_gb",
@@ -884,6 +885,8 @@ class RayECHOTrainer(RayPPOTrainer):
                     )
                     response_cfg = self._response_cfg()
                     phase_batch.meta_info["response_enabled"] = self._response_gradient_enabled()
+                    # Line 14 rides with the structure flag, not the gradient flag.
+                    phase_batch.meta_info["discard_follower"] = self._response_enabled()
                     if response_cfg is not None:
                         phase_batch.meta_info["response_coef"] = float(response_cfg.get("coef", 1.0))
                         phase_batch.meta_info["response_replay_fraction"] = float(

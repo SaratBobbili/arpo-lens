@@ -360,6 +360,7 @@ class vLLMRolloutECHO(vLLMRollout):
         success_per_tool: Counter,
         total_time_per_tool: Counter,
         rollout_tool_failed: list | None,
+        success_counters: list | None = None,
     ) -> None:
         for future in concurrent.futures.as_completed(futures):
             fut_info = futures[future]
@@ -376,6 +377,11 @@ class vLLMRolloutECHO(vLLMRollout):
                 if success:
                     tool_metrics["tools/successful_calls"] += 1
                     success_per_tool[tag] += 1
+                    # Per-sample twin of the aggregate counter above. tool_metrics rides in
+                    # meta_info, which DataProto.concat keeps from rank 0 only, so it cannot
+                    # be used to score individual trajectories. u_L's R_L needs this one.
+                    if success_counters is not None:
+                        success_counters[idx] += 1
                 else:
                     tool_metrics["tools/failed_calls"] += 1
                     if rollout_tool_failed is not None:
@@ -457,6 +463,7 @@ class vLLMRolloutECHO(vLLMRollout):
         rollout_tool_failed: list | None,
         tool_budget_exhausted: list,
         tool_calls_made: list,
+        tool_calls_succeeded: list,
         output_sequences: list,
         output_result_masks: list,
         output_high_level_masks: list,
@@ -533,6 +540,10 @@ class vLLMRolloutECHO(vLLMRollout):
         non_tensor_batch["tool_budget_exhausted"] = np.array(
             [tool_budget_exhausted[idx] for i in range(batch_size) for idx in sample_to_indices[i][:num_samples]],
             dtype=np.bool_,
+        )
+        non_tensor_batch["tool_calls_succeeded"] = np.array(
+            [tool_calls_succeeded[idx] for i in range(batch_size) for idx in sample_to_indices[i][:num_samples]],
+            dtype=object,
         )
         non_tensor_batch["tool_calls_made"] = np.array(
             [tool_calls_made[idx] for i in range(batch_size) for idx in sample_to_indices[i][:num_samples]],
@@ -802,6 +813,7 @@ class vLLMRolloutECHO(vLLMRollout):
             init_inputs = []
             result_masks = []
             call_counters = []
+            success_counters = []
             active_indices = []
 
             for ids in prompt_token_ids_list:
@@ -810,6 +822,7 @@ class vLLMRolloutECHO(vLLMRollout):
                     init_inputs.append(ids.copy())
                     result_masks.append([])
                     call_counters.append(0)
+                    success_counters.append(0)
                     active_indices.append(len(curr_inputs) - 1)
 
             sample_to_indices = {
@@ -910,6 +923,7 @@ class vLLMRolloutECHO(vLLMRollout):
                         success_per_tool,
                         total_time_per_tool,
                         rollout_tool_failed,
+                        success_counters,
                     )
 
                 final_active_indices = []
@@ -955,6 +969,7 @@ class vLLMRolloutECHO(vLLMRollout):
             rollout_tool_failed,
             tool_budget_exhausted,
             call_counters,
+            success_counters,
             output_sequences,
             output_result_masks,
             output_high_level_masks,
@@ -1003,6 +1018,7 @@ class vLLMRolloutECHO(vLLMRollout):
             init_inputs = []
             result_masks = []
             call_counters = []
+            success_counters = []
             active_indices = []
 
             for i, ids in enumerate(prompt_token_ids_list):
@@ -1012,6 +1028,7 @@ class vLLMRolloutECHO(vLLMRollout):
                     init_inputs.append(ids.copy())
                     result_masks.append([])
                     call_counters.append(0)
+                    success_counters.append(0)
                     active_indices.append(len(curr_inputs) - 1)
 
             rollouts_per_sample = initial_rollouts_list.copy()
@@ -1124,6 +1141,7 @@ class vLLMRolloutECHO(vLLMRollout):
                         success_per_tool,
                         total_time_per_tool,
                         rollout_tool_failed,
+                        success_counters,
                     )
 
                 final_active_indices = []
@@ -1136,6 +1154,7 @@ class vLLMRolloutECHO(vLLMRollout):
                 new_init_inputs = []
                 new_result_masks = []
                 new_call_counters = []
+                new_success_counters = []
                 new_budget_nudged = []
                 new_budget_exhausted = []
                 new_sample_origins = []
@@ -1172,6 +1191,7 @@ class vLLMRolloutECHO(vLLMRollout):
                             new_init_inputs.append(init_inputs[source_idx].copy())
                             new_result_masks.append(result_masks[source_idx].copy())
                             new_call_counters.append(call_counters[source_idx])
+                            new_success_counters.append(success_counters[source_idx])
                             # A branch continues an existing trajectory, so it inherits both the
                             # spent budget and whether that trajectory was already nudged.
                             new_budget_nudged.append(budget_nudged[source_idx])
@@ -1193,6 +1213,7 @@ class vLLMRolloutECHO(vLLMRollout):
                             new_init_inputs.append(init_inputs[source_idx].copy())
                             new_result_masks.append([])
                             new_call_counters.append(0)
+                            new_success_counters.append(0)
                             # Restarted from the prompt, so budget state resets too.
                             new_budget_nudged.append(False)
                             new_budget_exhausted.append(False)
@@ -1205,6 +1226,7 @@ class vLLMRolloutECHO(vLLMRollout):
                     init_inputs.extend(new_init_inputs)
                     result_masks.extend(new_result_masks)
                     call_counters.extend(new_call_counters)
+                    success_counters.extend(new_success_counters)
                     budget_nudged.extend(new_budget_nudged)
                     tool_budget_exhausted.extend(new_budget_exhausted)
                     if rollout_tool_failed is not None:
@@ -1272,6 +1294,7 @@ class vLLMRolloutECHO(vLLMRollout):
             rollout_tool_failed,
             tool_budget_exhausted,
             call_counters,
+            success_counters,
             output_sequences,
             output_result_masks,
             output_high_level_masks,

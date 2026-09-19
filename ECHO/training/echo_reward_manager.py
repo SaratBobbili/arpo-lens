@@ -22,7 +22,12 @@ import torch
 from verl import DataProto
 from verl.trainer.ppo.reward import get_custom_reward_fn
 from verl.utils.reward_score import default_compute_score
+from verl.utils.reward_score.deep_research_echo import compute_tool_score
 from verl.workers.reward_manager import BatchRewardManager, NaiveRewardManager, PrimeRewardManager
+
+# Per-sample rollout counters R_L needs. Read off non_tensor_batch rather than the
+# aggregate tools/* metrics, which DataProto.concat keeps from rank 0 only.
+_TOOL_COUNTER_KEYS = ("tool_calls_made", "tool_calls_succeeded")
 
 
 class ECHORewardManager:
@@ -51,6 +56,13 @@ class ECHORewardManager:
 
         phase = data.meta_info.get("phase") if data.meta_info else None
         mask_categories = data.meta_info.get("mask_categories") if data.meta_info else None
+
+        # ECHO Algorithm 1 scores the two utilities with different returns: u_L by the
+        # tool-level r_valid (Eq. 2) and u_H by the task return r_task (Eq. 3). Without
+        # the response term this channel is off and both phases share the task score,
+        # which is the pre-Algorithm-1 behavior.
+        use_follower_return = bool(data.meta_info.get("use_follower_return", False)) if data.meta_info else False
+        score_fn = compute_tool_score if (use_follower_return and phase == "low_level") else self.compute_score
 
         for i in range(len(data)):
             data_item = data[i]  # DataProtoItem
@@ -83,8 +95,12 @@ class ECHORewardManager:
                 extra_info["phase"] = phase
             if mask_categories is not None:
                 extra_info["mask_categories"] = mask_categories
+            for key in _TOOL_COUNTER_KEYS:
+                value = data_item.non_tensor_batch.get(key)
+                if value is not None:
+                    extra_info[key] = value
 
-            score = self.compute_score(
+            score = score_fn(
                 data_source=data_source,
                 solution_str=response_str,
                 ground_truth=ground_truth,

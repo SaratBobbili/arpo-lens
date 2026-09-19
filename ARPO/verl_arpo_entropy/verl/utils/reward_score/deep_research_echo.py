@@ -183,6 +183,50 @@ def get_f1_score(prediction, ground_truths):
     return final_metric["f1"]
 
 
+def compute_tool_score(data_source, solution_str, ground_truth, extra_info=None):
+    """ECHO follower return R_L for u_L (Eq. 2): local tool validity, in [0, 1].
+
+    The paper scores the two utilities with different returns -- u_L by the tool-level
+    r_valid, u_H by the final task return r_task -- so the follower phase must not be
+    graded on task F1: "tool actions have local validity and usefulness scores, while
+    final task performance evaluates the complete trajectory."
+
+    Validity here is the fraction of a trajectory's tool calls that actually returned,
+    gated on the schema. Both counts come from per-sample arrays the rollout emits. The
+    aggregate tools/* metrics cannot be used for this: they ride in meta_info, and
+    DataProto.concat keeps only rank 0's, i.e. a single data-parallel shard.
+    """
+    result = {
+        "score": 0.0,
+        "reason": "",
+        "format_valid": False,
+        "no_tool_calls": False,
+        "tool_calls_made": 0,
+        "tool_calls_succeeded": 0,
+    }
+
+    valid, reason = validate_format(solution_str)
+    result["format_valid"] = valid
+    if not valid:
+        result["reason"] = f"bad format: {reason}"
+        return result
+
+    info = extra_info or {}
+    made = int(info.get("tool_calls_made") or 0)
+    succeeded = int(info.get("tool_calls_succeeded") or 0)
+    result["tool_calls_made"] = made
+    result["tool_calls_succeeded"] = succeeded
+
+    if made == 0:
+        result["no_tool_calls"] = True
+        result["reason"] = "no tool call invoked"
+        return result
+
+    result["score"] = min(1.0, succeeded / made)
+    result["reason"] = f"tool validity {succeeded}/{made}"
+    return result
+
+
 def compute_score(data_source, solution_str, ground_truth, extra_info=None):
     """Shared phase-agnostic score: −1 on format/answer/boxed fail; else F1 (+ multi-tool bonus)."""
     result = {

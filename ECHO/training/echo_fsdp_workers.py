@@ -350,7 +350,12 @@ class EchoActorRolloutRefWorker(ActorRolloutRefWorker):
         for p, saved in zip(params, self._leader_weight_snapshot):
             # copy_ in place, never rebind p.data: FSDP1's flat_param._local_shard aliases
             # this storage, and rebinding would leave the shard pointing at stale memory.
-            p.data.copy_(saved.to(p.data.device, non_blocking=True))
+            #
+            # Copy host->device directly rather than via saved.to(device), which would
+            # allocate a full-size GPU temporary per parameter. non_blocking is wrong here
+            # too: the snapshot is pageable, so it buys nothing and would let temporaries
+            # pile up until the queued copies drain.
+            p.data.copy_(saved)
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def restore_leader_weights(self):

@@ -83,14 +83,32 @@ def norm(buf_list, group=None) -> float:
     return dot(buf_list, buf_list, group) ** 0.5
 
 
+def copy_grads_into_(buf_list, params) -> list:
+    """In-place ``buf <- p.grad``, reusing an existing buffer.
+
+    Preferred over :func:`clone_grads` once a buffer exists. On a 7B actor each full
+    gradient buffer is ~3.8 GiB per rank, and allocating a second one mid-step fragments
+    the caching allocator badly enough that a later ``empty_cache()`` cannot hand the
+    memory back to vLLM's ``wake_up``.
+    """
+    for buf, g in zip(buf_list, grads(params)):
+        buf.copy_(g)
+    return buf_list
+
+
 def scale_by_adam_precond_(buf_list, optimizer, params) -> list:
     """In-place ``buf *= lr / (sqrt(v_hat) + eps)``, one parameter at a time.
 
     Same map as :func:`adam_precond`, but it never materialises the full preconditioner,
-    which would be a second full-size buffer alongside the one being scaled.
+    which would be a second full-size buffer alongside the one being scaled, and it keeps
+    to a single temporary per parameter rather than one per arithmetic step.
     """
     for buf, factor in zip(buf_list, _adam_precond_iter(optimizer, params)):
-        buf.mul_(factor)
+        if isinstance(factor, float):
+            buf.mul_(factor)
+        else:
+            buf.mul_(factor[0]).div_(factor[1])
+            del factor
     return buf_list
 
 
@@ -115,8 +133,16 @@ def _adam_precond_iter(optimizer, params):
             step = state.get("step", 0)
             step = float(step.item()) if torch.is_tensor(step) else float(step)
             bias_correction2 = 1.0 - beta2**step if step > 0 else 1.0
-            v_hat = exp_avg_sq.to(torch.float32) / max(bias_correction2, 1e-12)
-            yield lr / (v_hat.sqrt() + eps)
+            # One temporary per parameter, built in place: sqrt(v_hat) + eps. The caller
+            # applies it as buf *= lr; buf /= denom, so no second full-size tensor is ever
+            # live at the same time.
+            #
+            # copy=True is load-bearing: exp_avg_sq is already fp32 here, so a plain
+            # .to(torch.float32) would alias the optimizer's own second-moment state and
+            # the in-place ops below would silently destroy it.
+            denom = exp_avg_sq.to(torch.float32, copy=True)
+            denom.div_(max(bias_correction2, 1e-12)).sqrt_().add_(eps)
+            yield (lr, denom)
     assert seen == len(params), (
         f"preconditioner/parameter mismatch: {seen} vs {len(params)}. The follower "
         "optimizer must be built over exactly the trainable actor parameters."

@@ -89,6 +89,10 @@ class RayECHOTrainer(RayPPOTrainer):
         "actor/response_c_std",
         "actor/response_blocks",
         "actor/follower_direction_pg_loss",
+        # Post-response allocator state. vLLM's wake_up() maps physical pages, so what
+        # matters for the next generation is what is left RESERVED here, not allocated.
+        "actor/response_mem_reserved_gb",
+        "actor/response_mem_allocated_gb",
     })
 
     _ACTOR_TO_POLICY = {
@@ -127,6 +131,7 @@ class RayECHOTrainer(RayPPOTrainer):
             ("response_direct_cosine.jsonl", "actor/response_direct_cosine"),
             ("response_c_mean.jsonl", "actor/response_c_mean"),
             ("response_c_std.jsonl", "actor/response_c_std"),
+            ("response_mem_reserved_gb.jsonl", "actor/response_mem_reserved_gb"),
         ],
         "policy": [
             ("reward.jsonl", "reward_mean"),

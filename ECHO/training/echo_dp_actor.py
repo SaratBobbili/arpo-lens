@@ -1,3 +1,4 @@
+import gc
 import logging
 import os
 from collections import deque
@@ -326,10 +327,15 @@ class DataParallelECHOActor(DataParallelPPOActor):
 
         records = list(self._follower_records)
         if not records:
-            return {"actor/response_blocks": 0.0}
+            return {"actor/response_blocks": 0.0}, None
 
         # v = P * g_fol. p.grad holds -g_fol and stage 2 reads -g_L, so the two sign flips
         # cancel and v is deliberately carried unnegated.
+        #
+        # This is the ONLY full-size buffer the response path allocates: it is reused to
+        # hold -g_resp for the diagnostics once stage 2 is done with it. A second buffer
+        # here fragments the caching allocator enough that the empty_cache() verl runs
+        # before vLLM's wake_up cannot return the memory, which OOMs the next generation.
         v = echo_response.clone_grads(params)
         follower_optimizer, _ = self.phase_optims["low_level"]
         echo_response.scale_by_adam_precond_(v, follower_optimizer, params)
@@ -364,8 +370,8 @@ class DataParallelECHOActor(DataParallelPPOActor):
                 reasoning_tokens += block["high_level_loss_mask"][:, -response_length:].sum().item()
             del blocks
 
-        del v
-
+        # v stays allocated: it is reused below to carry -g_resp rather than allocating a
+        # second full-size buffer.
         total_blocks = sum(n for n, _ in kept_per_record)
         rescale = total_blocks / max(len(coeffs), 1)
 
@@ -395,12 +401,15 @@ class DataParallelECHOActor(DataParallelPPOActor):
                 cursor += 1
             del blocks
 
+        # Reuse v's allocation to carry -g_resp out for the diagnostics.
+        echo_response.copy_grads_into_(v, params)
+
         c_tensor = torch.tensor(coeffs, dtype=torch.float32)
         return {
             "actor/response_blocks": float(len(coeffs)),
             "actor/response_c_mean": float(c_tensor.mean()),
             "actor/response_c_std": float(c_tensor.std()) if len(coeffs) > 1 else 0.0,
-        }
+        }, v
 
     def update_policy(self, data: DataProto):
         phase = data.meta_info["phase"]
@@ -490,9 +499,10 @@ class DataParallelECHOActor(DataParallelPPOActor):
                     use_dataproto_batches, use_aepo_clip, use_sign_cond_clip,
                 )
             )
-            metrics.update(self._response_gradient(temperature, response_coef, replay_fraction))
-            params = echo_response.trainable_params(self.actor_module)
-            response_grad = echo_response.clone_grads(params)
+            response_metrics, response_grad = self._response_gradient(
+                temperature, response_coef, replay_fraction
+            )
+            metrics.update(response_metrics)
 
         for epoch in range(self.config.ppo_epochs):
             for batch_idx, data in enumerate(dataloader):
@@ -662,6 +672,9 @@ class DataParallelECHOActor(DataParallelPPOActor):
                 # (x_t, y_K) lands on x_t (Algorithm 1 lines 13-14).
                 if response_grad is not None:
                     metrics.update(self._response_diagnostics(response_grad))
+                    # Release the scratch buffer before the step, so its segment is free
+                    # for the empty_cache() below to return to the driver.
+                    response_grad.clear()
                     response_grad = None
                     assert self._restore_leader_weights is not None, (
                         "phases.response.enabled needs the worker's restore hook; "
@@ -672,6 +685,19 @@ class DataParallelECHOActor(DataParallelPPOActor):
                 grad_norm = self._optimizer_step()
                 append_to_dict(metrics, {"actor/grad_norm": grad_norm.detach().item()})
         self.actor_optimizer.zero_grad()
+
+        if do_response:
+            # The response path allocates a full-size gradient buffer and a stream of
+            # large per-parameter temporaries. verl's sharding manager calls
+            # empty_cache() before vLLM's wake_up(), but that only returns fully free
+            # segments -- so release ours here, while the allocator can still coalesce,
+            # rather than leaving vLLM to fail at create_and_map.
+            gc.collect()
+            get_torch_device().empty_cache()
+            device = get_torch_device()
+            metrics["actor/response_mem_reserved_gb"] = device.memory_reserved() / (1024**3)
+            metrics["actor/response_mem_allocated_gb"] = device.memory_allocated() / (1024**3)
+
         return metrics
 
     def _response_diagnostics(self, response_grad):

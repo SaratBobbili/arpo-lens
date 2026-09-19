@@ -178,6 +178,27 @@ post = echo_response.adam_precond(opt, params)
 assert all(torch.isfinite(p).all() and (p > 0).all() for p in post)
 assert not torch.allclose(post[0], pre[0]), "preconditioner should react to the first step"
 
+# The in-place fused form must agree with the reference AND must not touch the
+# optimizer's own state -- exp_avg_sq is already fp32, so a .to(float32) that forgets
+# copy=True aliases it and the in-place ops silently destroy the second moment.
+state_before = [opt.state[p]["exp_avg_sq"].clone() for p in params]
+fused = [torch.ones_like(p) for p in params]
+echo_response.scale_by_adam_precond_(fused, opt, params)
+assert all(torch.equal(a, opt.state[p]["exp_avg_sq"]) for a, p in zip(state_before, params)), \
+    "scale_by_adam_precond_ mutated the follower optimizer state"
+err = max(float((a - b).abs().max()) for a, b in zip(fused, post))
+assert err < 1e-10, f"fused preconditioner disagrees with reference: {err}"
+
+# copy_grads_into_ must reuse the buffer's storage -- allocating a second full-size
+# gradient buffer mid-step is what fragmented the allocator and OOMed vLLM's wake_up.
+model.zero_grad(set_to_none=False)
+model(blocks[0]).sum().backward()
+reuse = [torch.zeros_like(p) for p in params]
+ptrs = [b.data_ptr() for b in reuse]
+echo_response.copy_grads_into_(reuse, params)
+assert [b.data_ptr() for b in reuse] == ptrs, "copy_grads_into_ reallocated instead of reusing"
+assert all(torch.equal(a, b) for a, b in zip(reuse, echo_response.clone_grads(params)))
+
 # --- 6. the shipped launch profile is consistent with the new defaults ----------------
 import re
 

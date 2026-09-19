@@ -15,11 +15,13 @@ ECHO_TOP = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 VERL_ROOT = os.environ["VERL_ROOT"]
 sys.path[:0] = [VERL_ROOT, ECHO_TOP]
 
+import numpy as np
 import torch
 from hydra import compose, initialize_config_dir
 from torch import nn
 
 from training import echo_response
+from training.echo_ray_trainer import RayECHOTrainer
 from verl.utils.reward_score.deep_research_echo import compute_tool_score
 
 CONFIG_DIR = os.path.join(ECHO_TOP, "training", "config")
@@ -32,11 +34,36 @@ def _compose(overrides):
 
 # --- 1. the response block exists, is on by default, and is overridable --------------
 cfg = _compose([])
-assert cfg.phases.response.enabled is True, "response should default on: it is the algorithm under test"
+assert cfg.phases.response.enabled is True, "the Algorithm 1 round structure should default on"
+# The g_resp term is gated SEPARATELY and defaults off: its terminal seed is annihilated
+# by a mask composition, so the sweep costs 2K extra full-batch passes to add zero.
+assert cfg.phases.response.gradient is False, "the response gradient should default off"
 assert float(cfg.phases.response.coef) == 1.0
 assert float(cfg.phases.response.replay_fraction) == 1.0
 # Worker groups are built from the actor_rollout_ref subtree alone, so the mirror must carry it.
 assert cfg.actor_rollout_ref.phases.response.enabled is True
+assert cfg.actor_rollout_ref.phases.response.gradient is False
+
+
+class _GateProbe(RayECHOTrainer):
+    def __init__(self, cfg):
+        self.config = cfg
+
+
+# The gradient flag is subordinate: structure off must force the sweep off too, so no
+# configuration can collect records without the round boundaries that give them meaning.
+for structure, gradient, expect_struct, expect_grad in [
+    (True, False, True, False),
+    (True, True, True, True),
+    (False, True, False, False),
+    (False, False, False, False),
+]:
+    probe = _GateProbe(_compose([
+        f"phases.response.enabled={str(structure).lower()}",
+        f"phases.response.gradient={str(gradient).lower()}",
+    ]))
+    assert probe._response_enabled() is expect_struct, (structure, gradient)
+    assert probe._response_gradient_enabled() is expect_grad, (structure, gradient)
 
 cfg = _compose(["phases.response.enabled=false", "phases.response.coef=0.25", "phases.response.replay_fraction=0.5"])
 assert cfg.phases.response.enabled is False
@@ -44,7 +71,6 @@ assert float(cfg.phases.response.coef) == 0.25
 assert float(cfg.phases.response.replay_fraction) == 0.5
 
 # --- 2. lambda_ent H_tool is gated off by default -------------------------------------
-from training.echo_ray_trainer import RayECHOTrainer
 
 cfg = _compose([])
 for phase in ("high_level", "low_level"):
@@ -118,6 +144,36 @@ assert r["score"] == 0.0 and r["no_tool_calls"], r
 
 # R_L must be independent of the task answer: same trajectory, wrong ground truth.
 assert compute_tool_score("t", GOOD, "not-42", {"tool_calls_made": 4, "tool_calls_succeeded": 3})["score"] == 0.75
+
+# --- 4b. KNOWN DEFECT: the terminal seed g_fol is annihilated -------------------------
+#
+# v10 Eq. (30) defines the advantage as a per-trajectory SCALAR indexed (i, b, j); the
+# role mask I_p only selects which tokens Eq. (31) sums over, and Eq. (32)'s two leader
+# surrogates share that same scalar. verl instead folds the mask into the token advantage
+# (scores.unsqueeze(-1) * response_mask), which is equivalent for a single-role loss and
+# wrong the moment two role masks must come off one advantage.
+#
+# This asserts the CURRENT BROKEN behaviour on purpose, so that repairing it fails here
+# and forces this check to be rewritten into the positive assertion below.
+from training.echo_core_algos import compute_grpo_outcome_advantage
+
+m_H = torch.tensor([[1.0, 1.0, 0.0, 0.0], [1.0, 1.0, 0.0, 0.0]])
+m_L = torch.tensor([[0.0, 0.0, 1.0, 1.0], [0.0, 0.0, 1.0, 1.0]])
+rewards = torch.zeros(2, 4)
+rewards[0, -1], rewards[1, -1] = 1.0, 0.0
+uids = np.array(["q0", "q0"])
+
+adv, _ = compute_grpo_outcome_advantage(
+    token_level_rewards=rewards, response_mask=m_H, index=uids, norm_adv_by_std_in_grpo=False
+)
+seed = float((adv * m_L).abs().sum())
+expected = float((torch.tensor([[0.5], [-0.5]]) * m_L).abs().sum())
+assert expected == 2.0
+assert seed == 0.0, (
+    "g_fol is no longer annihilated -- the advantage/mask repair (Change 1) has landed. "
+    "Replace this block with: assert seed == expected."
+)
+print(f"KNOWN DEFECT confirmed: g_fol seed = {seed} (should be {expected}); g_resp is identically zero")
 
 # --- 5. the gradient algebra reproduces sum_b c_b S_b ---------------------------------
 torch.manual_seed(0)

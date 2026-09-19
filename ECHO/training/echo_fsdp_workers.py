@@ -372,12 +372,28 @@ class EchoActorRolloutRefWorker(ActorRolloutRefWorker):
     def reset_follower_optimizer(self):
         """Algorithm 1 line 2's "fresh optimizer state" for the adapted tool clone.
 
-        Only the AdamW moments are follower state. The LR schedule is a hyperparameter
-        schedule spanning the run, so it is deliberately left running.
+        v10 C.3: the algorithm "resets y to y_init and the optimizer state to its initial
+        value". Only the AdamW moments are follower state. The LR schedule is a
+        hyperparameter schedule spanning the run, so it is deliberately left running --
+        harmless under the shipped constant/no-warmup schedule, and a stated choice rather
+        than an oversight under cosine or warmup.
         """
         assert self._is_actor
         optimizer, _ = self.phase_optims["low_level"]
         optimizer.state.clear()
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def follower_scheduler_state(self):
+        """Snapshot the follower LR schedule, so an off-the-record adaptation can undo it."""
+        assert self._is_actor
+        _, scheduler = self.phase_optims["low_level"]
+        return scheduler.state_dict()
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def restore_follower_scheduler_state(self, state):
+        assert self._is_actor
+        _, scheduler = self.phase_optims["low_level"]
+        scheduler.load_state_dict(state)
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def clear_follower_records(self):

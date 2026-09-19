@@ -42,9 +42,30 @@ phases:
   # Setting enabled=false falls back to today's alternating masked GRPO, which is the
   # frozen-response gradient (g_dir alone) that Proposition 1 bounds the displacement of.
   response:
+    # Algorithm 1's ROUND STRUCTURE: common-base snapshot and follower-optimizer reset
+    # (line 2), discard of the adapted follower before the leader step (line 14), the
+    # follower's own r_valid return (Eq. 2), one optimizer step per fresh group (C.3), and
+    # the final re-adaptation (line 16). Independent of the response gradient below.
     enabled: true
-    # Scale on the response term. The follower step size eta_L is already folded in via
-    # the follower AdamW preconditioner (App. C.3), so this is a pure tuning multiplier.
+    # The response term g_resp itself (Eqs. 10-11). DEFAULT OFF, deliberately.
+    #
+    # The terminal seed g_fol is currently annihilated before it is used: the leader
+    # batch's token advantages are already multiplied by the high-level mask
+    # (compute_grpo_outcome_advantage does scores.unsqueeze(-1) * response_mask), and the
+    # tool direction then applies the low-level mask to that product. The masks are
+    # disjoint, so g_fol == 0, hence every c == 0 and g_resp == 0.
+    #
+    # v10 Eq. (30) defines the advantage as a per-trajectory SCALAR indexed (i, b, j); the
+    # role mask only selects which tokens Eq. (31) sums over. Repairing this means keeping
+    # an unmasked scalar task advantage and applying each role mask once, to its own loss.
+    # Until then the sweep costs 2K extra full-batch passes per round to add exactly zero,
+    # so it stays off.
+    gradient: false
+    # Scale on the response term. NOTE: the follower step size eta_L is NOT properly folded
+    # in. The current lr/(sqrt(v_hat)+eps) factor is a frozen diagonal, not differentiation
+    # through the optimizer: the true derivative of Adam's first update is
+    # lr*eps/(g+eps)^2, which differs from lr/(g+eps) by ~5e6 at g=0.05. v10 C.3 requires
+    # differentiating through the optimizer during the reverse sweep.
     coef: 1.0
     # Fraction of stashed follower blocks replayed per leader update. Subsampling is
     # unbiased (the estimator is a sum over blocks, rescaled); it trades variance for the

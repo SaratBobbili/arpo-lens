@@ -64,7 +64,8 @@ VALID_LAUNCH_KEYS=(
     hl_entropy_reg_coeff ll_entropy_reg_coeff hl_entropy_normalization ll_entropy_normalization
     hl_entropy_alpha ll_entropy_alpha
     hl_entropy_enabled ll_entropy_enabled
-    response_enabled response_coef response_replay_fraction
+    response_enabled response_gradient response_coef response_replay_fraction
+    loss_agg_mode
     hl_opefo_enabled ll_opefo_enabled
     high_level_rollout_strategy low_level_rollout_strategy
     hl_aepo_enable_dynamic_rollouts ll_aepo_enable_dynamic_rollouts
@@ -191,6 +192,8 @@ ARGS=(
     phases.high_level.entropy.enabled="${HL_ENTROPY_ENABLED:-false}"
     phases.low_level.entropy.enabled="${LL_ENTROPY_ENABLED:-false}"
     phases.response.enabled="${RESPONSE_ENABLED:-true}"
+    phases.response.gradient="${RESPONSE_GRADIENT:-false}"
+    "actor_rollout_ref.actor.loss_agg_mode=${LOSS_AGG_MODE:-token-mean}"
     "phases.response.coef=${RESPONSE_COEF:-1.0}"
     "phases.response.replay_fraction=${RESPONSE_REPLAY_FRACTION:-1.0}"
     phases.high_level.opefo.enabled="${HL_OPEFO_ENABLED:-false}"

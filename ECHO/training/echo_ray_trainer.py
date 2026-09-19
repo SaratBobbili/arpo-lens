@@ -177,8 +177,22 @@ class RayECHOTrainer(RayPPOTrainer):
         return self.config.phases.get("response", None)
 
     def _response_enabled(self) -> bool:
+        """Algorithm 1's round structure: reset/discard, r_valid, one-step, final response."""
         cfg = self._response_cfg()
         return bool(cfg.get("enabled", False)) if cfg is not None else False
+
+    def _response_gradient_enabled(self) -> bool:
+        """The g_resp term itself. Gated separately from the structure above.
+
+        The terminal seed is currently annihilated by a mask composition (see the config
+        comment on phases.response.gradient), so g_resp is identically zero and the sweep
+        costs 2K extra full-batch passes per round to add nothing. Keeping this separate
+        lets the round structure run without paying for that.
+        """
+        cfg = self._response_cfg()
+        if cfg is None or not self._response_enabled():
+            return False
+        return bool(cfg.get("gradient", False))
 
     def _phase_rollout_cfg(self, phase_name: str):
         return self.config.phases[phase_name].rollout
@@ -869,7 +883,7 @@ class RayECHOTrainer(RayPPOTrainer):
                         opefo_cfg.get("enabled", False) if opefo_cfg is not None else False
                     )
                     response_cfg = self._response_cfg()
-                    phase_batch.meta_info["response_enabled"] = self._response_enabled()
+                    phase_batch.meta_info["response_enabled"] = self._response_gradient_enabled()
                     if response_cfg is not None:
                         phase_batch.meta_info["response_coef"] = float(response_cfg.get("coef", 1.0))
                         phase_batch.meta_info["response_replay_fraction"] = float(
@@ -914,6 +928,13 @@ class RayECHOTrainer(RayPPOTrainer):
                         val_metrics: dict = self._validate()
                         self._last_val_metrics = val_metrics
                     metrics.update(val_metrics)
+                    # These measure the BARE LEADER, not the adapted pair: the round has
+                    # already discarded y_K and stepped x, so the weights under test are
+                    # w_core + x_{t+1} with no follower adaptation. Algorithm 1's object is
+                    # the pair (x, xi_K(x)), so val-core/* is a leader-only proxy for it --
+                    # and best-checkpoint selection below inherits that. Flagged rather
+                    # than silently reported, since the two are easy to conflate.
+                    metrics["training/val_evaluates_adapted_pair"] = 0.0
 
                     if bool(self.config.trainer.get("save_best_checkpoint", False)):
                         current_metric_key, current_metric_value = self._resolve_best_metric_from_val(val_metrics)
@@ -1030,7 +1051,8 @@ class RayECHOTrainer(RayPPOTrainer):
                 return
             self.actor_rollout_wg.snapshot_leader_weights()
             self.actor_rollout_wg.reset_follower_optimizer()
-            self.actor_rollout_wg.clear_follower_records()
+            if self._response_gradient_enabled():
+                self.actor_rollout_wg.clear_follower_records()
 
         def _run_cycle(hl_cycle: int) -> None:
             _open_round()
@@ -1039,7 +1061,7 @@ class RayECHOTrainer(RayPPOTrainer):
             # The leader iteration restores W_x inside the worker between its last backward
             # and its optimizer step, so the adapted follower is discarded there (line 14).
             self._run_phase_iteration("high_level", hl_cycle, end_of_cycle=True, logger=logger, progress_bar=progress_bar)
-            if self._response_enabled():
+            if self._response_gradient_enabled():
                 self.actor_rollout_wg.clear_follower_records()
 
         if self._shared_prompt_stream:
@@ -1076,13 +1098,25 @@ class RayECHOTrainer(RayPPOTrainer):
         print(f"[final_response] adapting y_init to x_Nout for K={num_ll_iters} follower steps")
         self.actor_rollout_wg.snapshot_leader_weights()
         self.actor_rollout_wg.reset_follower_optimizer()
-        self.actor_rollout_wg.clear_follower_records()
+        if self._response_gradient_enabled():
+            self.actor_rollout_wg.clear_follower_records()
+
+        # This is an adaptation, not training. Running it through _run_phase_iteration
+        # would advance global_steps and the progress bar and -- via update_actor --
+        # step the follower LR scheduler, all after training has finished. Save and
+        # restore the counters around it so the K adaptation steps leave no trace on the
+        # training record. The follower LR schedule is restored too: these steps consume
+        # schedule the run's own accounting never allotted them.
+        saved_steps = self.global_steps
+        saved_lr_state = self.actor_rollout_wg.follower_scheduler_state()[0]
         for _ in range(num_ll_iters):
             # hl_cycle=-1 marks these steps as the post-training response in the logs;
             # with end_of_cycle=False it is only used as a metric label.
             self._run_phase_iteration(
                 "low_level", -1, end_of_cycle=False, logger=logger, progress_bar=progress_bar,
             )
+        self.global_steps = saved_steps
+        self.actor_rollout_wg.restore_follower_scheduler_state(saved_lr_state)
 
         run_dir = self.config.trainer.default_local_dir
         dst = os.path.join(run_dir, "final_response")

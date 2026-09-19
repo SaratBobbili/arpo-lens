@@ -103,7 +103,22 @@ ll_aepo_entropy_weight: 0.2
 # g_leader = g_dir + g_resp, with g_resp = Z_K^T g_fol (Eqs. 15-16). false falls back to
 # plain alternating masked GRPO, i.e. the frozen-response gradient, for an A/B.
 response_enabled: true
+# The g_resp term itself. Off: its terminal seed g_fol is annihilated by a mask
+# composition, so the sweep costs 2K extra full-batch passes to add exactly zero.
+response_gradient: false
 response_coef: 1.0
 # Fraction of stashed follower blocks replayed per leader update. Unbiased; lower it to
 # trade variance for the 2K extra full-batch forward/backward passes the sweep costs.
 response_replay_fraction: 1.0
+
+# --- Deviations from v10 GRPO, stated rather than discovered ---
+# Eq. (30) standardizes the within-query advantage by its group std:
+#   A = (R - mean(R)) / (std(R) + eps_adv)
+# norm_adv_by_std_in_grpo=off keeps only the mean centering. Set it to `on` for the
+# paper's estimator; left off here so runs stay comparable with the existing r3 series.
+#
+# Eq. (31) normalizes per trajectory by 1/max(1,|I_p(tau)|) and then averages over the
+# B*G trajectories -- that is seq-mean-token-mean. token-mean instead takes one global
+# mean over unmasked tokens, which weights each trajectory by its role-token count rather
+# than equally. Set loss_agg_mode=seq-mean-token-mean to match the paper.
+loss_agg_mode: token-mean

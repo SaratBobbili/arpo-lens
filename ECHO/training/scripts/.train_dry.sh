@@ -17,6 +17,12 @@ export TMPDIR=/tmp/saratb_ray
 export RAY_TMPDIR=/tmp/saratb_ray
 mkdir -p "$TMPDIR"
 
+# Login nodes cap nproc at 4096 (limits.d, 2026-09-02) and srun propagates it;
+# Ray prestarts one worker per node CPU, so worker threads hit the cap and abort.
+ulimit -u "$(ulimit -Hu)"
+
+# stdout is a pipe (tee below), so without this every print() is block-buffered.
+export PYTHONUNBUFFERED=1
 export VERL_LOGGING_LEVEL=WARN
 export RAY_BACKEND_LOG_LEVEL=warning
 export RAY_memory_usage_threshold=0.8
@@ -26,7 +32,7 @@ export TORCHDYNAMO_DISABLE=1
 unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES
 export PYTHONPATH="${VERL_ROOT}:${ECHO_TOP}:$PYTHONPATH"
 
-source "${SCRIPT_DIR}/secrets.sh" ; OUTPUT_ROOT="/scratch/user/saratb_tamu.edu/research/arpo-lens/ECHO/training/.s2_dryrun_work/out"
+source "${SCRIPT_DIR}/secrets.sh" ; OUTPUT_ROOT="/tmp/claude-1881076823/-scratch-user-saratb-tamu-edu-research-arpo-lens/e717e9f6-a1ab-4c78-b431-62c52b9decaa/scratchpad/dry/out"
 
 LAUNCH_CONFIG_PATH="${ECHO_ROOT}/$1"
 VALID_LAUNCH_KEYS=(
@@ -41,6 +47,8 @@ VALID_LAUNCH_KEYS=(
     conda_path conda_env brightdata_api_key brightdata_zone brightdata_location wandb_api_key
     output_root sft_root
     save_freq test_freq save_best_checkpoint best_checkpoint_metric max_actor_ckpt_to_keep resume_mode
+    checkpoint_contents
+    shared_prompt_stream total_epochs
     hl_num_iters ll_num_iters hl_group_size ll_group_size
     hl_ppo_mini_batch_size ll_ppo_mini_batch_size
     hl_ppo_micro_batch_size_per_gpu ll_ppo_micro_batch_size_per_gpu
@@ -48,13 +56,15 @@ VALID_LAUNCH_KEYS=(
     hl_warmup_style ll_warmup_style hl_lr_warmup_steps_ratio ll_lr_warmup_steps_ratio
     high_level_advantage_algorithm low_level_advantage_algorithm
     norm_adv_by_std_in_grpo
-    skip_training_on_tool_failure
+    skip_training_on_tool_failure skip_training_on_budget_exhausted
     mask_tool mask_think mask_answer mask_search mask_python
     clip_ratio_low clip_ratio_high clip_ratio_c clip_ratio_low_pos clip_ratio_high_pos clip_ratio_low_neg clip_ratio_high_neg
     hl_kl_loss_coef ll_kl_loss_coef hl_use_aepo_clip ll_use_aepo_clip
     high_level_use_sign_cond_clip low_level_use_sign_cond_clip
     hl_entropy_reg_coeff ll_entropy_reg_coeff hl_entropy_normalization ll_entropy_normalization
     hl_entropy_alpha ll_entropy_alpha
+    hl_entropy_enabled ll_entropy_enabled
+    response_enabled response_coef response_replay_fraction
     hl_opefo_enabled ll_opefo_enabled
     high_level_rollout_strategy low_level_rollout_strategy
     hl_aepo_enable_dynamic_rollouts ll_aepo_enable_dynamic_rollouts
@@ -82,6 +92,9 @@ VALID_FILES="${ARPO_ROOT}/${VALID_FILES}"
 ACTOR_MODEL_PATH="${SFT_ROOT}/${ACTOR_MODEL_SUBPATH}"
 SEARCH_CACHE_PATH="${ECHO_TOP}/search_cache/${SEARCH_CACHE_FILE}"
 
+# An empty EXPERIMENT_NAME collapses SAVE_PATH to ${OUTPUT_ROOT}/checkpoints, dumping a
+# run's checkpoints, rollouts and run.log on top of the shared checkpoints root.
+[[ -n "${EXPERIMENT_NAME}" && "${EXPERIMENT_NAME}" != "null" ]] || { echo "EXPERIMENT_NAME is empty; refusing to write into ${OUTPUT_ROOT}/checkpoints" >&2; exit 1; }
 SAVE_PATH="${OUTPUT_ROOT}/checkpoints/${EXPERIMENT_NAME}"
 ROLLOUT_SAVE_PATH="${SAVE_PATH}/rollout"
 mkdir -p "${SAVE_PATH}" "${ROLLOUT_SAVE_PATH}"
@@ -143,6 +156,8 @@ ARGS=(
     actor_rollout_ref.ref.fsdp_config.param_offload=True
     reward_model.reward_manager="${REWARD_MANAGER}"
     actor_rollout_ref.rollout.tools.skip_training_on_tool_failure="${SKIP_TRAINING_ON_TOOL_FAILURE:-false}"
+    actor_rollout_ref.rollout.tools.skip_training_on_budget_exhausted="${SKIP_TRAINING_ON_BUDGET_EXHAUSTED:-true}"
+    phases.shared_prompt_stream="${SHARED_PROMPT_STREAM:-true}"
     "phases.high_level.num_iters=${HL_NUM_ITERS}"
     "phases.low_level.num_iters=${LL_NUM_ITERS}"
     "phases.high_level.group_size=${HL_GROUP_SIZE}"
@@ -173,6 +188,11 @@ ARGS=(
     "phases.low_level.entropy.normalization=${LL_ENTROPY_NORMALIZATION:-token_pool}"
     "phases.high_level.entropy.alpha=${HL_ENTROPY_ALPHA:-0.2}"
     "phases.low_level.entropy.alpha=${LL_ENTROPY_ALPHA:-0.2}"
+    phases.high_level.entropy.enabled="${HL_ENTROPY_ENABLED:-false}"
+    phases.low_level.entropy.enabled="${LL_ENTROPY_ENABLED:-false}"
+    phases.response.enabled="${RESPONSE_ENABLED:-true}"
+    "phases.response.coef=${RESPONSE_COEF:-1.0}"
+    "phases.response.replay_fraction=${RESPONSE_REPLAY_FRACTION:-1.0}"
     phases.high_level.opefo.enabled="${HL_OPEFO_ENABLED:-false}"
     phases.low_level.opefo.enabled="${LL_OPEFO_ENABLED:-false}"
     "phases.high_level.rollout.strategy=${HIGH_LEVEL_ROLLOUT_STRATEGY:-default}"
@@ -199,9 +219,11 @@ ARGS=(
     trainer.nnodes="${NNODES}"
     trainer.save_freq="${SAVE_FREQ}"
     trainer.test_freq="${TEST_FREQ}"
+    trainer.total_epochs="${TOTAL_EPOCHS:-4}"
     trainer.save_best_checkpoint="${SAVE_BEST_CHECKPOINT:-false}"
     trainer.best_checkpoint_metric="${BEST_CHECKPOINT_METRIC:-val-core/reward}"
     trainer.max_actor_ckpt_to_keep="${MAX_ACTOR_CKPT_TO_KEEP}"
+    "actor_rollout_ref.actor.checkpoint.contents=${CHECKPOINT_CONTENTS:-[model,optimizer,extra]}"
     trainer.default_local_dir="${SAVE_PATH}"
     trainer.val_before_train=False
     trainer.rollout_data_dir="${ROLLOUT_SAVE_PATH}"
@@ -266,4 +288,4 @@ fi
 
 printf '%s\n' "${ARGS[@]:2}" > "${CONFIG_SNAPSHOT_DIR}/launch_hydra_overrides.txt"
 
-printf '%s\n' "${ARGS[@]}" > "/scratch/user/saratb_tamu.edu/research/arpo-lens/ECHO/training/.s2_dryrun_work/hydra_args.txt"
+printf '%s\n' "${ARGS[@]}" > "/tmp/claude-1881076823/-scratch-user-saratb-tamu-edu-research-arpo-lens/e717e9f6-a1ab-4c78-b431-62c52b9decaa/scratchpad/dry/hydra_args.txt"

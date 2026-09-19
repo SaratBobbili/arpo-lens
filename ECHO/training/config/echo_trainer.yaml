@@ -29,6 +29,27 @@ phases:
   # When true, LL and HL pull consecutive batches from one dataloader; one epoch
   # is N_HL*(N_LL+1) steps. When false, keep independent per-phase streams.
   shared_prompt_stream: true
+  # ECHO Algorithm 1: the response-aware leader update.
+  #
+  # When enabled, one outer round is the paper's Stackelberg round rather than plain
+  # alternating GRPO:
+  #   1. snapshot W_x = w_core + x_t and reset the follower optimizer   (line 2, y_init = 0)
+  #   2. K = low_level.num_iters follower GRPO steps on the tool return (lines 4-9)
+  #   3. leader rollouts under (x_t, y_K); form g_dir and g_fol         (lines 10-12)
+  #   4. g_resp = coef * sum_s sum_b <g_L,s,b, P*g_fol> * S_x,s,b       (Eqs. 15-16)
+  #   5. restore W_x (discard y_K), then one leader step on g_dir+g_resp (lines 13-14)
+  #
+  # Setting enabled=false falls back to today's alternating masked GRPO, which is the
+  # frozen-response gradient (g_dir alone) that Proposition 1 bounds the displacement of.
+  response:
+    enabled: true
+    # Scale on the response term. The follower step size eta_L is already folded in via
+    # the follower AdamW preconditioner (App. C.3), so this is a pure tuning multiplier.
+    coef: 1.0
+    # Fraction of stashed follower blocks replayed per leader update. Subsampling is
+    # unbiased (the estimator is a sum over blocks, rescaled); it trades variance for the
+    # 2K extra full-batch forward/backward passes the sweep costs.
+    replay_fraction: 1.0
   high_level:
     # Number of outer cycles. Prompt batch = (len(train_dataset) // num_iters) floored to a
     # multiple of the rank count; HL sees the dataset once over the whole run.
@@ -81,8 +102,12 @@ phases:
       normalization: token_pool
       # Scaling weight for entropy-based advantage shaping (entropy and aepo).
       alpha: 0.2
+      # Gate for the direct entropy regularizer below. This is lambda_ent H_tool in the
+      # paper's u_L (Eq. 2). Default off, so each role is driven purely by its own return:
+      # u_L = lambda_valid E[R_L], u_H = E[R_H]. reg_coeff is ignored unless this is true.
+      enabled: false
       # Direct entropy regularizer: L_actor = L_PG - reg_coeff * mean(H) on the
-      # phase loss mask. 0.0 disables. Applies to all advantage_algorithms.
+      # phase loss mask. Applies to all advantage_algorithms. Requires enabled=true.
       reg_coeff: 0.0
     # On-Policy Entropy Flow Optimization (arXiv:2605.11491). When true, replace
     # clipped PPO PG with -log_prob·A reweighted by adaptive λ* from Theorem-1 ΔH.
@@ -120,6 +145,8 @@ phases:
     entropy:
       normalization: token_pool
       alpha: 0.2
+      # lambda_ent H_tool in u_L (Eq. 2). Off by default; see high_level.entropy.enabled.
+      enabled: false
       reg_coeff: 0.0
     opefo:
       enabled: false

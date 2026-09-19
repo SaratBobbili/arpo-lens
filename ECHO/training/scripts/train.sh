@@ -47,6 +47,7 @@ VALID_LAUNCH_KEYS=(
     conda_path conda_env brightdata_api_key brightdata_zone brightdata_location wandb_api_key
     output_root sft_root
     save_freq test_freq save_best_checkpoint best_checkpoint_metric max_actor_ckpt_to_keep resume_mode
+    checkpoint_contents
     shared_prompt_stream total_epochs
     hl_num_iters ll_num_iters hl_group_size ll_group_size
     hl_ppo_mini_batch_size ll_ppo_mini_batch_size
@@ -62,6 +63,8 @@ VALID_LAUNCH_KEYS=(
     high_level_use_sign_cond_clip low_level_use_sign_cond_clip
     hl_entropy_reg_coeff ll_entropy_reg_coeff hl_entropy_normalization ll_entropy_normalization
     hl_entropy_alpha ll_entropy_alpha
+    hl_entropy_enabled ll_entropy_enabled
+    response_enabled response_coef response_replay_fraction
     hl_opefo_enabled ll_opefo_enabled
     high_level_rollout_strategy low_level_rollout_strategy
     hl_aepo_enable_dynamic_rollouts ll_aepo_enable_dynamic_rollouts
@@ -89,6 +92,9 @@ VALID_FILES="${ARPO_ROOT}/${VALID_FILES}"
 ACTOR_MODEL_PATH="${SFT_ROOT}/${ACTOR_MODEL_SUBPATH}"
 SEARCH_CACHE_PATH="${ECHO_TOP}/search_cache/${SEARCH_CACHE_FILE}"
 
+# An empty EXPERIMENT_NAME collapses SAVE_PATH to ${OUTPUT_ROOT}/checkpoints, dumping a
+# run's checkpoints, rollouts and run.log on top of the shared checkpoints root.
+[[ -n "${EXPERIMENT_NAME}" && "${EXPERIMENT_NAME}" != "null" ]] || { echo "EXPERIMENT_NAME is empty; refusing to write into ${OUTPUT_ROOT}/checkpoints" >&2; exit 1; }
 SAVE_PATH="${OUTPUT_ROOT}/checkpoints/${EXPERIMENT_NAME}"
 ROLLOUT_SAVE_PATH="${SAVE_PATH}/rollout"
 mkdir -p "${SAVE_PATH}" "${ROLLOUT_SAVE_PATH}"
@@ -182,6 +188,11 @@ ARGS=(
     "phases.low_level.entropy.normalization=${LL_ENTROPY_NORMALIZATION:-token_pool}"
     "phases.high_level.entropy.alpha=${HL_ENTROPY_ALPHA:-0.2}"
     "phases.low_level.entropy.alpha=${LL_ENTROPY_ALPHA:-0.2}"
+    phases.high_level.entropy.enabled="${HL_ENTROPY_ENABLED:-false}"
+    phases.low_level.entropy.enabled="${LL_ENTROPY_ENABLED:-false}"
+    phases.response.enabled="${RESPONSE_ENABLED:-true}"
+    "phases.response.coef=${RESPONSE_COEF:-1.0}"
+    "phases.response.replay_fraction=${RESPONSE_REPLAY_FRACTION:-1.0}"
     phases.high_level.opefo.enabled="${HL_OPEFO_ENABLED:-false}"
     phases.low_level.opefo.enabled="${LL_OPEFO_ENABLED:-false}"
     "phases.high_level.rollout.strategy=${HIGH_LEVEL_ROLLOUT_STRATEGY:-default}"
@@ -212,6 +223,7 @@ ARGS=(
     trainer.save_best_checkpoint="${SAVE_BEST_CHECKPOINT:-false}"
     trainer.best_checkpoint_metric="${BEST_CHECKPOINT_METRIC:-val-core/reward}"
     trainer.max_actor_ckpt_to_keep="${MAX_ACTOR_CKPT_TO_KEEP}"
+    "actor_rollout_ref.actor.checkpoint.contents=${CHECKPOINT_CONTENTS:-[model,optimizer,extra]}"
     trainer.default_local_dir="${SAVE_PATH}"
     trainer.val_before_train=False
     trainer.rollout_data_dir="${ROLLOUT_SAVE_PATH}"

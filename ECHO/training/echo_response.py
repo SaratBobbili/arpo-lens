@@ -6,37 +6,43 @@
 #
 #     http://www.apache.org/licenses/LICENSE-2.0
 
-"""Response term for ECHO Algorithm 1: ``g_resp = Z_K^T g_fol`` (Eqs. 15-16).
+"""Response term for ECHO Algorithm 1: ``g_resp`` in ``g_leader = g_dir + g_resp``.
 
-The leader's response-aware gradient is ``g_GRPO_K,t = g_dir + g_resp``. Today's
-alternating GRPO uses ``g_dir`` alone, which is the *frozen-response* gradient whose
+Without it the leader update is ``g_dir`` alone -- the frozen-response gradient whose
 displacement from the Stackelberg equilibrium Proposition 1 bounds.
 
-Under the role-isolated coordinates of Eq. (55) -- the parameterization the paper's own
-Section 6 analysis uses -- the fixed-rollout block of Eq. (49) vanishes and ``H_yx`` is
-exactly the trajectory-score term. Taking ``v_s ~ g_fol`` in the reverse sweep (dropping
-``O(K eta_L L_L)``) and folding the follower's AdamW preconditioner in for ``eta_L``
-(App. C.3 requires the follower optimizer state be differentiated through) leaves::
+v10 Eq. (35) splits the block this rests on into two additive halves::
 
-    g_resp = coef * sum_s sum_b  c_{s,b} * S_{x,s,b}
+    H_yc,s = (1/B_L) sum_b [ D^fix_c g_grp,b  +  stopgrad(g_grp,b) * S_c,b^T ]
+                             \\___ fixed-data ___/   \\______ sampling ______/
 
-    c_{s,b}   = <g_grp_{L,s,b}, P * g_fol>                      scalar per block
-    S_{x,s,b} = sum_j sum_{l in I_H(tau_j)} grad_x log pi_H(z_l)  reasoning-token score
+**This module implements the sampling half only**, contracted against ``g_fol``::
 
-Read plainly: reinforce the reasoning tokens of the follower-phase rollouts, with reward
-= how much the tool update they induced helped the final task.
+    g_resp = coef * sum_s sum_b  c_{s,b} * S_{s,b}
 
-Blocks are micro-batches. ``E[S] = 0`` (Eq. 57), so the signal lives in the covariance of
-``S_b`` with ``c_b``; under any partition the cross terms obey
-``E[c_b S_b'] = E[c_b] E[S_b'] = 0``, so micro-batch granularity is unbiased and coarser
-blocks only cost variance.
+    c_{s,b} = <g_grp_{L,s,b}, g_fol>                    scalar per block
+    S_{s,b} = sum_j sum_{l in I_policy} grad log pi(z_l)  score over ALL sampled tokens
 
-Every quantity here is a gradient of the *same* parameter vector under a different loss
-mask, so nothing needs parameter partitioning or double backward. This matters: the actor
-is FSDP1 with ``use_orig_params=False``, where ``torch.autograd.grad`` does not work at
-all (the reduce-scatter lives in non-differentiable post-backward hooks). Gradients are
-therefore always read off ``p.grad`` after ``.backward()``, and every inner product is a
-local partial that must be all-reduced -- each rank owns a disjoint shard.
+Read plainly: reinforce the sampled tokens of the follower-phase rollouts, with reward =
+how much the tool update they induced helped the final task. That is the mechanism the
+method is about -- reasoning changes the data the tool learner trains on.
+
+Standing approximations, none of them hidden:
+
+* the fixed-data half ``D^fix_c g_grp`` is absent; it needs a Hessian-vector product,
+  which FSDP1 cannot provide (``use_orig_params=False``, and the reduce-scatter lives in
+  non-differentiable post-backward hooks, so ``torch.autograd.grad`` does not work here);
+* the reverse sweep uses ``v_s = g_fol`` for every ``s`` instead of
+  ``v_s = v_{s+1} + eta_L H_s^T v_{s+1}``, so cross-step coupling between inner updates
+  is dropped;
+* blocks are micro-batches rather than whole query groups, which GRPO's within-group
+  centering couples, so the partition is not unbiased as once claimed here;
+* ``eta_L`` is a plain scalar inside ``coef``, not the optimizer's derivative.
+
+Every quantity is a gradient of the *same* parameter vector under a different loss mask,
+so nothing here needs parameter partitioning or double backward. Gradients are read off
+``p.grad`` after ``.backward()``, and every inner product is a per-rank partial that must
+be all-reduced -- each rank owns a disjoint shard.
 """
 
 import torch
@@ -152,14 +158,18 @@ def _adam_precond_iter(optimizer, params):
 def adam_precond(optimizer, params) -> list:
     """Follower AdamW preconditioner ``lr / (sqrt(v_hat) + eps)``.
 
-    Eq. (13) writes the inner update as plain ascent ``y + eta_L g``, but C.3 is explicit
-    that "momentum or Adam augments the follower state, is reset with y_init, and is
-    differentiated through by the same reverse sweep". Replacing the scalar ``eta_L`` by
-    this per-coordinate map is what carries that through, and it folds the inner step size
-    in so ``phases.response.coef`` stays a pure tuning multiplier.
+    NOT WIRED IN, and deliberately so. This is *not* differentiation through the
+    optimizer: the derivative of Adam's first update from zero moments is
+    ``lr*eps/(g+eps)^2``, which differs from ``lr/(g+eps)`` in form, not just scale (by
+    ~5e6 at g=0.05, lr=1e-3, eps=1e-8). Using it only imposed a wrong-shaped
+    per-coordinate weighting while looking principled, so ``eta_L`` is now a plain scalar
+    folded into ``phases.response.coef``.
 
-    Before the follower has taken any step the state is empty; the preconditioner is then
-    just ``lr``, which is the correct limit.
+    Kept, with its test, because a correct treatment of C.3's "differentiate through the
+    optimizer" would start from this state and needs an augmented-state reverse map for
+    the moments, bias correction and weight decay.
+
+    Before the follower has taken any step the state is empty; the value is then ``lr``.
     """
     state_by_param = optimizer.state
     precond = []
@@ -211,12 +221,16 @@ def follower_surrogate(log_prob, advantages, tool_mask, loss_agg_mode: str):
     return -agg_loss(loss_mat=log_prob * advantages, loss_mask=tool_mask, loss_agg_mode=loss_agg_mode)
 
 
-def reasoning_score(log_prob, reasoning_mask):
-    """``S_x,b``: the plain sum of reasoning-token log-probs over a block (Eq. 48).
+def reasoning_score(log_prob, policy_mask):
+    """``S_x,b``: the plain sum of sampled-token log-probs over a block (Eq. 34).
 
-    A sum, not a mean -- Eq. (48) defines the group score as a sum over every stochastic
-    token in the query group, and the relative weighting of differently sized blocks is
-    part of the estimator. Callers divide by a single global token count so the magnitude
-    stays sane without disturbing those relative weights.
+    A sum, not a mean -- the group score is a sum over every stochastic token in the
+    query group, and the relative weighting of differently sized blocks is part of the
+    estimator. Callers divide by a single global token count so the magnitude stays sane
+    without disturbing those relative weights.
+
+    ``policy_mask`` covers BOTH roles' sampled tokens. Under the shared-weight routing
+    used here (P_H = P_L = I) a change in the leader coordinates moves tool-token
+    likelihoods too, so a reasoning-only score drops part of the dependence.
     """
-    return (log_prob * reasoning_mask).sum()
+    return (log_prob * policy_mask).sum()

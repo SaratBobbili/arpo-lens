@@ -140,6 +140,13 @@ def compute_grpo_outcome_advantage(
             shape is (bs, response_length)
         Returns: `(torch.Tensor)`
             shape is (bs, response_length)
+        scalar_advantages: `(torch.Tensor)`
+            shape is (bs, 1) -- the same group-relative advantage BEFORE the mask is
+            folded in. v10 Eq. (30) defines the advantage as a per-trajectory scalar
+            indexed (i, b, j); the role mask only selects which tokens Eq. (31) sums
+            over. Folding the mask into the token advantage is equivalent for a
+            single-role loss, and wrong as soon as two role masks must come off one
+            advantage -- which is exactly what Eq. (32)'s two leader surrogates need.
     """
     scores = token_level_rewards.sum(dim=-1)
 
@@ -165,9 +172,12 @@ def compute_grpo_outcome_advantage(
                 scores[i] = (scores[i] - id2mean[index[i]]) / (id2std[index[i]] + epsilon)
             else:
                 scores[i] = scores[i] - id2mean[index[i]]
+        # Capture the per-trajectory scalar BEFORE the mask is folded in; see the
+        # scalar_advantages note in the docstring.
+        scalar_advantages = scores.detach().clone().unsqueeze(-1)
         scores = scores.unsqueeze(-1) * response_mask
 
-    return scores, scores
+    return scores, scores, scalar_advantages
 
 
 def compute_entropy_normalized(
@@ -888,7 +898,7 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
         if multi_turn:
             response_length = grpo_calculation_mask.size(1)
             grpo_calculation_mask = data.batch["loss_mask"][:, -response_length:]
-        advantages, returns = compute_grpo_outcome_advantage(
+        advantages, returns, scalar_advantages = compute_grpo_outcome_advantage(
             token_level_rewards=data.batch["token_level_rewards"],
             response_mask=grpo_calculation_mask,
             index=data.non_tensor_batch["uid"],
@@ -896,6 +906,10 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
         )
         data.batch["advantages"] = advantages
         data.batch["returns"] = returns
+        # Kept alongside the masked token advantages, not in place of them: the direct
+        # loss keeps using `advantages` unchanged, so g_dir stays bit-identical and the
+        # response term is the only thing that reads the unmasked scalar.
+        data.batch["scalar_advantages"] = scalar_advantages
     elif adv_estimator == AdvantageEstimator.GRPO_PASSK:
         advantages, returns = compute_grpo_passk_outcome_advantage(
             token_level_rewards=data.batch["token_level_rewards"],

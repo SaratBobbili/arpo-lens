@@ -35,14 +35,14 @@ def _compose(overrides):
 # --- 1. the response block exists, is on by default, and is overridable --------------
 cfg = _compose([])
 assert cfg.phases.response.enabled is True, "the Algorithm 1 round structure should default on"
-# The g_resp term is gated SEPARATELY and defaults off: its terminal seed is annihilated
-# by a mask composition, so the sweep costs 2K extra full-batch passes to add zero.
-assert cfg.phases.response.gradient is False, "the response gradient should default off"
+# The g_resp term is gated SEPARATELY, so structure-only (first-order MAML) stays
+# available as an A/B baseline without editing code.
+assert cfg.phases.response.gradient is True, "the response gradient should default on"
 assert float(cfg.phases.response.coef) == 1.0
 assert float(cfg.phases.response.replay_fraction) == 1.0
 # Worker groups are built from the actor_rollout_ref subtree alone, so the mirror must carry it.
 assert cfg.actor_rollout_ref.phases.response.enabled is True
-assert cfg.actor_rollout_ref.phases.response.gradient is False
+assert cfg.actor_rollout_ref.phases.response.gradient is True
 
 
 class _GateProbe(RayECHOTrainer):
@@ -164,16 +164,14 @@ assert r["score"] == 0.0 and r["no_tool_calls"], r
 # R_L must be independent of the task answer: same trajectory, wrong ground truth.
 assert compute_tool_score("t", GOOD, "not-42", {"tool_calls_made": 4, "tool_calls_succeeded": 3})["score"] == 0.75
 
-# --- 4b. KNOWN DEFECT: the terminal seed g_fol is annihilated -------------------------
+# --- 4b. the terminal seed g_fol must survive the tool mask ---------------------------
 #
 # v10 Eq. (30) defines the advantage as a per-trajectory SCALAR indexed (i, b, j); the
 # role mask I_p only selects which tokens Eq. (31) sums over, and Eq. (32)'s two leader
-# surrogates share that same scalar. verl instead folds the mask into the token advantage
+# surrogates share that same scalar. verl folds the mask into the token advantage
 # (scores.unsqueeze(-1) * response_mask), which is equivalent for a single-role loss and
-# wrong the moment two role masks must come off one advantage.
-#
-# This asserts the CURRENT BROKEN behaviour on purpose, so that repairing it fails here
-# and forces this check to be rewritten into the positive assertion below.
+# annihilates g_fol the moment two role masks come off one advantage. The unmasked
+# scalar is therefore carried alongside.
 from training.echo_core_algos import compute_grpo_outcome_advantage
 
 m_H = torch.tensor([[1.0, 1.0, 0.0, 0.0], [1.0, 1.0, 0.0, 0.0]])
@@ -182,17 +180,33 @@ rewards = torch.zeros(2, 4)
 rewards[0, -1], rewards[1, -1] = 1.0, 0.0
 uids = np.array(["q0", "q0"])
 
-adv, _ = compute_grpo_outcome_advantage(
+adv, _, scalar_adv = compute_grpo_outcome_advantage(
     token_level_rewards=rewards, response_mask=m_H, index=uids, norm_adv_by_std_in_grpo=False
 )
-seed = float((adv * m_L).abs().sum())
-expected = float((torch.tensor([[0.5], [-0.5]]) * m_L).abs().sum())
-assert expected == 2.0
-assert seed == 0.0, (
-    "g_fol is no longer annihilated -- the advantage/mask repair (Change 1) has landed. "
-    "Replace this block with: assert seed == expected."
-)
-print(f"KNOWN DEFECT confirmed: g_fol seed = {seed} (should be {expected}); g_resp is identically zero")
+expected = 2.0  # |+0.5| and |-0.5| over two tool tokens each
+
+# The pre-masked tensor is still annihilated -- that is the trap, kept visible.
+assert float((adv * m_L).abs().sum()) == 0.0, "masked advantages should still annihilate"
+# The scalar is what g_fol must use, and it survives.
+assert scalar_adv.shape == (2, 1), scalar_adv.shape
+assert float((scalar_adv * m_L).abs().sum()) == expected, scalar_adv
+# The direct path is untouched: reasoning tokens keep exactly the old values.
+assert torch.equal(adv, scalar_adv * m_H), "g_dir must stay bit-identical"
+
+# ...and the actor reads the scalar, not the pre-masked tensor.
+import inspect as _inspect
+
+_fol_src = _inspect.getsource(DataParallelECHOActor._leader_follower_direction)
+assert 'micro["scalar_advantages"]' in _fol_src, "g_fol must use the unmasked scalar"
+assert 'advantages = micro["advantages"]' not in _fol_src, "g_fol must not use pre-masked advantages"
+
+# The group score covers every sampled token, not just reasoning ones (P_H = P_L = I).
+_resp_src = _inspect.getsource(DataParallelECHOActor._response_gradient)
+assert "low_level_loss_mask" in _resp_src and "high_level_loss_mask" in _resp_src, \
+    "the score mask must union both roles' sampled tokens"
+assert "scale_by_adam_precond_" not in _resp_src, \
+    "the frozen Adam diagonal is not the optimizer derivative and must stay unwired"
+print(f"g_fol seed survives the tool mask: {expected}; score covers both roles")
 
 # --- 5. the gradient algebra reproduces sum_b c_b S_b ---------------------------------
 torch.manual_seed(0)
@@ -333,5 +347,10 @@ for name, profile in profiles.items():
         f"{name}: utilities carry no KL term"
     assert profile["hl_entropy_enabled"] is False and profile["ll_entropy_enabled"] is False, \
         f"{name}: lambda_ent H_tool should be off by default"
+    assert profile["response_gradient"] is True, \
+        f"{name}: the g_resp sweep should be on now that its seed survives the tool mask"
+    # Deviations from v10 Eqs. (30)/(31) must be stated in the profile, not discovered.
+    assert "loss_agg_mode" in profile, f"{name}: loss_agg_mode must be explicit"
+    assert "norm_adv_by_std_in_grpo" in profile, f"{name}: advantage normalization must be explicit"
     print(f"  {name}: prompt_batch={prompt_batch['low_level']}, K={n_ll}, rounds={n_hl}")
 print("s6 response checks passed")

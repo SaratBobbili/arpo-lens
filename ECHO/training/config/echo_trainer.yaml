@@ -47,25 +47,24 @@ phases:
     # follower's own r_valid return (Eq. 2), one optimizer step per fresh group (C.3), and
     # the final re-adaptation (line 16). Independent of the response gradient below.
     enabled: true
-    # The response term g_resp itself (Eqs. 10-11). DEFAULT OFF, deliberately.
+    # The response term g_resp itself. ON: its terminal seed g_fol now survives the tool
+    # mask (the unmasked per-trajectory scalar of v10 Eq. (30) is carried alongside the
+    # pre-masked token advantages), so the term is non-zero and carries the mechanism the
+    # method is about -- reasoning changes the data the tool learner trains on.
     #
-    # The terminal seed g_fol is currently annihilated before it is used: the leader
-    # batch's token advantages are already multiplied by the high-level mask
-    # (compute_grpo_outcome_advantage does scores.unsqueeze(-1) * response_mask), and the
-    # tool direction then applies the low-level mask to that product. The masks are
-    # disjoint, so g_fol == 0, hence every c == 0 and g_resp == 0.
+    # It implements the SAMPLING half of Eq. (35) only. Standing approximations, all named
+    # in echo_response's docstring: no fixed-data half (needs an HVP, which FSDP1 cannot
+    # provide), no cross-step coupling (v_s is held at g_fol), micro-batch blocks rather
+    # than whole query groups, and eta_L as a plain scalar in `coef` rather than the
+    # optimizer's derivative.
     #
-    # v10 Eq. (30) defines the advantage as a per-trajectory SCALAR indexed (i, b, j); the
-    # role mask only selects which tokens Eq. (31) sums over. Repairing this means keeping
-    # an unmasked scalar task advantage and applying each role mask once, to its own loss.
-    # Until then the sweep costs 2K extra full-batch passes per round to add exactly zero,
-    # so it stays off.
-    gradient: false
-    # Scale on the response term. NOTE: the follower step size eta_L is NOT properly folded
-    # in. The current lr/(sqrt(v_hat)+eps) factor is a frozen diagonal, not differentiation
-    # through the optimizer: the true derivative of Adam's first update is
-    # lr*eps/(g+eps)^2, which differs from lr/(g+eps) by ~5e6 at g=0.05. v10 C.3 requires
-    # differentiating through the optimizer during the reverse sweep.
+    # Costs 2K extra full-batch forward/backward passes per round; replay_fraction throttles
+    # that directly. Set false to fall back to first-order MAML, which is the honest
+    # baseline for an A/B.
+    gradient: true
+    # Scale on the response term, and the only place eta_L enters. Untuned by default:
+    # read high_level/actor/response_to_direct_ratio and response_direct_cosine after the
+    # first leader step and set it from those.
     coef: 1.0
     # Fraction of stashed follower blocks replayed per leader update. Subsampling is
     # unbiased (the estimator is a sum over blocks, rescaled); it trades variance for the

@@ -96,9 +96,10 @@ ll_aepo_entropy_weight: 0.2
 # ((10000 // (8*(8+1))) floored to a multiple of 8 ranks). App. C.3: every extra
 # optimizer epoch over a reused group is a separate substep of the adaptation map.
 response_enabled: true
-# The g_resp term itself. Off: its terminal seed g_fol is annihilated by a mask
-# composition, so the sweep costs 2K extra full-batch passes to add exactly zero.
-response_gradient: false
+# The g_resp term itself. On: the unmasked scalar advantage keeps its seed alive.
+# Sampling half of Eq. (35) only; costs 2K extra full-batch passes per round.
+# Set false for a first-order-MAML A/B baseline.
+response_gradient: true
 response_coef: 1.0
 response_replay_fraction: 1.0
 

@@ -33,6 +33,7 @@ _FOLLOWER_RECORD_KEYS = (
     "position_ids",
     "responses",
     "advantages",
+    "scalar_advantages",
     "high_level_loss_mask",
     "low_level_loss_mask",
 )
@@ -281,7 +282,10 @@ class DataParallelECHOActor(DataParallelPPOActor):
             _, log_prob = self._forward_micro_batch(
                 micro_batch=micro, temperature=temperature, calculate_entropy=False
             )
-            advantages = micro["advantages"]
+            # (b, 1), broadcast against the (b, T) ratio. NOT micro["advantages"], which
+            # has the high-level mask already folded in -- multiplying that by the tool
+            # mask annihilates every tool token and makes g_fol identically zero.
+            advantages = micro["scalar_advantages"]
             pg_loss, _, _, _ = compute_policy_loss(
                 old_log_prob=micro["old_log_probs"],
                 log_prob=log_prob,
@@ -329,16 +333,19 @@ class DataParallelECHOActor(DataParallelPPOActor):
         if not records:
             return {"actor/response_blocks": 0.0}, None
 
-        # v = P * g_fol. p.grad holds -g_fol and stage 2 reads -g_L, so the two sign flips
+        # v = g_fol. p.grad holds -g_fol and stage 2 reads -g_L, so the two sign flips
         # cancel and v is deliberately carried unnegated.
+        #
+        # No optimizer preconditioner: eta_L folds into phases.response.coef as a plain
+        # tuning scalar. The previous lr/(sqrt(v_hat)+eps) factor was NOT differentiation
+        # through Adam (that is lr*eps/(g+eps)^2 for the first step), so it only added a
+        # wrong-shaped per-coordinate weighting while looking principled.
         #
         # This is the ONLY full-size buffer the response path allocates: it is reused to
         # hold -g_resp for the diagnostics once stage 2 is done with it. A second buffer
         # here fragments the caching allocator enough that the empty_cache() verl runs
         # before vLLM's wake_up cannot return the memory, which OOMs the next generation.
         v = echo_response.clone_grads(params)
-        follower_optimizer, _ = self.phase_optims["low_level"]
-        echo_response.scale_by_adam_precond_(v, follower_optimizer, params)
 
         # Deterministic stride, never RNG: every rank must keep the same blocks or the
         # all_reduce inside a block desyncs. Subsampling is unbiased -- the estimator is a
@@ -367,7 +374,15 @@ class DataParallelECHOActor(DataParallelPPOActor):
                 )
                 loss.backward()
                 coeffs.append(echo_response.dot(echo_response.grads(params), v, group))
-                reasoning_tokens += block["high_level_loss_mask"][:, -response_length:].sum().item()
+                # Must match the mask the score uses below, or the normalizer rescales
+                # the term by a ratio that drifts with the reasoning/tool token mix.
+                reasoning_tokens += float(
+                    torch.clamp(
+                        block["high_level_loss_mask"][:, -response_length:]
+                        + block["low_level_loss_mask"][:, -response_length:],
+                        max=1.0,
+                    ).sum()
+                )
             del blocks
 
         # v stays allocated: it is reused below to carry -g_resp rather than allocating a
@@ -393,9 +408,12 @@ class DataParallelECHOActor(DataParallelPPOActor):
                 _, log_prob = self._forward_micro_batch(
                     micro_batch=dict(block), temperature=temperature, calculate_entropy=False
                 )
-                score = echo_response.reasoning_score(
-                    log_prob, block["high_level_loss_mask"][:, -response_length:]
+                policy_mask = torch.clamp(
+                    block["high_level_loss_mask"][:, -response_length:]
+                    + block["low_level_loss_mask"][:, -response_length:],
+                    max=1.0,
                 )
+                score = echo_response.reasoning_score(log_prob, policy_mask)
                 scale = coef * rescale * coeffs[cursor] / normalizer
                 (-scale * score).backward()
                 cursor += 1
@@ -456,7 +474,7 @@ class DataParallelECHOActor(DataParallelPPOActor):
             # The response term reads both phase masks off the same batch: the tool mask
             # for g_fol and the Eq.-(47) surrogate, the reasoning mask for the Eq.-(48)
             # score. select_keys gates what reaches the micro-batches, so both must ride.
-            for key in ("high_level_loss_mask", "low_level_loss_mask"):
+            for key in ("high_level_loss_mask", "low_level_loss_mask", "scalar_advantages"):
                 if key in data.batch.keys() and key not in select_keys:
                     select_keys.append(key)
         if entropy_loss_mask_key is not None and entropy_loss_mask_key not in select_keys:

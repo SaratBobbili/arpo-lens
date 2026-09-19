@@ -41,6 +41,12 @@ test_freq: 1
 save_best_checkpoint: true
 best_checkpoint_metric: val-core/reward
 max_actor_ckpt_to_keep: 1
+# Adam moments are ~113 GiB of every ~142 GiB checkpoint (8 shards x 14 GiB vs 8 x 3.6 GiB
+# of fp32 weights) and are only useful for resuming THIS run. Dropping them still saves
+# weights + lr_scheduler + RNG, so an auto-resume restores the policy exactly and only the
+# optimizer moments restart from zero -- safe here because warmup_style is constant, so
+# there is no LR schedule state to lose. Set to "[model,optimizer,extra]" for exact resume.
+checkpoint_contents: "[model,extra]"
 resume_mode: auto
 
 shared_prompt_stream: true
@@ -66,11 +72,12 @@ clip_ratio_high_neg: 0.2
 # shared stream batch: (10000 // (N_HL*(N_LL+1))) floored to a multiple of 8 ranks = 136 prompts (N=8 → 72 steps/epoch).
 hl_num_iters: 8
 hl_group_size: 16
-hl_ppo_mini_batch_size: 16
+hl_ppo_mini_batch_size: 136
 hl_lr: 1e-6
 high_level_advantage_algorithm: grpo
 high_level_use_sign_cond_clip: True
 hl_kl_loss_coef: 0.000
+hl_entropy_enabled: false
 hl_entropy_reg_coeff: 0.0
 hl_entropy_normalization: token_pool
 hl_entropy_alpha: 0.2
@@ -78,11 +85,12 @@ hl_entropy_alpha: 0.2
 # --- low_level ---
 ll_num_iters: 8
 ll_group_size: 16
-ll_ppo_mini_batch_size: 16
+ll_ppo_mini_batch_size: 136
 ll_lr: 1e-6
 low_level_advantage_algorithm: aepo
 low_level_use_sign_cond_clip: True
 ll_kl_loss_coef: 0.000
+ll_entropy_enabled: false
 ll_entropy_reg_coeff: 0.0
 ll_entropy_normalization: token_pool
 ll_entropy_alpha: 0.2
@@ -91,3 +99,12 @@ ll_aepo_initial_rollouts: 8
 ll_aepo_beam_size: 2
 ll_aepo_branch_probability: 0.5
 ll_aepo_entropy_weight: 0.2
+
+# --- ECHO Algorithm 1 response term ---
+# One optimizer step per phase iteration is required when this is on, so both
+# ppo_mini_batch_size values above equal the derived 136-prompt batch
+# ((10000 // (8*(8+1))) floored to a multiple of 8 ranks). App. C.3: every extra
+# optimizer epoch over a reused group is a separate substep of the adaptation map.
+response_enabled: true
+response_coef: 1.0
+response_replay_fraction: 1.0

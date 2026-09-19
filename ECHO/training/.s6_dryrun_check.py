@@ -184,35 +184,58 @@ import re
 import yaml
 
 ECHO_ROOT = os.path.join(ECHO_TOP, "training")
-PROFILE = os.path.join(ECHO_ROOT, "training_config", "echo_3B_ll_hl_grpo.yaml")
-profile = yaml.safe_load(open(PROFILE))
+PROFILE_DIR = os.path.join(ECHO_ROOT, "training_config")
+profiles = {
+    name: yaml.safe_load(open(os.path.join(PROFILE_DIR, name)))
+    for name in sorted(os.listdir(PROFILE_DIR))
+    if name.endswith(".yaml")
+}
+assert profiles, "no launch profiles found"
 
-for script in ("train.sh", ".train_dry.sh"):
-    text = open(os.path.join(ECHO_ROOT, "scripts", script)).read()
+scripts = {
+    script: open(os.path.join(ECHO_ROOT, "scripts", script)).read()
+    for script in ("train.sh", ".train_dry.sh")
+}
+for script, text in scripts.items():
     allow = re.search(r"VALID_LAUNCH_KEYS=\((.*?)\n\)", text, re.S).group(1).split()
-    unknown = sorted(k for k in profile if k not in allow)
-    assert not unknown, f"{script}: launch profile keys not in VALID_LAUNCH_KEYS: {unknown}"
     for key in ("response_enabled", "response_coef", "response_replay_fraction",
                 "hl_entropy_enabled", "ll_entropy_enabled"):
         assert key in allow, f"{script}: {key} missing from VALID_LAUNCH_KEYS"
         env = key.upper()
         assert env in text, f"{script}: ${env} never reaches a hydra override"
+    for name, profile in profiles.items():
+        unknown = sorted(k for k in profile if k not in allow)
+        assert not unknown, f"{script}: {name} keys not in VALID_LAUNCH_KEYS: {unknown}"
 
-# The profile must satisfy the one-step rule for the batch its own knobs derive.
-n_hl, n_ll = int(profile["hl_num_iters"]), int(profile["ll_num_iters"])
-world = int(profile["n_gpus_per_node"]) * int(profile["nnodes"])
-dataset_size = 10000  # train_10k.parquet, as named by the profile's train_files
-steps_per_epoch = n_hl * (n_ll + 1)
-prompt_batch = (dataset_size // steps_per_epoch) // world * world
+# EVERY profile must satisfy the one-step rule for the batch its own knobs derive --
+# response_enabled defaults on, so a stale ppo_mini_batch_size is a startup failure.
+for name, profile in profiles.items():
+    if not profile.get("response_enabled", True):
+        continue
+    n_hl, n_ll = int(profile["hl_num_iters"]), int(profile["ll_num_iters"])
+    world = int(profile["n_gpus_per_node"]) * int(profile["nnodes"])
+    assert "train_10k" in profile["train_files"], f"{name}: update dataset_size below for {profile['train_files']}"
+    dataset_size = 10000
+    if profile.get("shared_prompt_stream", True):
+        steps_per_epoch = n_hl * (n_ll + 1)
+        prompt_batch = {p: (dataset_size // steps_per_epoch) // world * world for p in ("high_level", "low_level")}
+    else:
+        prompt_batch = {
+            "high_level": (dataset_size // n_hl) // world * world,
+            "low_level": (dataset_size // n_ll) // world * world,
+        }
 
-probe = _Probe(_compose([]), {"low_level": prompt_batch, "high_level": prompt_batch})
-probe.config.phases.high_level.ppo_mini_batch_size = int(profile["hl_ppo_mini_batch_size"])
-probe.config.phases.low_level.ppo_mini_batch_size = int(profile["ll_ppo_mini_batch_size"])
-probe._validate_response_config()
+    probe = _Probe(_compose([]), prompt_batch)
+    probe.config.phases.high_level.ppo_mini_batch_size = int(profile["hl_ppo_mini_batch_size"])
+    probe.config.phases.low_level.ppo_mini_batch_size = int(profile["ll_ppo_mini_batch_size"])
+    try:
+        probe._validate_response_config()
+    except AssertionError as e:
+        raise SystemExit(f"FAIL: {name} would abort at startup: {e}")
 
-assert float(profile["hl_kl_loss_coef"]) == 0.0 and float(profile["ll_kl_loss_coef"]) == 0.0, "utilities carry no KL"
-assert profile["response_enabled"] is True
-assert profile["hl_entropy_enabled"] is False and profile["ll_entropy_enabled"] is False
-
-print(f"launch profile ok: prompt_batch={prompt_batch}, K={n_ll}, rounds={n_hl}")
+    assert float(profile["hl_kl_loss_coef"]) == 0.0 and float(profile["ll_kl_loss_coef"]) == 0.0, \
+        f"{name}: utilities carry no KL term"
+    assert profile["hl_entropy_enabled"] is False and profile["ll_entropy_enabled"] is False, \
+        f"{name}: lambda_ent H_tool should be off by default"
+    print(f"  {name}: prompt_batch={prompt_batch['low_level']}, K={n_ll}, rounds={n_hl}")
 print("s6 response checks passed")

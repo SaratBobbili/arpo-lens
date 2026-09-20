@@ -47,6 +47,17 @@ phases:
     # follower's own r_valid return (Eq. 2), one optimizer step per fresh group (C.3), and
     # the final re-adaptation (line 16). Independent of the response gradient below.
     enabled: true
+    # Score the follower phase by R_L (v10 Eq. 2 / the first surrogate of Eq. 32: tool
+    # validity) instead of the task return. null inherits `enabled`, which is the historical
+    # coupling; set it explicitly to vary this on its own.
+    #
+    # Worth separating because `enabled` above changes FOUR things at once -- the follower's
+    # reward, the follower discard, the round structure and the precondition for `gradient`.
+    # A run with all four flipped cannot attribute its result to any one of them, which is
+    # what made echo7B_sft1e8_rl1e-6-hypergrad-fix uninterpretable against the -r3 GRPO runs.
+    # false + enabled:true  -> Algorithm 1's structure, task return in both phases
+    # true  + enabled:false -> paper reward split, no round structure or response term
+    follower_return: null
     # The response term g_resp itself. ON: its terminal seed g_fol now survives the tool
     # mask (the unmasked per-trajectory scalar of v10 Eq. (30) is carried alongside the
     # pre-masked token advantages), so the term is non-zero and carries the mechanism the
@@ -208,14 +219,19 @@ actor_rollout_ref:
       # tool_instances.search.params.request_timeout, and override tools.retry_count / tools.timeout from the launch script as needed.
       # When true, rollouts where any tool exhausted retries emit tool_rollout_failed; ECHO zeros phase masks/rewards and isolates uid so GRPO skips them. When false (default), failed tool rollouts train normally.
       skip_training_on_tool_failure: false
-      # When a rollout spends its whole tool budget it now receives a masked <result> notice and a
-      # final turn to answer (see vllm_rollout_echo), instead of a bare EOS mid-call. A bare EOS
-      # left no <answer>, which the scorer's format gate punished with -1 -- turning "ran out of
-      # tool budget" into a format penalty and teaching the policy to stop calling tools. When this
-      # flag is true, any rollout that still fails the format gate after that final turn has its
-      # reward zeroed and its uid isolated, so it contributes 0 rather than -1. Rollouts that
-      # exhaust the budget and DO answer legally are scored normally.
+      # DEPRECATED, read only when budget_exhausted_mode is null: true -> "excise", false -> "none".
       skip_training_on_budget_exhausted: true
+      # What to do with a rollout that spends its whole tool budget and STILL fails the format
+      # gate after the final answer-me turn it is given (see vllm_rollout_echo). Rollouts that
+      # exhaust the budget and DO answer legally are scored normally and never land here.
+      #   in_group_zero  reward 0, uid kept. The group baseline drops, so the siblings that
+      #                  answered get a positive advantage and these get a negative one. Default.
+      #   excise         reward 0 + fresh uid -> singleton group -> advantage exactly 0, no
+      #                  gradient. This is what ran up to 2026-09-19; it hid the dominant failure
+      #                  mode from the optimizer and let echo7B_sft1e8_rl1e-6-r3 collapse into
+      #                  "spend every call, never answer" with nothing opposing the drift.
+      #   none           leave the scorer's -1 format penalty in place.
+      budget_exhausted_mode: in_group_zero
       verbose_logging: false
       fail_on_error: false
       tool_instances:

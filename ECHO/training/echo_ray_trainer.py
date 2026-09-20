@@ -185,15 +185,35 @@ class RayECHOTrainer(RayPPOTrainer):
     def _response_gradient_enabled(self) -> bool:
         """The g_resp term itself. Gated separately from the structure above.
 
-        The terminal seed is currently annihilated by a mask composition (see the config
-        comment on phases.response.gradient), so g_resp is identically zero and the sweep
-        costs 2K extra full-batch passes per round to add nothing. Keeping this separate
-        lets the round structure run without paying for that.
+        The mask composition that once annihilated the terminal seed was fixed in 1596bcc
+        (the unmasked per-trajectory scalar of v10 Eq. (30) now rides alongside the
+        pre-masked token advantages), so g_resp is no longer identically zero. It is still
+        the sampling half of Eq. (35) only, and measured at 0.1-3% of the direct gradient
+        with `coef=1.0` -- see the config comment on phases.response.gradient. Keeping this
+        separate lets the round structure run without paying 2K extra full-batch passes.
         """
         cfg = self._response_cfg()
         if cfg is None or not self._response_enabled():
             return False
         return bool(cfg.get("gradient", False))
+
+    def _follower_return_enabled(self) -> bool:
+        """Whether the follower phase is scored by R_L (Eq. 2) rather than the task return.
+
+        v10 Eq. (32): the first surrogate adapts the tool policy with the TOOL-level return,
+        while both leader surrogates use the task return. This is split out from
+        `phases.response.enabled` because that one flag also gates the round structure, the
+        follower discard and the response term -- four changes in a single switch, which
+        makes any A/B against a plain-GRPO run uninterpretable. Null inherits `enabled`, so
+        existing launch configs behave exactly as before.
+        """
+        cfg = self._response_cfg()
+        if cfg is None:
+            return False
+        value = cfg.get("follower_return", None)
+        if value is None:
+            return self._response_enabled()
+        return bool(value)
 
     def _phase_rollout_cfg(self, phase_name: str):
         return self.config.phases[phase_name].rollout
@@ -238,15 +258,27 @@ class RayECHOTrainer(RayPPOTrainer):
                     f.write(json.dumps({"step": self.global_steps, "value": value, "gain": gain}) + "\n")
 
     @staticmethod
-    def _build_scorer_metrics(reward_extra_info: dict) -> dict:
+    def _build_scorer_metrics(reward_extra_info: dict, follower_return: bool = False) -> dict:
         metrics: dict = {}
         if not reward_extra_info:
             return metrics
 
         if "score" in reward_extra_info:
             scores = torch.tensor(reward_extra_info["score"], dtype=torch.float32)
-            metrics["policy/reward_mean"] = scores.mean().item()
-            metrics["policy/bad_format_rate"] = (scores < 0.0).to(torch.float32).mean().item()
+            if follower_return:
+                # R_L (Eq. 2) is tool validity in [0, 1], NOT the task return, and with a
+                # ~99% tool success rate it is very nearly the format gate. Logging it as
+                # policy/reward_mean put two different reward functions on one panel: 8 of
+                # every 9 points read ~0.75 (R_L) and every 9th read ~-0.2 (the task
+                # return), which reads as a periodic instability that is not there. Its own
+                # key keeps policy/reward_mean one comparable quantity across phases and
+                # runs -- sparse for a follower-return run, but honest.
+                metrics["policy/follower_return_mean"] = scores.mean().item()
+                # bad_format_rate counts negative scores; R_L is never negative, so the
+                # format gate is read off policy/format_valid_rate below instead.
+            else:
+                metrics["policy/reward_mean"] = scores.mean().item()
+                metrics["policy/bad_format_rate"] = (scores < 0.0).to(torch.float32).mean().item()
 
         if "f1_score" in reward_extra_info:
             f1_scores = torch.tensor(reward_extra_info["f1_score"], dtype=torch.float32)
@@ -339,16 +371,32 @@ class RayECHOTrainer(RayPPOTrainer):
             if alias in phase_batch.batch.keys():
                 phase_batch.batch[alias] = masked
 
+    def _budget_exhausted_mode(self) -> str:
+        """How to treat a rollout that spent its tool budget and still failed the format gate.
+
+        ``in_group_zero`` (default) scores it 0 but leaves it in its prompt group, so the group
+        baseline drops and the siblings that did answer gain a positive advantage against it.
+        ``excise`` is the pre-2026-09-19 behaviour: 0 plus a fresh uid, i.e. a singleton group,
+        whose mean is pinned to 0 by ``compute_grpo_outcome_advantage``, so the sample's
+        advantage is exactly 0 and it contributes no gradient at all. ``none`` leaves the
+        scorer's -1 format penalty untouched.
+        """
+        cfg = self._echo_rollout_tools_cfg()
+        mode = cfg.get("budget_exhausted_mode", None)
+        if mode is None:
+            # Deprecated boolean, honoured so a resume from an older launch config still runs.
+            return "excise" if bool(cfg.get("skip_training_on_budget_exhausted", True)) else "none"
+        return str(mode)
+
     def _budget_exhausted_and_invalid(self, phase_batch: DataProto) -> np.ndarray | None:
         """Samples that spent the tool budget and still failed the format gate.
 
-        A rollout that exhausts its tool budget now gets a masked notice and a final turn to
-        answer (see vllm_rollout_echo). One that answers legally is real data and is scored
-        normally -- a wrong answer earns 0, which is the honest signal. This is only the residual
-        safety net for the ones that still produce nothing scoreable, so they contribute 0 instead
-        of the -1 that used to teach the policy to stop calling tools.
+        A rollout that exhausts its tool budget gets a masked notice and a final turn to answer
+        (see vllm_rollout_echo). One that answers legally is real data and is scored normally --
+        a wrong answer earns 0, which is the honest signal. This selects only the residual: the
+        ones that still produced nothing scoreable after that final turn.
         """
-        if not bool(self._echo_rollout_tools_cfg().get("skip_training_on_budget_exhausted", True)):
+        if self._budget_exhausted_mode() == "none":
             return None
         exhausted = phase_batch.non_tensor_batch.get("tool_budget_exhausted")
         if exhausted is None:
@@ -359,30 +407,82 @@ class RayECHOTrainer(RayPPOTrainer):
         flags = np.asarray(exhausted, dtype=np.bool_) & ~np.asarray(fmt_valid, dtype=np.bool_)
         return flags if np.any(flags) else None
 
-    def _apply_tool_failure_before_grpo(self, phase_batch: DataProto) -> None:
-        flags = None
+    def _apply_tool_failure_before_grpo(self, phase_batch: DataProto) -> dict:
+        """Neutralise the two kinds of unusable rollout before GRPO forms its baselines.
+
+        They are not the same failure and must not be handled the same way:
+
+        * ``tool_rollout_failed`` is infrastructure -- a retry budget spent on a search API that
+          timed out. The policy did nothing wrong, so the sample is *excised*: fresh uid, hence
+          a singleton group with mean 0, hence advantage 0 and no gradient.
+        * Budget-exhausted-and-unanswered is the policy's own doing. Excising that too (the
+          behaviour up to 2026-09-19) made the single most common failure mode invisible to the
+          optimizer: every trajectory that spent all three calls and never emitted <answer> was
+          deleted from its group, so "keep calling tools" was never compared against "answer
+          now". Nothing opposed the drift, which made it an absorbing state --
+          echo7B_sft1e8_rl1e-6-r3 entered it around step 89 and never left
+          (budget_exhausted_rate 0.99, format_valid_rate 0.03, reward_mean -0.97).
+
+        Under ``in_group_zero`` the sample is scored 0 but *keeps its uid*, so it stays in the
+        group. With norm_adv_by_std_in_grpo=false the advantage is ``r_i - mean``, so the sample
+        earns a negative advantage and its answering siblings earn a positive one. The pressure
+        is group-relative and therefore self-scaling: it fades as a group stops exhausting its
+        budget, unlike the flat -1 this replaced.
+        """
+        mode = self._budget_exhausted_mode()
+        out: dict = {}
+
+        infra = None
         if bool(self._echo_rollout_tools_cfg().get("skip_training_on_tool_failure", False)):
             tool_failed = phase_batch.non_tensor_batch.get("tool_rollout_failed")
             if tool_failed is not None and np.any(tool_failed):
-                flags = np.asarray(tool_failed, dtype=np.bool_)
+                infra = np.asarray(tool_failed, dtype=np.bool_)
 
-        budget_flags = self._budget_exhausted_and_invalid(phase_batch)
-        if budget_flags is not None:
-            flags = budget_flags if flags is None else (flags | budget_flags)
+        demote = self._budget_exhausted_and_invalid(phase_batch)
+        # Both counted before the mode folds anything together, so each number means the same
+        # thing in every mode: infra failures excised, and rollouts that hit the budget failure.
+        out["policy/tool_failure_excised_rate"] = float(infra.mean()) if infra is not None else 0.0
+        out["policy/budget_exhausted_invalid_rate"] = float(demote.mean()) if demote is not None else 0.0
 
-        if flags is None or not np.any(flags):
-            return
+        excise = infra
+        if demote is not None and mode == "excise":
+            excise = demote if excise is None else (excise | demote)
+            demote = None
+        if demote is not None and excise is not None:
+            # An infrastructure failure is not the policy's fault even when the budget also ran
+            # out, so excision wins the overlap and the sample stays out of the baseline.
+            demote = demote & ~excise
+            if not np.any(demote):
+                demote = None
+
+        # Of the above, how much stayed in its group and so actually carries counter-pressure.
+        # Zero in every mode but in_group_zero; the gap against the rate above is the bug closed.
+        out["policy/budget_demoted_rate"] = float(demote.mean()) if demote is not None else 0.0
+
+        if excise is None and demote is None:
+            return out
+
+        if excise is None:
+            zeroed = demote
+        elif demote is None:
+            zeroed = excise
+        else:
+            zeroed = excise | demote
 
         dev = phase_batch.batch["token_level_rewards"].device
-        failed = torch.tensor(flags, device=dev)
+        failed = torch.tensor(zeroed, device=dev)
         phase_batch.batch["token_level_rewards"][failed] = 0
         phase_batch.batch["token_level_scores"][failed] = 0
-        # Fresh uid per dropped sample: a singleton group has mean 0, so its advantage is 0 and it
-        # cannot shift the baseline of the group it came from.
-        uids = phase_batch.non_tensor_batch["uid"].copy()
-        for i in np.flatnonzero(flags):
-            uids[i] = str(uuid.uuid4())
-        phase_batch.non_tensor_batch["uid"] = uids
+
+        if excise is not None:
+            # Fresh uid per excised sample: a singleton group has mean 0, so its advantage is 0
+            # and it cannot shift the baseline of the group it came from. Demoted samples are
+            # deliberately NOT given one -- shifting that baseline is the entire point.
+            uids = phase_batch.non_tensor_batch["uid"].copy()
+            for i in np.flatnonzero(excise):
+                uids[i] = str(uuid.uuid4())
+            phase_batch.non_tensor_batch["uid"] = uids
+        return out
 
     def _validate_phase_reward_configs(self) -> None:
         allowed_adv = {"grpo", "entropy", "aepo"}
@@ -394,6 +494,20 @@ class RayECHOTrainer(RayPPOTrainer):
             )
             assert int(cfg.group_size) >= 1, (
                 f"phases.{phase_name}.group_size must be >= 1, got {cfg.group_size}."
+            )
+
+    def _validate_budget_exhausted_config(self) -> None:
+        allowed = {"in_group_zero", "excise", "none"}
+        mode = self._budget_exhausted_mode()
+        assert mode in allowed, (
+            f"actor_rollout_ref.rollout.tools.budget_exhausted_mode must be one of "
+            f"{sorted(allowed)}, got {mode!r}."
+        )
+        if self._echo_rollout_tools_cfg().get("budget_exhausted_mode", None) is None:
+            print(
+                "[echo] actor_rollout_ref.rollout.tools.budget_exhausted_mode is unset; falling "
+                f"back to the deprecated skip_training_on_budget_exhausted flag -> {mode!r}. "
+                "Set budget_exhausted_mode explicitly (default: in_group_zero)."
             )
 
     def _validate_phase_rollout_configs(self) -> None:
@@ -416,6 +530,16 @@ class RayECHOTrainer(RayPPOTrainer):
         stashed-record-to-substep correspondence the reverse sweep relies on would break.
         Requiring one step per iteration keeps K = phases.low_level.num_iters exactly.
         """
+        if self._response_gradient_enabled() and not self._follower_return_enabled():
+            # Eq. (33)'s g_grp_L is built from the follower's OWN advantages. Scoring the
+            # follower phase by the task return instead makes the replayed surrogate a
+            # different object from the update it is supposed to stand for.
+            print(
+                "[echo] WARNING: phases.response.gradient is on but phases.response."
+                "follower_return is off, so the response term contracts against task-return "
+                "advantages rather than R_L. This is not Eq. (33); the run is measuring "
+                "something else."
+            )
         if not self._response_enabled():
             return
         ppo_epochs = int(self.config.actor_rollout_ref.actor.get("ppo_epochs", 1))
@@ -537,6 +661,7 @@ class RayECHOTrainer(RayPPOTrainer):
             collate_fn = default_collate_fn
 
         self._validate_phase_reward_configs()
+        self._validate_budget_exhausted_config()
         self._validate_phase_rollout_configs()
 
         dataset_size = len(self.train_dataset)
@@ -681,7 +806,7 @@ class RayECHOTrainer(RayPPOTrainer):
         phase_batch.meta_info["mask_categories"] = dict(self.config.actor_rollout_ref.rollout.mask_categories)
         # Algorithm 1 scores u_L by r_valid (Eq. 2) and u_H by r_task (Eq. 3). Off, both
         # phases share the task score, which is the pre-Algorithm-1 behavior.
-        phase_batch.meta_info["use_follower_return"] = self._response_enabled()
+        phase_batch.meta_info["use_follower_return"] = self._follower_return_enabled()
 
         with _timer(f"{phase_name}_gen", timing_raw):
             phase_gen_batch = deepcopy(gen_batch)
@@ -800,7 +925,12 @@ class RayECHOTrainer(RayPPOTrainer):
         phase_batch.batch["token_level_scores"] = reward_tensor
         if phase_reward_extra_infos_dict:
             phase_batch.non_tensor_batch.update({k: np.array(v) for k, v in phase_reward_extra_infos_dict.items()})
-            metrics.update(self._build_scorer_metrics(phase_reward_extra_infos_dict))
+            metrics.update(
+                self._build_scorer_metrics(
+                    phase_reward_extra_infos_dict,
+                    follower_return=self._follower_return_enabled() and phase_name == "low_level",
+                )
+            )
         metrics.update(self._rollout_behavior_metrics(phase_batch))
 
         if self.config.algorithm.use_kl_in_reward:
@@ -843,7 +973,13 @@ class RayECHOTrainer(RayPPOTrainer):
                 in_group_std, zero_std_frac = self._compute_in_group_reward_std(phase_batch)
                 metrics["policy/in_group_reward_std"] = in_group_std
                 metrics["policy/group_zero_std_frac"] = zero_std_frac
-                self._apply_tool_failure_before_grpo(phase_batch)
+                metrics.update(self._apply_tool_failure_before_grpo(phase_batch))
+                # The pair above is measured on the raw scores; this one is measured on what
+                # GRPO actually sees. They diverge exactly where the reward adjustment bites,
+                # so *_post is the number that says whether a group still carries gradient.
+                post_std, post_zero_std_frac = self._compute_in_group_reward_std(phase_batch)
+                metrics["policy/in_group_reward_std_post"] = post_std
+                metrics["policy/group_zero_std_frac_post"] = post_zero_std_frac
 
                 phase_batch = compute_advantage(
                     phase_batch,

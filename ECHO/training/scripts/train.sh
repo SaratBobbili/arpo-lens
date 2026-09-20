@@ -56,7 +56,7 @@ VALID_LAUNCH_KEYS=(
     hl_warmup_style ll_warmup_style hl_lr_warmup_steps_ratio ll_lr_warmup_steps_ratio
     high_level_advantage_algorithm low_level_advantage_algorithm
     norm_adv_by_std_in_grpo
-    skip_training_on_tool_failure skip_training_on_budget_exhausted
+    skip_training_on_tool_failure skip_training_on_budget_exhausted budget_exhausted_mode
     mask_tool mask_think mask_answer mask_search mask_python
     clip_ratio_low clip_ratio_high clip_ratio_c clip_ratio_low_pos clip_ratio_high_pos clip_ratio_low_neg clip_ratio_high_neg
     hl_kl_loss_coef ll_kl_loss_coef hl_use_aepo_clip ll_use_aepo_clip
@@ -64,7 +64,7 @@ VALID_LAUNCH_KEYS=(
     hl_entropy_reg_coeff ll_entropy_reg_coeff hl_entropy_normalization ll_entropy_normalization
     hl_entropy_alpha ll_entropy_alpha
     hl_entropy_enabled ll_entropy_enabled
-    response_enabled response_gradient response_coef response_replay_fraction
+    response_enabled response_gradient response_coef response_replay_fraction response_follower_return
     loss_agg_mode
     hl_opefo_enabled ll_opefo_enabled
     high_level_rollout_strategy low_level_rollout_strategy
@@ -158,6 +158,7 @@ ARGS=(
     reward_model.reward_manager="${REWARD_MANAGER}"
     actor_rollout_ref.rollout.tools.skip_training_on_tool_failure="${SKIP_TRAINING_ON_TOOL_FAILURE:-false}"
     actor_rollout_ref.rollout.tools.skip_training_on_budget_exhausted="${SKIP_TRAINING_ON_BUDGET_EXHAUSTED:-true}"
+    actor_rollout_ref.rollout.tools.budget_exhausted_mode="${BUDGET_EXHAUSTED_MODE:-in_group_zero}"
     phases.shared_prompt_stream="${SHARED_PROMPT_STREAM:-true}"
     "phases.high_level.num_iters=${HL_NUM_ITERS}"
     "phases.low_level.num_iters=${LL_NUM_ITERS}"
@@ -193,6 +194,7 @@ ARGS=(
     phases.low_level.entropy.enabled="${LL_ENTROPY_ENABLED:-false}"
     phases.response.enabled="${RESPONSE_ENABLED:-true}"
     phases.response.gradient="${RESPONSE_GRADIENT:-false}"
+    phases.response.follower_return="${RESPONSE_FOLLOWER_RETURN:-null}"
     "actor_rollout_ref.actor.loss_agg_mode=${LOSS_AGG_MODE:-token-mean}"
     "phases.response.coef=${RESPONSE_COEF:-1.0}"
     "phases.response.replay_fraction=${RESPONSE_REPLAY_FRACTION:-1.0}"

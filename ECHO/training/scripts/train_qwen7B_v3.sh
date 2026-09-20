@@ -11,7 +11,11 @@
 set -e
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
-BASE_PROFILE="training_config/config1.yaml"
+# Switch arms for all three scripts at once, e.g.
+#   BASE_PROFILE=training_config/config_r3.yaml bash train_qwen7B.sh
+# config1.yaml     = response path on (Algorithm 1 round structure + g_resp)
+# config_r3.yaml   = response path off, alternating role-masked GRPO
+BASE_PROFILE="${BASE_PROFILE:-training_config/config1.yaml}"
 
 PROJECT_NAME="${PROJECT_NAME:-qwen25_7B}"
 EXPERIMENT_NAME="${EXPERIMENT_NAME:-echo7B_sft3e8_rl1e-6-r3}"

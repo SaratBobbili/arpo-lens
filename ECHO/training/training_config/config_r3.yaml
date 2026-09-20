@@ -1,0 +1,144 @@
+# ECHO 7B, response path OFF: alternating role-masked GRPO.
+#
+# Twin of config1.yaml, reproducing the echo7B_*_rl1e-6-r3 arm. It differs in exactly
+# three things, all marked below:
+#   response_enabled     true -> false   (and gradient; follower_return inherits it)
+#   {hl,ll}_ppo_mini_batch_size  136 -> 16
+#   gpu_memory_utilization  0.6 -> 0.7
+# Everything else is byte-identical to config1.yaml on purpose -- keep it that way, so a
+# config1-vs-config_r3 comparison has three named differences rather than a diff to read.
+#
+# Note the budget-exhaustion fix (b0bad4c) applies to BOTH arms: budget_exhausted_mode
+# defaults to in_group_zero, so this is not a bit-exact replay of the original r3 runs,
+# which had the zero-gradient blind spot that collapsed echo7B_sft1e8_rl1e-6-r3.
+
+# shared
+project_name: Qwen2.5-7B-Instruct
+experiment_name: Experiment-1-r3
+active_system_prompt: 1
+nnodes: 1
+n_gpus_per_node: 8
+
+max_prompt_length: 1536
+max_response_length: 4096
+prompt_key: prompt
+train_files: rl_datasets/train_10k.parquet
+valid_files: rl_datasets/valid.parquet
+
+actor_model_subpath: checkpoints/Qwen2.5-7B-Instruct-lr1e8-ep1
+reward_manager: echo
+
+rollout_n: 16
+enable_multi_turn: false
+tensor_model_parallel_size: 1
+# 0.7, not config1's 0.6: that headroom exists only for the response sweep's full-size
+# gradient buffer and per-parameter temporaries, which this arm never allocates. The
+# r3 series ran at 0.7 without OOM.
+gpu_memory_utilization: 0.7
+rollout_name: vllm
+rollout_mode: sync_echo
+exclude_tag_tokens_from_phase_masks: false
+search_cache_file: search_cache_echo_7B.json
+search_class_path: verl.workers.agent.tools.search_tool.BingSearchTool
+brightdata_timeout: 90
+tool_call_limit: 3
+
+save_freq: 1
+test_freq: 1
+save_best_checkpoint: true
+best_checkpoint_metric: val-core/reward
+max_actor_ckpt_to_keep: 1
+# Adam moments are ~113 GiB of every ~142 GiB checkpoint (8 shards x 14 GiB vs 8 x 3.6 GiB
+# of fp32 weights) and are only useful for resuming THIS run. Dropping them still saves
+# weights + lr_scheduler + RNG, so an auto-resume restores the policy exactly and only the
+# optimizer moments restart from zero -- safe here because warmup_style is constant, so
+# there is no LR schedule state to lose. Set to "[model,optimizer,extra]" for exact resume.
+checkpoint_contents: "[model,extra]"
+resume_mode: auto
+
+shared_prompt_stream: true
+total_epochs: 4
+
+norm_adv_by_std_in_grpo: off
+
+mask_tool: low
+mask_think: high
+mask_answer: high
+mask_search: low
+mask_python: low
+
+clip_ratio_low: 0.2
+clip_ratio_high: 0.2
+clip_ratio_c: 3.0
+clip_ratio_low_pos: 0.2
+clip_ratio_high_pos: 0.2
+clip_ratio_low_neg: 0.2
+clip_ratio_high_neg: 0.2
+
+# --- high_level ---
+# shared stream batch: (10000 // (N_HL*(N_LL+1))) floored to a multiple of 8 ranks = 136 prompts (N=8 → 72 steps/epoch).
+# ppo_mini_batch_size is 16, not the 136-prompt batch: that gives 136/16 = 8 optimizer
+# steps per collected batch, which is what the r3 runs did and is the off-policy drift
+# that config1 forbids (App. C.3 needs one step per group when the response term is on).
+# This is the knob to vary against config1's 136 if you want to isolate near-on-policy
+# updating from everything else the response flag changes.
+hl_num_iters: 8
+hl_group_size: 16
+hl_ppo_mini_batch_size: 16
+hl_lr: 1e-6
+high_level_advantage_algorithm: grpo
+high_level_use_sign_cond_clip: True
+hl_kl_loss_coef: 0.000
+hl_entropy_enabled: false
+hl_entropy_reg_coeff: 0.0
+hl_entropy_normalization: token_pool
+hl_entropy_alpha: 0.2
+
+# --- low_level ---
+ll_num_iters: 8
+ll_group_size: 16
+ll_ppo_mini_batch_size: 16
+ll_lr: 1e-6
+low_level_advantage_algorithm: grpo
+low_level_use_sign_cond_clip: True
+ll_kl_loss_coef: 0.000
+ll_entropy_enabled: false
+ll_entropy_reg_coeff: 0.0
+ll_entropy_normalization: token_pool
+ll_entropy_alpha: 0.2
+low_level_rollout_strategy: default
+ll_aepo_initial_rollouts: 8
+ll_aepo_beam_size: 2
+ll_aepo_branch_probability: 0.5
+ll_aepo_entropy_weight: 0.2
+
+# --- ECHO Algorithm 1 response term: OFF for this arm ---
+# Off, this is alternating role-masked GRPO -- the pre-response-path configuration the
+# echo7B_*_rl1e-6-r3 runs were launched with on 2026-09-18, before af809f2. Turning it
+# off drops four things at once: the round snapshot/reset, the follower discard, the
+# response gradient, and (via response_follower_return: null below) the follower's own
+# R_L return, so both phases are scored by the task return again.
+#
+# It does NOT change the 8:1 cycle -- ll_num_iters low-level iterations per high-level
+# one is independent of this flag. 8 of every 9 updates still land on tool/search/python
+# tokens only.
+response_enabled: false
+response_gradient: false
+# null inherits response_enabled, i.e. false here: task return in both phases, which is
+# what the r3 runs did. Set true to keep the paper's R_L/R_H split without the round
+# structure or the response term.
+response_follower_return: null
+response_coef: 1.0
+response_replay_fraction: 1.0
+
+# --- Deviations from v10 GRPO, stated rather than discovered ---
+# Eq. (30) standardizes the within-query advantage by its group std:
+#   A = (R - mean(R)) / (std(R) + eps_adv)
+# norm_adv_by_std_in_grpo=off keeps only the mean centering. Set it to `on` for the
+# paper's estimator; left off here so runs stay comparable with the existing r3 series.
+#
+# Eq. (31) normalizes per trajectory by 1/max(1,|I_p(tau)|) and then averages over the
+# B*G trajectories -- that is seq-mean-token-mean. token-mean instead takes one global
+# mean over unmasked tokens, which weights each trajectory by its role-token count rather
+# than equally. Set loss_agg_mode=seq-mean-token-mean to match the paper.
+loss_agg_mode: token-mean

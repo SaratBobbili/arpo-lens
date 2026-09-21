@@ -334,36 +334,55 @@ def group_spans(group_id) -> list:
 def group_block_split(seq_lens, spans, max_token_len, group=None) -> list:
     """Micro-batch index lists that never straddle a query group.
 
-    Two constraints pull against each other. FSDP1 all-gathers on every forward, so every
-    rank must issue the SAME number of forwards or the collectives desync -- that is what
-    `same_micro_num_in_dp` buys in the ungrouped path. And a group must be replayed as a
-    contiguous run of micro-batches with no other group interleaved, or ``p.grad`` cannot
-    be read off as that group's own gradient.
+    FSDP1 all-gathers on every forward and `dot` all-reduces per group, so every rank must
+    issue the SAME number of forwards and the same number of collectives. A group must also
+    be replayed as a contiguous run of micro-batches with nothing else interleaved, or
+    p.grad cannot be read as that group's gradient.
 
-    Both hold if the split is agreed PER GROUP: each rank proposes how many micro-batches
-    its copy of group i needs, the DP maximum is taken, and every rank splits group i into
-    exactly that many chunks. Ranks carry the same number of groups (the caller asserts
-    it), so the total forward count matches even though the chunk contents differ.
+    Rank group COUNTS do not agree, and cannot be made to. Excision hands every
+    budget-exhausted sample a fresh uid (a singleton group) and the rate is data dependent,
+    so a 2176-sequence batch that is nominally 17 groups of 16 per rank arrives as 110-123
+    groups, differing rank to rank. An earlier version asserted equality here and took down
+    echo7B_sft5e8_exact_k1 at its first leader update.
 
-    Returns one list of index lists per group, in group order.
+    Resolved by agreeing two numbers instead. First the group count: G = max over ranks,
+    with short ranks splitting their largest groups until they have exactly G. Splitting a
+    group costs that group's internal pairing, which is the same thing an ungrouped
+    partition costs everywhere, and it is bounded by the rank spread. Then the chunk count
+    per group index: proposed locally, maxed across ranks, applied by everyone. A rank
+    always has enough sequences, since G <= (sequences per rank).
+
+    NOTE what this does and does not buy under data parallelism. FSDP reduce-scatters the
+    gradient, so p.grad after a backward is the DP average over what ALL ranks were running
+    at that moment, and each query group lives whole on one rank. So the object read off
+    p.grad at group index i is the mean of the eight groups sitting at index i on the eight
+    ranks -- Eq. (49)'s within-group pairing is recovered, the across-rank mixing is not.
+    Strictly better than a token-budget partition, which splits groups AND mixes them
+    arbitrarily, but it is not the per-query estimator of Eq. (49). Removing the rest needs
+    each group sharded across ranks rather than held whole by one, i.e. an all-to-all of
+    the stashed record.
     """
-    n_groups = len(spans)
+    spans = list(spans)
     if dist.is_initialized():
-        extent = torch.tensor([n_groups, -n_groups], dtype=torch.int64, device="cuda")
-        dist.all_reduce(extent, op=dist.ReduceOp.MAX, group=group)
-        assert int(extent[0]) == n_groups and int(-extent[1]) == n_groups, (
-            f"ranks hold different query-group counts ({n_groups} here, "
-            f"{int(extent[0])} max / {int(-extent[1])} min). The response term splits the "
-            "record per group, so the counts must agree; check that the follower's "
-            "prompt batch divides evenly by the rank count."
-        )
+        g = torch.tensor([len(spans)], dtype=torch.int64, device="cuda")
+        dist.all_reduce(g, op=dist.ReduceOp.MAX, group=group)
+        target_groups = int(g.item())
+        while len(spans) < target_groups:
+            widest = max(range(len(spans)), key=lambda k: spans[k][1] - spans[k][0])
+            lo, hi = spans[widest]
+            assert hi - lo > 1, (
+                f"cannot reach {target_groups} groups: {len(spans)} singletons already"
+            )
+            mid = lo + (hi - lo) // 2
+            spans[widest:widest + 1] = [(lo, mid), (mid, hi)]
 
     counts = []
     for start, end in spans:
         tokens = sum(seq_lens[start:end])
         need = max(1, -(-tokens // max_token_len))
         counts.append(min(need, end - start))
-    counts = torch.tensor(counts, dtype=torch.int64, device="cuda" if dist.is_initialized() else "cpu")
+    counts = torch.tensor(counts, dtype=torch.int64,
+                          device="cuda" if dist.is_initialized() else "cpu")
     if dist.is_initialized():
         dist.all_reduce(counts, op=dist.ReduceOp.MAX, group=group)
     counts = counts.tolist()

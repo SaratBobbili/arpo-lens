@@ -81,6 +81,83 @@ phases:
     # unbiased (the estimator is a sum over blocks, rescaled); it trades variance for the
     # 2K extra full-batch forward/backward passes the sweep costs.
     replay_fraction: 1.0
+    # EXACT K=1 hypergradient instead of the sampling-half-only estimator above.
+    #
+    #   g_resp = grad^2 L_L . u  +  sum_b <g_grp,b , u> grad log p_b ,   u = D_0^T g_fol
+    #
+    # Everything the list above calls an approximation is gone rather than reduced:
+    #   * the fixed-data half is present, as central differences on the GRADIENT --
+    #     [grad L(w+eu) - grad L(w-eu)] / 2e, two ordinary backward passes at displaced
+    #     weights. FSDP1 blocks double backward, not this;
+    #   * the adjoint chain is RUN, not truncated -- see below;
+    #   * both halves are evaluated at w_0, the point the follower step was taken FROM,
+    #     which the leader iteration reaches through the round's own snapshot;
+    #   * D_0 is the follower optimizer's true Jacobian, so eta_L stops being a knob and
+    #     `coef` above is ignored.
+    #
+    # K = phases.low_level.num_iters is free, and K>1 no longer costs an approximation.
+    # Eq. (51) evaluates either Hessian block against a vector as
+    #   (Hhat_yc,s)^T v = (1/B_L) sum_b [ grad^fix_c <ghat_grp,b, v> + S_c,b <ghat_grp,b, v> ]
+    # so once grad^fix is out (see `curvature`), the reverse sweep of Eq. (54) needs only a
+    # scalar dot and one backward -- the same machinery the leader term already uses. With
+    # shared routing (P_H = P_L = I) Eq. (48) gives S_x = S_y, so ONE accumulation per step
+    # serves both the adjoint update and the leader contribution:
+    #   v_s = v_{s+1} + eta_s u_s ,   g_resp = sum_s eta_s u_s ,   u_s = sum_b S_b <ghat_b, v_{s+1}>
+    # i.e. the adjoint is g_fol plus the response term accumulated so far. Costs K host
+    # weight snapshots per round (~3.5 GiB per rank each) and 2 passes per stashed block,
+    # 4 with `curvature` on. What is still dropped is grad^fix, uniformly at c = x and
+    # c = y; under Eq. (55) grad^fix_x vanishes and B_s is exact, grad^fix_y does not, so
+    # A_s keeps an O(eta_L) error. Under the shared weights used here C.4 says both can
+    # contribute -- this is the score-corrected estimator, not the exact hypergradient.
+    #
+    # Blocks are query-GROUP aligned: Eq. (49) pairs each group's own gradient with its own
+    # score, and a token-budget micro-batch splits a group across bins, dropping the
+    # within-group cross terms where GRPO's advantage centering lives.
+    #
+    # Requires phases.low_level.optim.optimizer=sgd and weight_decay=0, both asserted at
+    # startup. To compare two K at a fixed batch, move N_HL the other way: the prompt batch
+    # is (dataset // (N_HL*(N_LL+1))), so 36x(1+1) and 8x(8+1) both give 72 and 136.
+    exact: false
+    # The parametric half of H_yx,s -- grad^2 L_L,s . u_s, the central-difference term.
+    # OFF by default, which leaves the exact path computing only the DISTRIBUTIONAL half,
+    # sum_b <g_grp,s,b, u_s> grad log p_s,b.
+    #
+    # Off because the finite difference cannot be made honest through FSDP1's bf16
+    # all-gather. The step is sized on a global norm, a = fd_rel * ||w|| / ||u||, but bf16
+    # rounds per ELEMENT, so coordinate j survives the cast only if
+    #   (|g_j|/|w_j|) / (||g||/||w||) > ~3e-3 / fd_rel,
+    # i.e. only if its own gradient-to-weight ratio is within ~7x of the model-wide RMS
+    # ratio at fd_rel=2e-2. In a transformer that ratio is heavy-tailed over orders of
+    # magnitude, so most coordinates round straight back to w_j: measured 10-34% moving on
+    # dense-gradient shards, and capped near the touched-vocab fraction (~6-17%) on the
+    # ranks holding embed_tokens. The difference is then divided by the REQUESTED step,
+    # which shrinks the term 20-70x, and the surviving direction is g_fol hard-thresholded
+    # on |g_j|/|w_j| rather than on |g_j|. Raising fd_rel enough to fix it needs ~0.2-1,
+    # which leaves the quadratic regime the difference quotient assumes.
+    # `param_dtype=fp32` for the actor would fix both; on until someone pays for that.
+    #
+    # What stays exact with this off: step s is still evaluated at w_s, still carries its
+    # own D_s = eta_L * min(1, clip/||ghat_s||), and the c baseline still applies. That is
+    # strictly more than `exact: false` gives, which uses the current weights for every
+    # record and folds eta_L into `coef` as a hand-tuned scalar.
+    #
+    # Naming: with this off the estimator is NOT the exact hypergradient, at any K. It is
+    # the distributional half of one. Say that rather than "exact" in write-ups.
+    curvature: false
+    # Relative size of the central-difference step: e = fd_rel * ||w|| / ||u||. Sized
+    # against the weights, not absolute, so the truncation error stays O(fd_rel^2) while
+    # the perturbation still survives to the forward.
+    #
+    # 2e-2 is set by bf16, not by the truncation error. FSDP1 keeps the flat parameter in
+    # fp32 but all-gathers a BF16 CAST of it for the forward, and bf16 resolves ~3.9e-3
+    # relative, so a smaller step is partly rounded away before it is ever used. Measured
+    # on a 4096x4096 shard at 0.02 scale, fraction of elements whose bf16 image moves:
+    #   fd_rel  1e-3 -> 0.32   3e-3 -> 0.57   1e-2 -> 0.83   2e-2 -> 0.91   5e-2 -> 0.96
+    # At 1e-3 the realised displacement is 1.9e-3 rather than 1e-3: not merely noisy,
+    # biased. Only read when `curvature` above is on; see there for why that table, which
+    # was measured at a PER-TENSOR 0.02, does not describe the global sizing this uses.
+    # _hessian_vector_product logs the realised fraction as actor/hvp_bf16_moved_frac.
+    fd_rel: 2e-2
   high_level:
     # Number of outer cycles. Prompt batch = (len(train_dataset) // num_iters) floored to a
     # multiple of the rank count; HL sees the dataset once over the whole run.
@@ -93,6 +170,10 @@ phases:
     # Independent AdamW + LR schedule over the shared FSDP parameters.
     # Scheduler horizon is derived: HL = num_iters, LL = N_HL * N_LL.
     optim:
+      # "adamw" or "sgd". The follower must be sgd under phases.response.exact: AdamW's
+      # first step from reset moments is sign-like, so its exact Jacobian is
+      # lr*eps/(|g|+eps)^2 ~ 4e-12 and the hypergradient it implies is numerically zero.
+      optimizer: adamw
       lr: 1e-6
       lr_warmup_steps: -1  # Prioritized. Negative means use lr_warmup_steps_ratio.
       lr_warmup_steps_ratio: 0.0
@@ -153,6 +234,10 @@ phases:
     ppo_mini_batch_size: 16
     ppo_micro_batch_size_per_gpu: null
     optim:
+      # "adamw" or "sgd". The follower must be sgd under phases.response.exact: AdamW's
+      # first step from reset moments is sign-like, so its exact Jacobian is
+      # lr*eps/(|g|+eps)^2 ~ 4e-12 and the hypergradient it implies is numerically zero.
+      optimizer: adamw
       lr: 1e-6
       lr_warmup_steps: -1
       lr_warmup_steps_ratio: 0.0

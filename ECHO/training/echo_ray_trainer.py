@@ -197,6 +197,32 @@ class RayECHOTrainer(RayPPOTrainer):
             return False
         return bool(cfg.get("gradient", False))
 
+    def _response_exact_enabled(self) -> bool:
+        """The exact K=1 hypergradient rather than the sampling-half-only estimator.
+
+        On: both halves of Eq. (35) -- the fixed-data Hessian term by central differences
+        on the gradient, and the sampling score term -- each carrying the follower's true
+        optimizer Jacobian D_0. Nothing is left as a tuning scalar, so `coef` is ignored.
+        K > 1 runs the score-corrected reverse sweep of Eq. (54) rather than truncating the
+        adjoint to g_fol; at K = 1 the chain is empty and the question does not arise.
+        """
+        cfg = self._response_cfg()
+        if cfg is None or not self._response_gradient_enabled():
+            return False
+        return bool(cfg.get("exact", False))
+
+    def _response_curvature_enabled(self) -> bool:
+        """The parametric half of H_yx,s, i.e. the central-difference Hessian term.
+
+        Off by default: FSDP1's bf16 all-gather rounds away most of a globally sized
+        perturbation, so the difference comes out 20-70x short and hard-thresholded on
+        |g_j|/|w_j|. See phases.response.curvature. Only meaningful with `exact`.
+        """
+        cfg = self._response_cfg()
+        if cfg is None or not self._response_exact_enabled():
+            return False
+        return bool(cfg.get("curvature", False))
+
     def _follower_return_enabled(self) -> bool:
         """Whether the follower phase is scored by R_L (Eq. 2) rather than the task return.
 
@@ -554,6 +580,43 @@ class RayECHOTrainer(RayPPOTrainer):
                 f"phases.response.enabled requires one optimizer step per {phase_name} "
                 f"iteration: set phases.{phase_name}.ppo_mini_batch_size to that phase's "
                 f"prompt batch ({prompt_batch}), got {mini}."
+            )
+        if self._response_exact_enabled():
+            k = int(self._phase_cfg("low_level").num_iters)
+            curvature = self._response_curvature_enabled()
+            passes = 4 if curvature else 2
+            if k > 1:
+                # Not an error, and no longer an approximation. The K steps run in reverse
+                # with the score-corrected adjoint of Eq. (54): with grad^fix out, Eq. (51)
+                # makes each adjoint step a scalar dot plus one backward, and shared routing
+                # (S_x = S_y) lets one accumulation serve both the adjoint update and the
+                # leader contribution. Costs K weight snapshots on the host.
+                print(
+                    f"[echo] phases.response.exact with K={k}: reverse sweep over {k} steps "
+                    f"with the Eq. (54) adjoint run, not truncated; {passes} passes per "
+                    f"stashed block and {k} host weight snapshots per round."
+                )
+            if not curvature:
+                print(
+                    "[echo] phases.response.curvature=false: computing the DISTRIBUTIONAL "
+                    "half of g_resp only (score term), at "
+                    f"{passes} passes per stashed block. This is not the exact "
+                    "hypergradient at any K -- per-step w_s, D_s and the c baseline are "
+                    "kept, the central-difference Hessian term is not."
+                )
+            follower_optim = self._phase_cfg("low_level").optim
+            optimizer_name = str(follower_optim.get("optimizer", "adamw")).lower()
+            assert optimizer_name == "sgd", (
+                "phases.response.exact needs phases.low_level.optim.optimizer=sgd. AdamW's "
+                "first step from reset moments is -lr*g/(|g|+eps); its EXACT Jacobian is "
+                "lr*eps/(|g|+eps)^2 ~ 4e-12, so differentiating through it correctly gives "
+                "a response term of zero. SGD gives D_0 = lr*I."
+            )
+            assert float(follower_optim.get("weight_decay", 0.0)) == 0.0, (
+                "phases.response.exact needs phases.low_level.optim.weight_decay=0. SGD's "
+                "coupled decay adds lambda*w to the gradient, and w depends on x, so a "
+                "non-zero decay puts an extra lambda*I into d ghat/dx that this path does "
+                "not model."
             )
 
     @staticmethod
@@ -1027,6 +1090,11 @@ class RayECHOTrainer(RayPPOTrainer):
                         phase_batch.meta_info["response_coef"] = float(response_cfg.get("coef", 1.0))
                         phase_batch.meta_info["response_replay_fraction"] = float(
                             response_cfg.get("replay_fraction", 1.0)
+                        )
+                        phase_batch.meta_info["response_exact"] = self._response_exact_enabled()
+                        phase_batch.meta_info["response_curvature"] = self._response_curvature_enabled()
+                        phase_batch.meta_info["response_fd_rel"] = float(
+                            response_cfg.get("fd_rel", 2e-2)
                         )
                     if self._uses_entropy_regularizer(phase_cfg):
                         phase_batch.meta_info["entropy_coeff_override"] = self._entropy_reg_coeff(phase_cfg)

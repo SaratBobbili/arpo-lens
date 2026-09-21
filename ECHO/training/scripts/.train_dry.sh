@@ -65,6 +65,7 @@ VALID_LAUNCH_KEYS=(
     hl_entropy_alpha ll_entropy_alpha
     hl_entropy_enabled ll_entropy_enabled
     response_enabled response_gradient response_coef response_replay_fraction
+    response_follower_return response_exact response_curvature response_fd_rel hl_optimizer ll_optimizer
     loss_agg_mode
     hl_opefo_enabled ll_opefo_enabled
     high_level_rollout_strategy low_level_rollout_strategy
@@ -173,6 +174,8 @@ ARGS=(
     "phases.low_level.optim.weight_decay=${LL_WEIGHT_DECAY:-0.01}"
     "phases.high_level.optim.warmup_style=${HL_WARMUP_STYLE:-constant}"
     "phases.low_level.optim.warmup_style=${LL_WARMUP_STYLE:-constant}"
+    "phases.high_level.optim.optimizer=${HL_OPTIMIZER:-adamw}"
+    "phases.low_level.optim.optimizer=${LL_OPTIMIZER:-adamw}"
     "phases.high_level.optim.lr_warmup_steps_ratio=${HL_LR_WARMUP_STEPS_RATIO:-0.0}"
     "phases.low_level.optim.lr_warmup_steps_ratio=${LL_LR_WARMUP_STEPS_RATIO:-0.0}"
     "phases.high_level.advantage_algorithm=${HIGH_LEVEL_ADVANTAGE_ALGORITHM:-grpo}"
@@ -195,6 +198,10 @@ ARGS=(
     phases.response.gradient="${RESPONSE_GRADIENT:-false}"
     "actor_rollout_ref.actor.loss_agg_mode=${LOSS_AGG_MODE:-token-mean}"
     "phases.response.coef=${RESPONSE_COEF:-1.0}"
+    phases.response.follower_return="${RESPONSE_FOLLOWER_RETURN:-null}"
+    phases.response.exact="${RESPONSE_EXACT:-false}"
+    phases.response.curvature="${RESPONSE_CURVATURE:-false}"
+    "phases.response.fd_rel=${RESPONSE_FD_REL:-2e-2}"
     "phases.response.replay_fraction=${RESPONSE_REPLAY_FRACTION:-1.0}"
     phases.high_level.opefo.enabled="${HL_OPEFO_ENABLED:-false}"
     phases.low_level.opefo.enabled="${LL_OPEFO_ENABLED:-false}"

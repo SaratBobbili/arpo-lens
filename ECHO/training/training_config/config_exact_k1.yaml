@@ -1,0 +1,165 @@
+# ECHO 7B, EXACT hypergradient, K = 1.
+#
+# Twin of config1.yaml. It differs in exactly five things, all marked below:
+#   response_exact        false -> true
+#   ll_num_iters          8 -> 1
+#   hl_num_iters          8 -> 36        (holds the prompt batch at 136, 72 steps/epoch)
+#   ll_optimizer          adamw -> sgd  (AdamW's first-step Jacobian is ~4e-12)
+#   ll_weight_decay       0.01 -> 0.0   (coupled decay adds an unmodelled lambda*I)
+# Everything else is byte-identical to config1.yaml on purpose.
+#
+# The term, against config1's sampling-half-only estimator:
+#   g_resp = sum_s [ grad^2 L_L,s . u_s  +  sum_b <g_grp,s,b , u_s> grad log p_s,b ]
+#   u_s    = D_s^T g_fol ,   D_s = eta_L * min(1, clip/||ghat_s||) * I
+# Both halves of Eq. (35), each step evaluated at the w_s it was taken from, each carrying
+# its own optimizer Jacobian. response_coef is not read -- eta_L is no longer a free scalar.
+#
+# At K=1 the adjoint chain is empty regardless, so this profile isolates B_0 alone: with
+# grad^fix out (response_curvature) what remains is the score-corrected Eq. (49) block.
+#
+# N_HL is 36 so that N_HL*(N_LL+1) = 36*2 = 72, the same as config1's 8*9. The prompt
+# batch is (len(train_dataset) // that) floored to the rank count, so this profile and the
+# other exact profile and config1 all collect 136 prompts per step over 72 steps/epoch --
+# the K comparison is not confounded by batch size or by steps per epoch.
+
+# shared
+project_name: Qwen2.5-7B-Instruct
+experiment_name: Experiment-1-exact-k1
+active_system_prompt: 1
+nnodes: 1
+n_gpus_per_node: 8
+
+max_prompt_length: 1536
+max_response_length: 4096
+prompt_key: prompt
+train_files: rl_datasets/train_10k.parquet
+valid_files: rl_datasets/valid.parquet
+
+actor_model_subpath: checkpoints/Qwen2.5-7B-Instruct-lr1e8-ep1
+reward_manager: echo
+
+rollout_n: 16
+enable_multi_turn: false
+tensor_model_parallel_size: 1
+# Lowered from 0.7 for headroom. The response sweep allocates a full-size gradient
+# buffer plus large per-parameter temporaries after the last natural empty_cache(),
+# and vLLM's wake_up() maps physical pages -- at 0.7 a 7B run OOMed there on the
+# first leader step (cumem_allocator.cpp:62). Raise once a run survives several
+# rounds and high_level/actor/response_mem_reserved_gb shows the margin.
+gpu_memory_utilization: 0.6
+rollout_name: vllm
+rollout_mode: sync_echo
+exclude_tag_tokens_from_phase_masks: false
+search_cache_file: search_cache_echo_7B.json
+search_class_path: verl.workers.agent.tools.search_tool.BingSearchTool
+brightdata_timeout: 90
+tool_call_limit: 3
+
+save_freq: 1
+test_freq: 1
+save_best_checkpoint: true
+best_checkpoint_metric: val-core/reward
+max_actor_ckpt_to_keep: 1
+# Adam moments are ~113 GiB of every ~142 GiB checkpoint (8 shards x 14 GiB vs 8 x 3.6 GiB
+# of fp32 weights) and are only useful for resuming THIS run. Dropping them still saves
+# weights + lr_scheduler + RNG, so an auto-resume restores the policy exactly and only the
+# optimizer moments restart from zero -- safe here because warmup_style is constant, so
+# there is no LR schedule state to lose. Set to "[model,optimizer,extra]" for exact resume.
+checkpoint_contents: "[model,extra]"
+resume_mode: auto
+
+shared_prompt_stream: true
+total_epochs: 4
+
+norm_adv_by_std_in_grpo: off
+
+mask_tool: low
+mask_think: high
+mask_answer: high
+mask_search: low
+mask_python: low
+
+clip_ratio_low: 0.2
+clip_ratio_high: 0.2
+clip_ratio_c: 3.0
+clip_ratio_low_pos: 0.2
+clip_ratio_high_pos: 0.2
+clip_ratio_low_neg: 0.2
+clip_ratio_high_neg: 0.2
+
+# --- high_level ---
+# shared stream batch: (10000 // (N_HL*(N_LL+1))) floored to a multiple of 8 ranks = 136 prompts (N=8 → 72 steps/epoch).
+hl_num_iters: 36
+hl_group_size: 16
+hl_ppo_mini_batch_size: 136
+hl_lr: 1e-6
+high_level_advantage_algorithm: grpo
+high_level_use_sign_cond_clip: True
+hl_kl_loss_coef: 0.000
+hl_entropy_enabled: false
+hl_entropy_reg_coeff: 0.0
+hl_entropy_normalization: token_pool
+hl_entropy_alpha: 0.2
+
+# --- low_level ---
+ll_num_iters: 1
+ll_group_size: 16
+ll_ppo_mini_batch_size: 136
+ll_lr: 1e-6
+# SGD, so D_s = ll_lr * I exactly. AdamW's first step from reset moments is
+# -lr*g/(|g|+eps): m_hat and sqrt(v_hat) cancel to a sign, leaving the exact Jacobian
+# lr*eps/(|g|+eps)^2, about 4e-12 here. Differentiating through THAT correctly gives a
+# response term of zero, so the optimizer choice is part of the algorithm, not tuning.
+ll_optimizer: sgd
+# Coupled decay would add lambda*w to ghat, and w depends on x, so d ghat/dx picks up
+# a lambda*I this path does not model. A discarded adaptation step needs no decay.
+ll_weight_decay: 0.0
+low_level_advantage_algorithm: grpo
+low_level_use_sign_cond_clip: True
+ll_kl_loss_coef: 0.000
+ll_entropy_enabled: false
+ll_entropy_reg_coeff: 0.0
+ll_entropy_normalization: token_pool
+ll_entropy_alpha: 0.2
+low_level_rollout_strategy: default
+ll_aepo_initial_rollouts: 8
+ll_aepo_beam_size: 2
+ll_aepo_branch_probability: 0.5
+ll_aepo_entropy_weight: 0.2
+
+# --- ECHO Algorithm 1 response term ---
+# One optimizer step per phase iteration is required when this is on, so both
+# ppo_mini_batch_size values above equal the derived 136-prompt batch
+# ((10000 // (8*(8+1))) floored to a multiple of 8 ranks). App. C.3: every extra
+# optimizer epoch over a reused group is a separate substep of the adaptation map.
+response_enabled: true
+# The g_resp term itself. On: the unmasked scalar advantage keeps its seed alive.
+# Sampling half of Eq. (35) only; costs 2K extra full-batch passes per round.
+# Set false for a first-order-MAML A/B baseline.
+response_gradient: true
+response_coef: 1.0
+response_replay_fraction: 1.0
+# The exact hypergradient. Asserts ll_optimizer=sgd and ll_weight_decay=0 at startup.
+response_exact: true
+# The parametric (central-difference Hessian) half of H_yx,s. Off: FSDP1's bf16 all-gather
+# rounds away most of a globally sized perturbation, leaving the term 20-70x short and
+# hard-thresholded on |g_j|/|w_j|. What runs is the DISTRIBUTIONAL half -- still at w_s,
+# still carrying D_s, still baselined, and now with the Eq. (54) reverse sweep run rather
+# than truncated. Not the exact hypergradient: grad^fix is dropped at both c = x and c = y.
+response_curvature: false
+# e = fd_rel * ||w|| / ||u|| for the central difference. 2e-2 is set by the bf16 forward
+# cast (which resolves ~3.9e-3 relative), not by the O(fd_rel^2) truncation error; at 1e-3
+# only ~32% of elements survive the cast. Watch high_level/actor/hvp_bf16_moved_frac.
+response_fd_rel: 2e-2
+
+# --- Deviations from v10 GRPO, stated rather than discovered ---
+# Eq. (30) standardizes the within-query advantage by its group std:
+#   A = (R - mean(R)) / (std(R) + eps_adv)
+# norm_adv_by_std_in_grpo=off keeps only the mean centering. Set it to `on` for the
+# paper's estimator; left off here so runs stay comparable with the existing r3 series.
+#
+# Eq. (31) normalizes per trajectory by 1/max(1,|I_p(tau)|) and then averages over the
+# B*G trajectories -- that is seq-mean-token-mean. token-mean instead takes one global
+# mean over unmasked tokens, which weights each trajectory by its role-token count rather
+# than equally. Set loss_agg_mode=seq-mean-token-mean to match the paper.
+loss_agg_mode: token-mean

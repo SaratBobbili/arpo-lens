@@ -234,3 +234,165 @@ def reasoning_score(log_prob, policy_mask):
     likelihoods too, so a reasoning-only score drops part of the dependence.
     """
     return (log_prob * policy_mask).sum()
+
+
+# --- exact K=1 hypergradient (Algorithm 1 with one follower step) --------------------
+#
+# With K = 1 and y_0 = 0 the round is a single follower step, and the chain rule closes
+# in three factors with nothing left to truncate:
+#
+#     (dy_1/dx)^T v  =  (d ghat_0/dx)^T  D_0^T  v ,        v = grad_y U_H = g_fol
+#
+#   D_0            the optimizer's Jacobian at the step it actually took
+#   d ghat_0/dx    fixed-data (Hessian) + sampling (score) halves of Eq. (35)
+#   v              already computed by stage 1
+#
+# Under P_H = P_L = I the roles are split by which TOKEN MASK the loss carries, not by a
+# parameter partition, so dw/dx = I and the fixed-data half is just the Hessian of the
+# follower's own tool-masked surrogate contracted with u = D_0^T v. That needs no
+# parameter-space bookkeeping and, crucially, no double backward -- see hvp_weights_().
+
+
+def axpy_(buf_list, other_list, alpha: float) -> list:
+    """In-place ``buf += alpha * other``."""
+    for buf, other in zip(buf_list, other_list):
+        buf.add_(other, alpha=alpha)
+    return buf_list
+
+
+def follower_step_jacobian(lr: float, grad_norm: float, grad_clip: float) -> tuple:
+    """``D_0`` for one plain-SGD follower step, as (scale, clip_active).
+
+    SGD with momentum 0 and weight decay 0 gives ``y_1 = -lr * ghat`` before clipping and
+    ``y_1 = -lr * c * ghat/||ghat||`` after, so::
+
+        D_0 = lr * I                                       ||ghat|| <= c
+        D_0 = (lr*c/||ghat||) (I - ghat ghat^T/||ghat||^2)  otherwise
+
+    EXACT in the first case, which is the one that occurs: grad_clip is 1.0 and the
+    follower's grad_norm runs 0.06-0.15. In the second the rank-1 term is dropped, which
+    needs ``ghat`` itself -- a second full-size buffer for a branch that does not fire.
+    The caller logs ``follower_clip_active`` so a run that starts clipping says so instead
+    of silently degrading.
+
+    NOT AdamW. From reset moments AdamW's first step is ``-lr*ghat/(|ghat|+eps)``, whose
+    exact Jacobian is the diagonal ``lr*eps/(|ghat|+eps)^2`` -- about 4e-12 at lr=1e-6,
+    eps=1e-8, |ghat|~5e-2, because m_hat and sqrt(v_hat) cancel to a sign on the first
+    step. Exact and numerically dead are the same answer there, so the exact path asserts
+    the follower is SGD. (The cancellation is special to s=0: at s>=1 the m channel leaves
+    ``lr*(1-b1)/((1-b1^{s+1})(sqrt(v_hat)+eps))``, order lr/|ghat|, which is healthy.)
+    """
+    if grad_clip is not None and grad_norm > grad_clip:
+        return lr * grad_clip / max(grad_norm, 1e-12), True
+    return lr, False
+
+
+def perturb_eps(params, direction, group=None, rel: float = 2e-2) -> float:
+    """Central-difference step size, sized against the weights rather than fixed.
+
+    ``eps = rel * ||w|| / ||u||`` puts the perturbation at a fixed *relative* size, so the
+    truncation error stays O(rel^2) while the perturbation clears the parameter dtype's
+    ulp. A fixed absolute eps does neither: too small and bf16 rounds ``w + eps*u`` back to
+    ``w``, making the difference identically zero with no error raised -- the failure mode
+    flagged in the FSDP1 notes. The caller checks that it did not happen.
+    """
+    w_norm = dot([p.data for p in params], [p.data for p in params], group) ** 0.5
+    u_norm = dot(direction, direction, group) ** 0.5
+    if u_norm <= 0.0:
+        return 0.0
+    return rel * max(w_norm, 1e-12) / u_norm
+
+
+# --- query-group alignment for the score-corrected blocks ----------------------------
+#
+# Eq. (49) indexes b over QUERIES: each term pairs one group's own gradient ghat_grp,s,b
+# with that same group's own score S_grp,c,s,b. A token-budget micro-batch does not
+# respect that boundary, and `rearrange_micro_batches` reorders across the whole record,
+# so a group's G rollouts land in several bins. Reading p.grad after such a bin gives the
+# gradient of a mixture of groups, and pairing it with that bin's score sums the wrong
+# outer products. The cross terms BETWEEN rollouts of one group do not average out: GRPO
+# centres the advantage within the group, so sum_j Ahat_j = 0 by construction and those
+# terms are exactly where the centering lives.
+
+
+def group_spans(group_id) -> list:
+    """Contiguous ``[start, end)`` runs of one query group.
+
+    verl assigns one uid per prompt and then ``repeat(interleave=True)``, so a group's G
+    rollouts are adjacent and a run of equal ids is one group. Excision hands a sample a
+    fresh uid, which correctly makes it its own singleton group.
+    """
+    ids = group_id.tolist()
+    spans, start = [], 0
+    for i in range(1, len(ids) + 1):
+        if i == len(ids) or ids[i] != ids[start]:
+            spans.append((start, i))
+            start = i
+    return spans
+
+
+def group_block_split(seq_lens, spans, max_token_len, group=None) -> list:
+    """Micro-batch index lists that never straddle a query group.
+
+    Two constraints pull against each other. FSDP1 all-gathers on every forward, so every
+    rank must issue the SAME number of forwards or the collectives desync -- that is what
+    `same_micro_num_in_dp` buys in the ungrouped path. And a group must be replayed as a
+    contiguous run of micro-batches with no other group interleaved, or ``p.grad`` cannot
+    be read off as that group's own gradient.
+
+    Both hold if the split is agreed PER GROUP: each rank proposes how many micro-batches
+    its copy of group i needs, the DP maximum is taken, and every rank splits group i into
+    exactly that many chunks. Ranks carry the same number of groups (the caller asserts
+    it), so the total forward count matches even though the chunk contents differ.
+
+    Returns one list of index lists per group, in group order.
+    """
+    n_groups = len(spans)
+    if dist.is_initialized():
+        extent = torch.tensor([n_groups, -n_groups], dtype=torch.int64, device="cuda")
+        dist.all_reduce(extent, op=dist.ReduceOp.MAX, group=group)
+        assert int(extent[0]) == n_groups and int(-extent[1]) == n_groups, (
+            f"ranks hold different query-group counts ({n_groups} here, "
+            f"{int(extent[0])} max / {int(-extent[1])} min). The response term splits the "
+            "record per group, so the counts must agree; check that the follower's "
+            "prompt batch divides evenly by the rank count."
+        )
+
+    counts = []
+    for start, end in spans:
+        tokens = sum(seq_lens[start:end])
+        need = max(1, -(-tokens // max_token_len))
+        counts.append(min(need, end - start))
+    counts = torch.tensor(counts, dtype=torch.int64, device="cuda" if dist.is_initialized() else "cpu")
+    if dist.is_initialized():
+        dist.all_reduce(counts, op=dist.ReduceOp.MAX, group=group)
+    counts = counts.tolist()
+
+    blocks = []
+    for (start, end), n_chunks in zip(spans, counts):
+        size = end - start
+        n_chunks = min(n_chunks, size)
+        # Contiguous chunks balanced on token count: deterministic, and it keeps a group's
+        # rollouts in their generated order so both sweeps see the same split. Every chunk
+        # is non-empty, which the agreed count guarantees since n_chunks <= size.
+        total = float(sum(seq_lens[start:end]))
+        chunks, cur, cur_tokens = [], [], 0.0
+        for offset, i in enumerate(range(start, end)):
+            cur.append(i)
+            cur_tokens += seq_lens[i]
+            left = size - offset - 1                      # rollouts not yet placed
+            need = n_chunks - len(chunks) - 1             # chunks still to open after this
+            if need > 0 and left >= need and cur_tokens >= total * (len(chunks) + 1) / n_chunks:
+                chunks.append(cur)
+                cur = []
+        if cur:
+            chunks.append(cur)
+        while len(chunks) < n_chunks:                     # token skew left a chunk short
+            fat = max(range(len(chunks)), key=lambda k: len(chunks[k]))
+            assert len(chunks[fat]) > 1, "cannot reach the agreed chunk count"
+            half = len(chunks[fat]) // 2
+            chunks[fat:fat + 1] = [chunks[fat][:half], chunks[fat][half:]]
+        assert len(chunks) == n_chunks and sum(len(c) for c in chunks) == size
+        assert all(chunks), "empty micro-batch would desync the DP forward count"
+        blocks.append(chunks)
+    return blocks

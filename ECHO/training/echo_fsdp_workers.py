@@ -28,12 +28,29 @@ PHASE_NAMES = ("high_level", "low_level")
 
 def _build_phase_optimizer(parameters, optim_config, total_steps):
     """One AdamW + LR schedule for a single phase, mirroring the ARPO actor optimizer."""
-    optimizer = torch.optim.AdamW(
-        parameters,
-        lr=optim_config.lr,
-        betas=optim_config.get("betas", (0.9, 0.999)),
-        weight_decay=optim_config.get("weight_decay", 1e-2),
-    )
+    # "sgd" exists for the follower phase under the exact K=1 hypergradient. AdamW's
+    # first step from reset moments is -lr*g/(|g|+eps), whose exact Jacobian is the
+    # diagonal lr*eps/(|g|+eps)^2 -- around 4e-12 at lr=1e-6, eps=1e-8, |g|~5e-2, because
+    # m_hat and sqrt(v_hat) cancel to a sign. Differentiating through it correctly gives
+    # a response term that is exactly zero to twelve digits. Plain SGD gives D_0 = lr*I,
+    # which is both exact and non-degenerate. See echo_response.follower_step_jacobian.
+    optimizer_name = str(optim_config.get("optimizer", "adamw")).lower()
+    if optimizer_name == "sgd":
+        optimizer = torch.optim.SGD(
+            parameters,
+            lr=optim_config.lr,
+            momentum=float(optim_config.get("momentum", 0.0)),
+            weight_decay=optim_config.get("weight_decay", 0.0),
+        )
+    elif optimizer_name == "adamw":
+        optimizer = torch.optim.AdamW(
+            parameters,
+            lr=optim_config.lr,
+            betas=optim_config.get("betas", (0.9, 0.999)),
+            weight_decay=optim_config.get("weight_decay", 1e-2),
+        )
+    else:
+        raise ValueError(f"unknown phase optimizer {optimizer_name!r}; use 'adamw' or 'sgd'.")
 
     num_warmup_steps = int(optim_config.get("lr_warmup_steps", -1))
     if num_warmup_steps < 0:
@@ -191,6 +208,8 @@ class EchoActorRolloutRefWorker(ActorRolloutRefWorker):
                 phase_optims=self.phase_optims,
                 phase_batch_sizes=self.phase_batch_sizes,
                 restore_leader_weights=self._restore_leader_weights_local,
+                snapshot_adapted_weights=self._snapshot_adapted_weights_local,
+                restore_adapted_weights=self._restore_adapted_weights_local,
             )
 
         if self._is_rollout:
@@ -355,6 +374,29 @@ class EchoActorRolloutRefWorker(ActorRolloutRefWorker):
             # allocate a full-size GPU temporary per parameter. non_blocking is wrong here
             # too: the snapshot is pageable, so it buys nothing and would let temporaries
             # pile up until the queued copies drain.
+            p.data.copy_(saved)
+
+    def _snapshot_adapted_weights_local(self):
+        """W_y := live_w = w_core + x_t + y_K, the adapted point.
+
+        The exact response path evaluates grad_x U_H and g_fol at the adapted point but
+        both halves of Eq. (35) at w_0, so the leader iteration has to visit w_1, w_0 and
+        w_1 again before its single step. Holding w_1 on the CPU costs one host copy and
+        keeps the GPU to a single full-size gradient buffer; holding it on the GPU instead
+        is a second multi-GiB resident allocation, which is what fragments the allocator
+        into vLLM's wake_up failure.
+        """
+        assert self._is_actor
+        params = [p for p in self.actor_module_fsdp.parameters() if p.requires_grad]
+        self._adapted_weight_snapshot = [p.data.detach().to("cpu", copy=True) for p in params]
+
+    def _restore_adapted_weights_local(self):
+        assert getattr(self, "_adapted_weight_snapshot", None) is not None, (
+            "restore_adapted_weights() without a snapshot."
+        )
+        params = [p for p in self.actor_module_fsdp.parameters() if p.requires_grad]
+        assert len(params) == len(self._adapted_weight_snapshot)
+        for p, saved in zip(params, self._adapted_weight_snapshot):
             p.data.copy_(saved)
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)

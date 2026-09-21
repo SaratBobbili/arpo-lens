@@ -50,7 +50,7 @@ gpu_memory_utilization: 0.6
 rollout_name: vllm
 rollout_mode: sync_echo
 exclude_tag_tokens_from_phase_masks: false
-search_cache_file: search_cache_echo_7B.json
+search_cache_file: search_cache_final_7B_c.json
 search_class_path: verl.workers.agent.tools.search_tool.BingSearchTool
 brightdata_timeout: 90
 tool_call_limit: 3
@@ -66,7 +66,10 @@ max_actor_ckpt_to_keep: 1
 # optimizer moments restart from zero -- safe here because warmup_style is constant, so
 # there is no LR schedule state to lose. Set to "[model,optimizer,extra]" for exact resume.
 checkpoint_contents: "[model,extra]"
-resume_mode: auto
+# disable, not auto: these two arms crashed on the bf16 guard and left run dirs behind.
+# `auto` would sweep any global_step_* in the target dir back in, and the dir name is
+# derived from experiment_name, so a re-launch lands on top of the old one.
+resume_mode: disable
 
 shared_prompt_stream: true
 total_epochs: 4

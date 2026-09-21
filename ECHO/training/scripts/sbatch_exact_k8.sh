@@ -22,7 +22,6 @@ cd /scratch/user/saratb_tamu.edu/research/arpo-lens/ECHO/training
 
 export EXPERIMENT_NAME=echo7B_sft5e8_exact_k8
 export BASE_PROFILE=training_config/config_exact_k8.yaml
-export SEARCH_CACHE_FILE=search_cache_final_7B_b.json
 
 echo "[${SLURM_JOB_ID}] ${EXPERIMENT_NAME} on $(hostname) $(date -Is)"
 nvidia-smi -L

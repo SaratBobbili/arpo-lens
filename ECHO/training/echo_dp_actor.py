@@ -635,7 +635,7 @@ class DataParallelECHOActor(DataParallelPPOActor):
 
     def _exact_response_gradient(self, temperature, v_buf, replay_fraction,
                                  use_aepo_clip, use_sign_cond_clip, fd_rel, grad_clip,
-                                 follower_lr, curvature):
+                                 follower_lr, curvature, group_aligned):
         """Leave ``p.grad = -g_resp``, accumulated over the round's K follower steps.
 
         Implements the score-corrected reverse sweep of App. C.4 directly. For
@@ -716,7 +716,15 @@ class DataParallelECHOActor(DataParallelPPOActor):
         for s in range(len(records) - 1, -1, -1):
             record = records[s]
             self._restore_follower_step_weights(s)
-            groups = self._replay_group_blocks(record)
+            if group_aligned:
+                groups = self._replay_group_blocks(record)
+            else:
+                # One block per unit, the partition the pre-grouping path used. Its block
+                # count is agreed across the DP group by rearrange_micro_batches
+                # (same_micro_num_in_dp), so the forward count and the per-unit dot()
+                # all-reduce stay in lockstep. Eq. (49)'s per-query pairing is not
+                # recovered here -- see _replay_group_blocks for what is.
+                groups = [[b] for b in self._replay_blocks(record)]
             kept = list(range(0, len(groups), stride))
             n_groups = len(groups)       # an int, so `del groups` still frees the blocks
             rescale = n_groups / max(len(kept), 1)
@@ -828,6 +836,7 @@ class DataParallelECHOActor(DataParallelPPOActor):
         metrics = dict(hvp_metrics)
         metrics.update({
             "actor/response_curvature": 1.0 if curvature else 0.0,
+            "actor/response_group_aligned": 1.0 if group_aligned else 0.0,
             "actor/response_steps_K": float(len(records)),
             "actor/response_groups": float(all_groups),
             "actor/response_c_mean": float(c_tensor.mean()) if all_c else 0.0,
@@ -870,6 +879,7 @@ class DataParallelECHOActor(DataParallelPPOActor):
         response_exact = bool(data.meta_info.get("response_exact", False))
         response_fd_rel = float(data.meta_info.get("response_fd_rel", 2e-2))
         response_curvature = bool(data.meta_info.get("response_curvature", False))
+        response_group_aligned = bool(data.meta_info.get("response_group_aligned", False))
         stash_record = response_enabled and phase == "low_level"
         do_response = response_enabled and phase == "high_level"
         # Algorithm 1 line 14 belongs to the ROUND STRUCTURE, not to the response
@@ -967,6 +977,7 @@ class DataParallelECHOActor(DataParallelPPOActor):
                     grad_clip=self.config.grad_clip,
                     follower_lr=float(follower_optim.param_groups[0]["lr"]),
                     curvature=response_curvature,
+                    group_aligned=response_group_aligned,
                 )
                 self._restore_adapted_weights()
             else:

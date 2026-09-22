@@ -211,6 +211,22 @@ class RayECHOTrainer(RayPPOTrainer):
             return False
         return bool(cfg.get("exact", False))
 
+    def _response_group_aligned_enabled(self) -> bool:
+        """Replay the follower record in query-GROUP units rather than token-budget blocks.
+
+        OFF by default. Eq. (49) pairs each group's gradient with its own score, but making
+        that partition agree across ranks is unsolved here: excision fragments the uids so
+        group counts differ rank to rank, and padding the counts leaves group SIZES
+        differing, so a globally agreed chunk count is not locally achievable. The result
+        was a NCCL desync -- some ranks in the FSDP all-gather, others already in the
+        per-group dot() all-reduce. And even once synced, FSDP reduce-scatters, so p.grad
+        is the DP average over eight different groups anyway. Off until that is solved.
+        """
+        cfg = self._response_cfg()
+        if cfg is None or not self._response_exact_enabled():
+            return False
+        return bool(cfg.get("group_aligned", False))
+
     def _response_curvature_enabled(self) -> bool:
         """The parametric half of H_yx,s, i.e. the central-difference Hessian term.
 
@@ -1093,6 +1109,7 @@ class RayECHOTrainer(RayPPOTrainer):
                         )
                         phase_batch.meta_info["response_exact"] = self._response_exact_enabled()
                         phase_batch.meta_info["response_curvature"] = self._response_curvature_enabled()
+                        phase_batch.meta_info["response_group_aligned"] = self._response_group_aligned_enabled()
                         phase_batch.meta_info["response_fd_rel"] = float(
                             response_cfg.get("fd_rel", 2e-2)
                         )

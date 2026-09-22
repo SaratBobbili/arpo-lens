@@ -144,6 +144,16 @@ phases:
     # Naming: with this off the estimator is NOT the exact hypergradient, at any K. It is
     # the distributional half of one. Say that rather than "exact" in write-ups.
     curvature: false
+    # Replay in query-GROUP units (Eq. 49's b) rather than token-budget blocks. OFF: the
+    # partition cannot currently be made to agree across ranks. Excision gives every
+    # budget-exhausted sample a fresh uid, so group COUNTS differ rank to rank; padding the
+    # counts then leaves group SIZES differing, so a globally agreed per-group chunk count
+    # is not locally achievable and gets clamped -- which desynced NCCL (some ranks in the
+    # FSDP all-gather, others in the per-group dot all-reduce) and killed exact_k1 twice.
+    # Independently, FSDP reduce-scatters, so p.grad is the DP mean over the eight groups
+    # sitting at that index across ranks; the per-query pairing needs the record resharded
+    # so each group spans all ranks. Leave off until both are done.
+    group_aligned: false
     # Relative size of the central-difference step: e = fd_rel * ||w|| / ||u||. Sized
     # against the weights, not absolute, so the truncation error stays O(fd_rel^2) while
     # the perturbation still survives to the forward.

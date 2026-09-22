@@ -1,3 +1,8 @@
+# Prompts per phase iteration. Explicit now; it used to be derived as
+# (dataset_size // (N_HL*(N_LL+1))) // world_size * world_size, which gave 136 here.
+# Kept at 136 so this profile reproduces exactly.
+prompt_batch_size: 136
+
 # ECHO 7B, response path OFF: alternating role-masked GRPO.
 #
 # Twin of config1.yaml, reproducing the echo7B_*_rl1e-6-r3 arm. It differs in exactly

@@ -49,6 +49,7 @@ VALID_LAUNCH_KEYS=(
     save_freq test_freq save_best_checkpoint best_checkpoint_metric max_actor_ckpt_to_keep resume_mode
     checkpoint_contents
     shared_prompt_stream total_epochs
+    algorithm prompt_batch_size
     hl_num_iters ll_num_iters hl_group_size ll_group_size
     hl_ppo_mini_batch_size ll_ppo_mini_batch_size
     hl_ppo_micro_batch_size_per_gpu ll_ppo_micro_batch_size_per_gpu
@@ -161,6 +162,8 @@ ARGS=(
     actor_rollout_ref.rollout.tools.skip_training_on_budget_exhausted="${SKIP_TRAINING_ON_BUDGET_EXHAUSTED:-true}"
     actor_rollout_ref.rollout.tools.budget_exhausted_mode="${BUDGET_EXHAUSTED_MODE:-in_group_zero}"
     phases.shared_prompt_stream="${SHARED_PROMPT_STREAM:-true}"
+    phases.algorithm="${ALGORITHM:-hypergradient}"
+    "phases.prompt_batch_size=${PROMPT_BATCH_SIZE:-128}"
     "phases.high_level.num_iters=${HL_NUM_ITERS}"
     "phases.low_level.num_iters=${LL_NUM_ITERS}"
     "phases.high_level.group_size=${HL_GROUP_SIZE}"

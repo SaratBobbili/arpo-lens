@@ -1,3 +1,8 @@
+# HYPERGRADIENT: ECHO Algorithm 1. N_LL follower iterations then one leader,
+# one optimizer step each, consecutive prompt batches (distinct Q_L and Q_H).
+algorithm: hypergradient
+prompt_batch_size: 128
+
 # ECHO 7B, EXACT hypergradient, K = 1.
 #
 # Twin of config1.yaml. It differs in exactly five things, all marked below:
@@ -94,7 +99,7 @@ clip_ratio_high_neg: 0.2
 # shared stream batch: (10000 // (N_HL*(N_LL+1))) floored to a multiple of 8 ranks = 136 prompts (N=8 → 72 steps/epoch).
 hl_num_iters: 36
 hl_group_size: 16
-hl_ppo_mini_batch_size: 136
+hl_ppo_mini_batch_size: 128
 hl_lr: 1e-6
 high_level_advantage_algorithm: grpo
 high_level_use_sign_cond_clip: True
@@ -107,7 +112,7 @@ hl_entropy_alpha: 0.2
 # --- low_level ---
 ll_num_iters: 1
 ll_group_size: 16
-ll_ppo_mini_batch_size: 136
+ll_ppo_mini_batch_size: 128
 ll_lr: 1e-6
 # SGD, so D_s = ll_lr * I exactly. AdamW's first step from reset moments is
 # -lr*g/(|g|+eps): m_hat and sqrt(v_hat) cancel to a sign, leaving the exact Jacobian
@@ -132,7 +137,8 @@ ll_aepo_entropy_weight: 0.2
 
 # --- ECHO Algorithm 1 response term ---
 # One optimizer step per phase iteration is required when this is on, so both
-# ppo_mini_batch_size values above equal the derived 136-prompt batch
+# ppo_mini_batch_size values above equal phases.prompt_batch_size (128), so one
+# phase iteration is exactly one optimizer step -- what C.3 needs for K = N_LL
 # ((10000 // (8*(8+1))) floored to a multiple of 8 ranks). App. C.3: every extra
 # optimizer epoch over a reused group is a separate substep of the adaptation map.
 response_enabled: true

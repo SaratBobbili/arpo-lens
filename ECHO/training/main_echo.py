@@ -18,7 +18,24 @@ import ray
 
 from verl.trainer.main_ppo import create_rl_dataset, create_rl_sampler
 
-from .echo_ray_trainer import RayECHOTrainer
+
+_ALGORITHMS = ("alternating", "hypergradient")
+
+
+def _hypergradient(config) -> bool:
+    """Which class tree to build. `algorithm` is the only switch between the two.
+
+    alternating   -> RayAlternatingGRPOTrainer / PhaseActorRolloutRefWorker /
+                     DataParallelPhaseActor. Never reads phases.response.
+    hypergradient -> RayECHOTrainer / EchoActorRolloutRefWorker /
+                     DataParallelECHOActor, which subclass the three above.
+    """
+    algorithm = str(config.phases.get("algorithm", "hypergradient"))
+    assert algorithm in _ALGORITHMS, (
+        f"phases.algorithm must be one of {_ALGORITHMS}, got {algorithm!r}."
+    )
+    return algorithm == "hypergradient"
+
 from .echo_reward_manager import load_echo_reward_manager
 
 
@@ -75,9 +92,12 @@ class TaskRunner:
             assert config.critic.strategy in ["fsdp", "fsdp2"]
             from verl.single_controller.ray import RayWorkerGroup
             from verl.workers.fsdp_workers import ActorRolloutRefWorker, AsyncActorRolloutRefWorker, CriticWorker
-            from .echo_fsdp_workers import EchoActorRolloutRefWorker
+            if _hypergradient(config):
+                from .echo_fsdp_workers import EchoActorRolloutRefWorker as _PhaseWorker
+            else:
+                from .alt_fsdp_workers import PhaseActorRolloutRefWorker as _PhaseWorker
 
-            actor_rollout_cls = AsyncActorRolloutRefWorker if config.actor_rollout_ref.rollout.mode == "async" else EchoActorRolloutRefWorker
+            actor_rollout_cls = AsyncActorRolloutRefWorker if config.actor_rollout_ref.rollout.mode == "async" else _PhaseWorker
             ray_worker_group_cls = RayWorkerGroup
         elif config.actor_rollout_ref.actor.strategy == "megatron":
             assert config.actor_rollout_ref.actor.strategy == config.critic.strategy
@@ -128,7 +148,11 @@ class TaskRunner:
         train_dataset = create_rl_dataset(config.data.train_files, config.data, tokenizer, processor)
         val_dataset = create_rl_dataset(config.data.val_files, config.data, tokenizer, processor)
         train_sampler = create_rl_sampler(config.data, train_dataset)
-        trainer = RayECHOTrainer(
+        if _hypergradient(config):
+            from .echo_ray_trainer import RayECHOTrainer as _Trainer
+        else:
+            from .alt_ray_trainer import RayAlternatingGRPOTrainer as _Trainer
+        trainer = _Trainer(
             config=config,
             tokenizer=tokenizer,
             processor=processor,

@@ -25,7 +25,23 @@ reward_model:
 # phases.low_level.num_iters low-level iterations and then one high-level iteration.
 # Every knob a phase owns lives here: prompt-stream length, GRPO group size,
 # PPO batch splits, optimizer/scheduler, rollout strategy and loss shaping.
+# Which algorithm to run. Picks the trainer/worker/actor class tree in main_echo.py.
+#   alternating   -> RayAlternatingGRPOTrainer: role-masked GRPO, two phases, no
+#                    response term. The high-level iteration re-rolls the prompts the
+#                    low-level phase just adapted on.
+#   hypergradient -> RayECHOTrainer: the above plus ECHO Algorithm 1 -- transient
+#                    follower, R_L follower return, g_dir + g_resp leader step.
+# phases.response.* is only read on the hypergradient path.
+# Lives under `phases` because verl already owns a top-level `algorithm` GROUP
+# (algorithm.adv_estimator, algorithm.kl_ctrl), which cannot also be a scalar.
+
 phases:
+  algorithm: hypergradient
+  # Prompts per phase iteration, for both algorithms. Must be a multiple of the rank
+  # count. Was derived from N_HL*(N_LL+1), the Algorithm-1 round length, which is why an
+  # alternating run inherited a bilevel batch size (136 rather than ARPO's 128, so
+  # 136/16 left a ragged 9th mini-batch). num_iters now only controls loop counts.
+  prompt_batch_size: 128
   # When true, LL and HL pull consecutive batches from one dataloader; one epoch
   # is N_HL*(N_LL+1) steps. When false, keep independent per-phase streams.
   shared_prompt_stream: true

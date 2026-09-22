@@ -1,21 +1,39 @@
-# Prompts per phase iteration. Explicit now; it used to be derived as
-# (dataset_size // (N_HL*(N_LL+1))) // world_size * world_size, which gave 136 here.
-# Kept at 136 so this profile reproduces exactly.
-prompt_batch_size: 136
+# ALTERNATING-GRPO: role-masked GRPO, two phases, NO response term.
+#
+# ARPO's operating point, identical across every script in ARPO/scripts/:
+#   prompt_batch_size 128, ppo_mini_batch_size 16, group_size 16, ppo_epochs 1
+#   -> 128/16 = 8 optimizer steps per phase iteration, 16*16/8 = 32 seq/rank/step.
+# ppo_max_token_len_per_gpu 11264 is already ARPO's 2*(1536+4096).
+#
+# The high-level iteration re-rolls the prompts the low-level phase just adapted on
+# (same prompts, fresh rollouts). See RayAlternatingGRPOTrainer._next_batch_dict.
+# HYPERGRADIENT: ECHO Algorithm 1. N_LL follower iterations then one leader,
+# one optimizer step each, consecutive prompt batches (distinct Q_L and Q_H).
+algorithm: alternating
+prompt_batch_size: 128
 
-# PARKED -- NOT LAUNCHED BY ANYTHING.
-# train_qwen7B_v2.sh / _v3.sh were meant to use config2 / config3, but all three launch scripts set
-# BASE_PROFILE="training_config/config1.yaml". This profile has therefore NEVER been run; do not
-# read past results as evidence for or against it.
-# Sole delta vs config1.yaml:
-#   low_level_advantage_algorithm: aepo     (A = A_grpo * (1 + alpha * H_norm))
-# To actually run it, pass the profile explicitly:
-#   bash scripts/train.sh training_config/config3.yaml experiment_name=echo7B_ll_aepo
-# Keep it out of the SFT-init sweep: varying the advantage algorithm and the SFT checkpoint in the
-# same set of runs confounds the two.
+# ECHO 7B, EXACT hypergradient, K = 8.
+#
+# Twin of config1.yaml. It differs in exactly five things, all marked below:
+#   ll_num_iters          8 -> 8
+#   hl_num_iters          8 -> 8        (holds the prompt batch at 136, 72 steps/epoch)
+#   ll_optimizer          adamw -> sgd  (AdamW's first-step Jacobian is ~4e-12)
+#   ll_weight_decay       0.01 -> 0.0   (coupled decay adds an unmodelled lambda*I)
+# Everything else is byte-identical to config1.yaml on purpose.
+#
+# The term, against config1's sampling-half-only estimator:
+#   g_resp = sum_s [ grad^2 L_L,s . u_s  +  sum_b <g_grp,s,b , u_s> grad log p_s,b ]
+#   u_s    = D_s^T g_fol ,   D_s = eta_L * min(1, clip/||ghat_s||) * I
+#
+#
+# N_HL is 8 so that N_HL*(N_LL+1) = 8*9 = 72, the same as config1's 8*9. The prompt
+# batch is (len(train_dataset) // that) floored to the rank count, so this profile and the
+# other exact profile and config1 all collect 136 prompts per step over 72 steps/epoch --
+# the K comparison is not confounded by batch size or by steps per epoch.
+
 # shared
 project_name: Qwen2.5-7B-Instruct
-experiment_name: Experiment-3
+experiment_name: Experiment-alt-arpo
 active_system_prompt: 1
 nnodes: 1
 n_gpus_per_node: 8
@@ -32,16 +50,14 @@ reward_manager: echo
 rollout_n: 16
 enable_multi_turn: false
 tensor_model_parallel_size: 1
-# Lowered from 0.7 for headroom. The response sweep allocates a full-size gradient
 # buffer plus large per-parameter temporaries after the last natural empty_cache(),
 # and vLLM's wake_up() maps physical pages -- at 0.7 a 7B run OOMed there on the
 # first leader step (cumem_allocator.cpp:62). Raise once a run survives several
-# rounds and high_level/actor/response_mem_reserved_gb shows the margin.
 gpu_memory_utilization: 0.6
 rollout_name: vllm
 rollout_mode: sync_echo
 exclude_tag_tokens_from_phase_masks: false
-search_cache_file: search_cache_echo_7B.json
+search_cache_file: search_cache_final_7B_d.json
 search_class_path: verl.workers.agent.tools.search_tool.BingSearchTool
 brightdata_timeout: 90
 tool_call_limit: 3
@@ -57,7 +73,10 @@ max_actor_ckpt_to_keep: 1
 # optimizer moments restart from zero -- safe here because warmup_style is constant, so
 # there is no LR schedule state to lose. Set to "[model,optimizer,extra]" for exact resume.
 checkpoint_contents: "[model,extra]"
-resume_mode: auto
+# disable, not auto: these two arms crashed on the bf16 guard and left run dirs behind.
+# `auto` would sweep any global_step_* in the target dir back in, and the dir name is
+# derived from experiment_name, so a re-launch lands on top of the old one.
+resume_mode: disable
 
 shared_prompt_stream: true
 total_epochs: 4
@@ -82,7 +101,7 @@ clip_ratio_high_neg: 0.2
 # shared stream batch: (10000 // (N_HL*(N_LL+1))) floored to a multiple of 8 ranks = 136 prompts (N=8 → 72 steps/epoch).
 hl_num_iters: 8
 hl_group_size: 16
-hl_ppo_mini_batch_size: 136
+hl_ppo_mini_batch_size: 16
 hl_lr: 1e-6
 high_level_advantage_algorithm: grpo
 high_level_use_sign_cond_clip: True
@@ -95,9 +114,16 @@ hl_entropy_alpha: 0.2
 # --- low_level ---
 ll_num_iters: 8
 ll_group_size: 16
-ll_ppo_mini_batch_size: 136
+ll_ppo_mini_batch_size: 16
 ll_lr: 1e-6
-low_level_advantage_algorithm: aepo
+# SGD, so D_s = ll_lr * I exactly. AdamW's first step from reset moments is
+# -lr*g/(|g|+eps): m_hat and sqrt(v_hat) cancel to a sign, leaving the exact Jacobian
+# lr*eps/(|g|+eps)^2, about 4e-12 here. Differentiating through THAT correctly gives a
+ll_optimizer: adamw
+# Coupled decay would add lambda*w to ghat, and w depends on x, so d ghat/dx picks up
+# a lambda*I this path does not model. A discarded adaptation step needs no decay.
+ll_weight_decay: 0.01
+low_level_advantage_algorithm: grpo
 low_level_use_sign_cond_clip: True
 ll_kl_loss_coef: 0.000
 ll_entropy_enabled: false
@@ -110,27 +136,9 @@ ll_aepo_beam_size: 2
 ll_aepo_branch_probability: 0.5
 ll_aepo_entropy_weight: 0.2
 
-# --- ECHO Algorithm 1 response term ---
 # One optimizer step per phase iteration is required when this is on, so both
-# ppo_mini_batch_size values above equal the derived 136-prompt batch
+# ppo_mini_batch_size values above equal phases.prompt_batch_size (128), so one
+# phase iteration is exactly one optimizer step -- what C.3 needs for K = N_LL
 # ((10000 // (8*(8+1))) floored to a multiple of 8 ranks). App. C.3: every extra
 # optimizer epoch over a reused group is a separate substep of the adaptation map.
-response_enabled: true
-# The g_resp term itself. On: the unmasked scalar advantage keeps its seed alive.
-# Sampling half of Eq. (35) only; costs 2K extra full-batch passes per round.
-# Set false for a first-order-MAML A/B baseline.
-response_gradient: true
-response_coef: 1.0
-response_replay_fraction: 1.0
-
-# --- Deviations from v10 GRPO, stated rather than discovered ---
-# Eq. (30) standardizes the within-query advantage by its group std:
-#   A = (R - mean(R)) / (std(R) + eps_adv)
-# norm_adv_by_std_in_grpo=off keeps only the mean centering. Set it to `on` for the
-# paper's estimator; left off here so runs stay comparable with the existing r3 series.
-#
-# Eq. (31) normalizes per trajectory by 1/max(1,|I_p(tau)|) and then averages over the
-# B*G trajectories -- that is seq-mean-token-mean. token-mean instead takes one global
-# mean over unmasked tokens, which weights each trajectory by its role-token count rather
-# than equally. Set loss_agg_mode=seq-mean-token-mean to match the paper.
 loss_agg_mode: token-mean

@@ -11,7 +11,8 @@ import torch
 from hydra import compose, initialize_config_dir
 from torch.utils.data import Dataset
 
-from training.echo_ray_trainer import RayECHOTrainer, _PhaseDataloaders
+from training.alt_ray_trainer import _PhaseDataloaders
+from training.echo_ray_trainer import RayECHOTrainer
 
 OVERRIDES = [
     "algorithm.adv_estimator=grpo",
@@ -22,6 +23,9 @@ OVERRIDES = [
     "trainer.save_freq=1",
     "trainer.test_freq=1",
     "phases.shared_prompt_stream=true",
+    # The prompt batch is now explicit; it used to be derived as
+    # (dataset_size // num_iters) // world_size * world_size = 16.
+    "phases.prompt_batch_size=16",
     "phases.high_level.num_iters=8",
     "phases.low_level.num_iters=8",
     "phases.high_level.group_size=16",
@@ -63,7 +67,8 @@ assert isinstance(trainer.train_dataloader, _PhaseDataloaders)
 assert trainer.total_training_steps == 4 * 8 * 9 == 288, trainer.total_training_steps
 assert trainer._phase_dataloaders["low_level"] is trainer._phase_dataloaders["high_level"]
 bs = trainer._phase_dataloaders["low_level"].batch_size
-assert bs == (10000 // 72) // 8 * 8 == 136, bs
+# phases.prompt_batch_size, pinned above; no longer derived from N_HL*(N_LL+1).
+assert bs == 16, bs
 assert bs % 8 == 0, bs
 
 # Shared cursor: consecutive phase pulls advance the same stream.

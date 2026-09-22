@@ -32,7 +32,7 @@ export TORCHDYNAMO_DISABLE=1
 unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES
 export PYTHONPATH="${VERL_ROOT}:${ECHO_TOP}:$PYTHONPATH"
 
-source "${SCRIPT_DIR}/secrets.sh" ; OUTPUT_ROOT="/tmp/claude-1881076823/-scratch-user-saratb-tamu-edu-research-arpo-lens/e717e9f6-a1ab-4c78-b431-62c52b9decaa/scratchpad/dry/out"
+source "${SCRIPT_DIR}/secrets.sh" ; OUTPUT_ROOT="/scratch/user/saratb_tamu.edu/research/arpo-lens/ECHO/training/.s2_dryrun_work/out"
 
 LAUNCH_CONFIG_PATH="${ECHO_ROOT}/$1"
 VALID_LAUNCH_KEYS=(
@@ -49,6 +49,7 @@ VALID_LAUNCH_KEYS=(
     save_freq test_freq save_best_checkpoint best_checkpoint_metric max_actor_ckpt_to_keep resume_mode
     checkpoint_contents
     shared_prompt_stream total_epochs
+    algorithm prompt_batch_size
     hl_num_iters ll_num_iters hl_group_size ll_group_size
     hl_ppo_mini_batch_size ll_ppo_mini_batch_size
     hl_ppo_micro_batch_size_per_gpu ll_ppo_micro_batch_size_per_gpu
@@ -56,7 +57,7 @@ VALID_LAUNCH_KEYS=(
     hl_warmup_style ll_warmup_style hl_lr_warmup_steps_ratio ll_lr_warmup_steps_ratio
     high_level_advantage_algorithm low_level_advantage_algorithm
     norm_adv_by_std_in_grpo
-    skip_training_on_tool_failure skip_training_on_budget_exhausted
+    skip_training_on_tool_failure skip_training_on_budget_exhausted budget_exhausted_mode
     mask_tool mask_think mask_answer mask_search mask_python
     clip_ratio_low clip_ratio_high clip_ratio_c clip_ratio_low_pos clip_ratio_high_pos clip_ratio_low_neg clip_ratio_high_neg
     hl_kl_loss_coef ll_kl_loss_coef hl_use_aepo_clip ll_use_aepo_clip
@@ -64,8 +65,8 @@ VALID_LAUNCH_KEYS=(
     hl_entropy_reg_coeff ll_entropy_reg_coeff hl_entropy_normalization ll_entropy_normalization
     hl_entropy_alpha ll_entropy_alpha
     hl_entropy_enabled ll_entropy_enabled
-    response_enabled response_gradient response_coef response_replay_fraction
-    response_follower_return response_exact response_curvature response_group_aligned response_fd_rel hl_optimizer ll_optimizer
+    response_enabled response_gradient response_coef response_replay_fraction response_follower_return
+    response_exact response_curvature response_group_aligned response_fd_rel hl_optimizer ll_optimizer
     loss_agg_mode
     hl_opefo_enabled ll_opefo_enabled
     high_level_rollout_strategy low_level_rollout_strategy
@@ -159,7 +160,10 @@ ARGS=(
     reward_model.reward_manager="${REWARD_MANAGER}"
     actor_rollout_ref.rollout.tools.skip_training_on_tool_failure="${SKIP_TRAINING_ON_TOOL_FAILURE:-false}"
     actor_rollout_ref.rollout.tools.skip_training_on_budget_exhausted="${SKIP_TRAINING_ON_BUDGET_EXHAUSTED:-true}"
+    actor_rollout_ref.rollout.tools.budget_exhausted_mode="${BUDGET_EXHAUSTED_MODE:-in_group_zero}"
     phases.shared_prompt_stream="${SHARED_PROMPT_STREAM:-true}"
+    phases.algorithm="${ALGORITHM:-hypergradient}"
+    "phases.prompt_batch_size=${PROMPT_BATCH_SIZE:-128}"
     "phases.high_level.num_iters=${HL_NUM_ITERS}"
     "phases.low_level.num_iters=${LL_NUM_ITERS}"
     "phases.high_level.group_size=${HL_GROUP_SIZE}"
@@ -196,14 +200,14 @@ ARGS=(
     phases.low_level.entropy.enabled="${LL_ENTROPY_ENABLED:-false}"
     phases.response.enabled="${RESPONSE_ENABLED:-true}"
     phases.response.gradient="${RESPONSE_GRADIENT:-false}"
+    phases.response.follower_return="${RESPONSE_FOLLOWER_RETURN:-null}"
     "actor_rollout_ref.actor.loss_agg_mode=${LOSS_AGG_MODE:-token-mean}"
     "phases.response.coef=${RESPONSE_COEF:-1.0}"
-    phases.response.follower_return="${RESPONSE_FOLLOWER_RETURN:-null}"
+    "phases.response.replay_fraction=${RESPONSE_REPLAY_FRACTION:-1.0}"
     phases.response.exact="${RESPONSE_EXACT:-false}"
     phases.response.curvature="${RESPONSE_CURVATURE:-false}"
     phases.response.group_aligned="${RESPONSE_GROUP_ALIGNED:-false}"
     "phases.response.fd_rel=${RESPONSE_FD_REL:-2e-2}"
-    "phases.response.replay_fraction=${RESPONSE_REPLAY_FRACTION:-1.0}"
     phases.high_level.opefo.enabled="${HL_OPEFO_ENABLED:-false}"
     phases.low_level.opefo.enabled="${LL_OPEFO_ENABLED:-false}"
     "phases.high_level.rollout.strategy=${HIGH_LEVEL_ROLLOUT_STRATEGY:-default}"
@@ -299,4 +303,4 @@ fi
 
 printf '%s\n' "${ARGS[@]:2}" > "${CONFIG_SNAPSHOT_DIR}/launch_hydra_overrides.txt"
 
-printf '%s\n' "${ARGS[@]}" > "/tmp/claude-1881076823/-scratch-user-saratb-tamu-edu-research-arpo-lens/e717e9f6-a1ab-4c78-b431-62c52b9decaa/scratchpad/dry/hydra_args.txt"
+printf '%s\n' "${ARGS[@]}" > "/scratch/user/saratb_tamu.edu/research/arpo-lens/ECHO/training/.s2_dryrun_work/hydra_args.txt"

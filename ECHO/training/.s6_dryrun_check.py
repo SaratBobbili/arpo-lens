@@ -130,14 +130,26 @@ import inspect
 
 from training.echo_dp_actor import DataParallelECHOActor
 
-src = inspect.getsource(DataParallelECHOActor.update_policy)
-assert 'data.meta_info.get("discard_follower"' in src, "the discard must have its own flag"
-assert "if do_discard_follower:" in src, "the discard must not be nested under the response path"
-discard_at = src.index("if do_discard_follower:")
-step_at = src.index("grad_norm = self._optimizer_step()")
-assert discard_at < step_at, "y_K must be discarded BEFORE the leader optimizer step"
-resp_at = src.index("if response_grad is not None:")
+# The discard now rides a hook. Its own flag is parsed in _update_begin, and
+# DataParallelPhaseActor.update_policy fixes the ORDER the hooks fire in.
+from training.alt_dp_actor import DataParallelPhaseActor
+
+begin = inspect.getsource(DataParallelECHOActor._update_begin)
+assert 'm.get("discard_follower"' in begin, "the discard must have its own flag"
+assert "response_enabled" not in begin.split('"discard_follower"')[1], \
+    "the discard flag must not be gated on the response gradient"
+
+discard = inspect.getsource(DataParallelECHOActor._before_optimizer_step)
+assert 'self._resp.get("discard_follower")' in discard, \
+    "the discard must be gated on its own flag, not the response path"
+assert "_restore_leader_weights()" in discard
+
+loop = inspect.getsource(DataParallelPhaseActor.update_policy)
+resp_at = loop.index("self._on_response_grad_consumed(")
+discard_at = loop.index("self._before_optimizer_step(")
+step_at = loop.index("grad_norm = self._optimizer_step()")
 assert resp_at < discard_at, "diagnostics read the response buffer before it is released"
+assert discard_at < step_at, "y_K must be discarded BEFORE the leader optimizer step"
 
 # --- 4. R_L: tool validity, gated on the schema ---------------------------------------
 GOOD = (
@@ -322,18 +334,18 @@ for script, text in scripts.items():
 for name, profile in profiles.items():
     if not profile.get("response_enabled", True):
         continue
+    # ALTERNATING-GRPO profiles never reach _validate_response_config: RayECHOTrainer
+    # owns that check, and phases.algorithm picks the other class tree.
+    if profile.get("algorithm", "hypergradient") != "hypergradient":
+        continue
     n_hl, n_ll = int(profile["hl_num_iters"]), int(profile["ll_num_iters"])
     world = int(profile["n_gpus_per_node"]) * int(profile["nnodes"])
     assert "train_10k" in profile["train_files"], f"{name}: update dataset_size below for {profile['train_files']}"
     dataset_size = 10000
-    if profile.get("shared_prompt_stream", True):
-        steps_per_epoch = n_hl * (n_ll + 1)
-        prompt_batch = {p: (dataset_size // steps_per_epoch) // world * world for p in ("high_level", "low_level")}
-    else:
-        prompt_batch = {
-            "high_level": (dataset_size // n_hl) // world * world,
-            "low_level": (dataset_size // n_ll) // world * world,
-        }
+    # Explicit now; the N_HL*(N_LL+1) round equation no longer sizes the batch.
+    batch = int(profile["prompt_batch_size"])
+    assert batch % world == 0, f"{name}: prompt_batch_size {batch} not a multiple of {world}"
+    prompt_batch = {p: batch for p in ("high_level", "low_level")}
 
     probe = _Probe(_compose([]), prompt_batch)
     probe.config.phases.high_level.ppo_mini_batch_size = int(profile["hl_ppo_mini_batch_size"])

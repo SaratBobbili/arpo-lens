@@ -1,3 +1,8 @@
+# Prompts per phase iteration. Explicit now; it used to be derived as
+# (dataset_size // (N_HL*(N_LL+1))) // world_size * world_size, which gave 136 here.
+# Kept at 136 so this profile reproduces exactly.
+prompt_batch_size: 136
+
 # shared
 project_name: llama31_8B_Instruct
 experiment_name: Experiment-1

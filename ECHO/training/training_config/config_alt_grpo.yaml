@@ -1,39 +1,29 @@
-# ALTERNATING-GRPO: role-masked GRPO, two phases, NO response term.
+# ALTERNATING-GRPO: role-masked GRPO over two phases, NO response term.
 #
-# ARPO's operating point, identical across every script in ARPO/scripts/:
+# This is NOT ARPO. It is the alternating baseline, run at the hyperparameters ARPO
+# uses, so its numbers are comparable to the published ARPO/GRPO/DAPO/RFPP results.
+# Those values are identical across every script in ARPO/scripts/:
 #   prompt_batch_size 128, ppo_mini_batch_size 16, group_size 16, ppo_epochs 1
 #   -> 128/16 = 8 optimizer steps per phase iteration, 16*16/8 = 32 seq/rank/step.
 # ppo_max_token_len_per_gpu 11264 is already ARPO's 2*(1536+4096).
 #
-# The high-level iteration re-rolls the prompts the low-level phase just adapted on
-# (same prompts, fresh rollouts). See RayAlternatingGRPOTrainer._next_batch_dict.
-# HYPERGRADIENT: ECHO Algorithm 1. N_LL follower iterations then one leader,
-# one optimizer step each, consecutive prompt batches (distinct Q_L and Q_H).
+# 128/16 divides evenly. The r3/r4 profiles inherited ARPO's mini=16 but took their
+# batch from the Algorithm-1 round equation (136), so 136/16 = 8.5 left them running a
+# ragged 9th mini-batch every iteration.
+#
+# The high-level iteration re-rolls the prompts the low-level phase just adapted on --
+# same prompts, fresh rollouts from the updated policy. See
+# RayAlternatingGRPOTrainer._next_batch_dict. HYPERGRADIENT does not do this; Algorithm 1
+# draws distinct query groups for follower and leader (C.3/C.4).
+#
+# phases.algorithm=alternating selects RayAlternatingGRPOTrainer / PhaseActorRolloutRefWorker
+# / DataParallelPhaseActor, none of which read phases.response.*.
 algorithm: alternating
 prompt_batch_size: 128
 
-# ECHO 7B, EXACT hypergradient, K = 8.
-#
-# Twin of config1.yaml. It differs in exactly five things, all marked below:
-#   ll_num_iters          8 -> 8
-#   hl_num_iters          8 -> 8        (holds the prompt batch at 136, 72 steps/epoch)
-#   ll_optimizer          adamw -> sgd  (AdamW's first-step Jacobian is ~4e-12)
-#   ll_weight_decay       0.01 -> 0.0   (coupled decay adds an unmodelled lambda*I)
-# Everything else is byte-identical to config1.yaml on purpose.
-#
-# The term, against config1's sampling-half-only estimator:
-#   g_resp = sum_s [ grad^2 L_L,s . u_s  +  sum_b <g_grp,s,b , u_s> grad log p_s,b ]
-#   u_s    = D_s^T g_fol ,   D_s = eta_L * min(1, clip/||ghat_s||) * I
-#
-#
-# N_HL is 8 so that N_HL*(N_LL+1) = 8*9 = 72, the same as config1's 8*9. The prompt
-# batch is (len(train_dataset) // that) floored to the rank count, so this profile and the
-# other exact profile and config1 all collect 136 prompts per step over 72 steps/epoch --
-# the K comparison is not confounded by batch size or by steps per epoch.
-
 # shared
 project_name: Qwen2.5-7B-Instruct
-experiment_name: Experiment-alt-arpo
+experiment_name: Experiment-alt-grpo
 active_system_prompt: 1
 nnodes: 1
 n_gpus_per_node: 8
@@ -50,9 +40,10 @@ reward_manager: echo
 rollout_n: 16
 enable_multi_turn: false
 tensor_model_parallel_size: 1
-# buffer plus large per-parameter temporaries after the last natural empty_cache(),
-# and vLLM's wake_up() maps physical pages -- at 0.7 a 7B run OOMed there on the
-# first leader step (cumem_allocator.cpp:62). Raise once a run survives several
+# Kept at the HYPERGRADIENT profiles' value so memory behaviour is comparable. That
+# path needed the headroom for the response term's full-size buffer (at 0.7 a 7B run
+# OOMed in vLLM wake_up, cumem_allocator.cpp:62); this path has no such buffer, so 0.6
+# is conservative here and can be raised once a run survives several
 gpu_memory_utilization: 0.6
 rollout_name: vllm
 rollout_mode: sync_echo
@@ -116,12 +107,12 @@ ll_num_iters: 8
 ll_group_size: 16
 ll_ppo_mini_batch_size: 16
 ll_lr: 1e-6
-# SGD, so D_s = ll_lr * I exactly. AdamW's first step from reset moments is
-# -lr*g/(|g|+eps): m_hat and sqrt(v_hat) cancel to a sign, leaving the exact Jacobian
-# lr*eps/(|g|+eps)^2, about 4e-12 here. Differentiating through THAT correctly gives a
+# AdamW for both phases. The SGD requirement is HYPERGRADIENT-only: it exists so that
+# D_s = eta_L * I is the follower's exact optimizer Jacobian. Nothing differentiates
+# through the update here, so the low-level phase uses the same optimizer as the high.
 ll_optimizer: adamw
-# Coupled decay would add lambda*w to ghat, and w depends on x, so d ghat/dx picks up
-# a lambda*I this path does not model. A discarded adaptation step needs no decay.
+# Standard decay on both phases. The zero-decay requirement is HYPERGRADIENT-only
+# (coupled decay puts an unmodelled lambda*I into d ghat/dx); no such term here.
 ll_weight_decay: 0.01
 low_level_advantage_algorithm: grpo
 low_level_use_sign_cond_clip: True
@@ -136,9 +127,8 @@ ll_aepo_beam_size: 2
 ll_aepo_branch_probability: 0.5
 ll_aepo_entropy_weight: 0.2
 
-# One optimizer step per phase iteration is required when this is on, so both
-# ppo_mini_batch_size values above equal phases.prompt_batch_size (128), so one
-# phase iteration is exactly one optimizer step -- what C.3 needs for K = N_LL
-# ((10000 // (8*(8+1))) floored to a multiple of 8 ranks). App. C.3: every extra
-# optimizer epoch over a reused group is a separate substep of the adaptation map.
+# ppo_mini_batch_size 16 against prompt_batch_size 128 gives EIGHT optimizer steps per
+# phase iteration, over disjoint 16-prompt slices of one rollout -- ARPO's setting. The
+# first step has ratio == 1; the rest run against the same frozen behaviour snapshot, so
+# clipping is live. The one-step-per-iteration rule is HYPERGRADIENT-only (C.3, K = N_LL).
 loss_agg_mode: token-mean

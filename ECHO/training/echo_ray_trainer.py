@@ -8,8 +8,12 @@ import shutil
 
 from pprint import pprint
 
+import numpy as np
+import torch
+
 from verl.utils.metric import reduce_metrics
 
+from . import echo_response
 from .alt_ray_trainer import RayAlternatingGRPOTrainer
 
 
@@ -38,6 +42,109 @@ class RayECHOTrainer(RayAlternatingGRPOTrainer):
         if cfg is None or not self._response_enabled():
             return False
         return bool(cfg.get("gradient", False))
+
+    def _response_estimator(self) -> str:
+        """Which estimator computes g_resp: ``adjoint`` (Algorithm 1's K-step reverse sweep,
+        the default) or ``aho`` (arXiv:2607.28849's Hessian-free Boltzmann sensitivity, GRPO
+        variant -- see echo_response's module docstring)."""
+        cfg = self._response_cfg()
+        estimator = str(cfg.get("estimator", "adjoint")).lower() if cfg is not None else "adjoint"
+        assert estimator in ("adjoint", "aho"), (
+            f"phases.response.estimator must be 'adjoint' or 'aho', got {estimator!r}"
+        )
+        return estimator
+
+    def _response_aho_enabled(self) -> bool:
+        return self._response_gradient_enabled() and self._response_estimator() == "aho"
+
+    def _aho_cfg(self):
+        cfg = self._response_cfg()
+        return cfg.get("aho", None) if cfg is not None else None
+
+    def _aho_gamma(self) -> float:
+        aho = self._aho_cfg()
+        return float(aho.get("gamma", 1.0)) if aho is not None else 1.0
+
+    def _aho_derived_tau(self) -> float:
+        """The follower's entropy temperature as its loss actually applies it.
+
+        lambda_ent H_tool (phases.low_level.entropy.reg_coeff, only when enabled) plus the
+        follower's KL coefficient when actor.use_kl_loss: a KL to a fixed reference is
+        entropy plus x-independent shaping, so it adds to the temperature.
+        """
+        low = self._phase_cfg("low_level")
+        tau = 0.0
+        if self._uses_entropy_regularizer(low):
+            tau += self._entropy_reg_coeff(low)
+        actor_cfg = self.config.actor_rollout_ref.actor
+        if bool(actor_cfg.get("use_kl_loss", False)):
+            tau += float(low.get("kl_loss_coef", actor_cfg.get("kl_loss_coef", 0.0)))
+        return tau
+
+    def _aho_tau(self) -> float:
+        """tau for the 1/tau factor: derived from the follower's regularisers unless
+        phases.response.aho.tau is set explicitly."""
+        aho = self._aho_cfg()
+        explicit = aho.get("tau", None) if aho is not None else None
+        if explicit is None:
+            return self._aho_derived_tau()
+        return float(explicit)
+
+    def _validate_aho_config(self) -> None:
+        """What the AHO estimator's derivation needs from the rest of the config."""
+        cfg = self._response_cfg()
+        assert self._response_gradient_enabled(), (
+            "phases.response.estimator=aho selects how g_resp is computed; it needs "
+            "phases.response.gradient=true (and enabled=true)."
+        )
+        for key in ("exact", "curvature", "group_aligned"):
+            assert not bool(cfg.get(key, False)), (
+                f"phases.response.{key} belongs to the adjoint estimator and is not read "
+                "under estimator=aho; unset it so the run's config says what runs."
+            )
+        high = self._phase_cfg("high_level")
+        low = self._phase_cfg("low_level")
+        assert str(high.get("advantage_algorithm", "grpo")) == "grpo", (
+            "estimator=aho multiplies the UNMODULATED task advantage (scalar_advantages); "
+            "phases.high_level.advantage_algorithm must be grpo."
+        )
+        assert str(low.get("advantage_algorithm", "grpo")) == "grpo", (
+            "estimator=aho substitutes the follower's GRPO outcome advantage A_L for the "
+            "value function; phases.low_level.advantage_algorithm must be grpo (the yaml "
+            "default is `entropy`, which makes A_L = alpha * H_norm and the derivation false)."
+        )
+        assert self._follower_return_enabled(), (
+            "estimator=aho contracts A_L, the follower's advantage on R_L, against A_H. With "
+            "phases.response.follower_return off the follower optimised R_H and A_L is not "
+            "the advantage of the objective whose optimum the Boltzmann identity describes."
+        )
+        for name, phase_cfg in (("high_level", high), ("low_level", low)):
+            opefo = phase_cfg.get("opefo", None)
+            assert not (opefo is not None and bool(opefo.get("enabled", False))), (
+                f"estimator=aho needs phases.{name}.opefo.enabled=false."
+            )
+        tau = self._aho_tau()
+        assert tau > 0.0, (
+            "estimator=aho needs tau > 0. Either give the follower an entropy term "
+            "(phases.low_level.entropy.enabled=true with reg_coeff>0) / KL term, or set "
+            "phases.response.aho.tau explicitly."
+        )
+        derived = self._aho_derived_tau()
+        if derived <= 0.0:
+            print(
+                f"[echo] estimator=aho with tau={tau} set explicitly while the follower has no "
+                "entropy or KL term. The Boltzmann premise is then nominal: tau is a scale knob "
+                "next to phases.response.coef, not the follower's temperature."
+            )
+        elif abs(derived - tau) > 1e-12:
+            print(
+                f"[echo] estimator=aho: phases.response.aho.tau={tau} overrides the follower's "
+                f"own temperature {derived} (entropy reg_coeff + KL coef)."
+            )
+        print(
+            f"[echo] estimator=aho: tau={tau}, gamma={self._aho_gamma()}. One extra leader-batch "
+            "pass per round; no follower records, weight snapshots or replay passes."
+        )
 
     def _response_exact_enabled(self) -> bool:
         """The exact K=1 hypergradient rather than the sampling-half-only estimator.
@@ -133,6 +240,11 @@ class RayECHOTrainer(RayAlternatingGRPOTrainer):
                 f"iteration: set phases.{phase_name}.ppo_mini_batch_size to that phase's "
                 f"prompt batch ({prompt_batch}), got {mini}."
             )
+        if self._response_estimator() == "aho":
+            # Asserts exact/curvature/group_aligned off, so the adjoint-only checks below
+            # (SGD follower, zero weight decay) are skipped: nothing is differentiated
+            # through the optimizer here.
+            self._validate_aho_config()
         if self._response_exact_enabled():
             k = int(self._phase_cfg("low_level").num_iters)
             curvature = self._response_curvature_enabled()
@@ -237,7 +349,11 @@ class RayECHOTrainer(RayAlternatingGRPOTrainer):
     def _rollout_meta_info(self, phase_name: str) -> dict:
         """Algorithm 1 scores u_L by r_valid (Eq. 2) and u_H by r_task (Eq. 3). Off, both
         phases share the task score, which is the pre-Algorithm-1 behavior."""
-        return {"use_follower_return": self._follower_return_enabled()}
+        return {
+            "use_follower_return": self._follower_return_enabled(),
+            # AHO: the leader batch is scored by R_L too (alongside the task return).
+            "compute_follower_score": self._response_aho_enabled() and phase_name == "high_level",
+        }
 
     def _scorer_metric_kwargs(self, phase_name: str) -> dict:
         return {"follower_return": self._follower_return_enabled() and phase_name == "low_level"}
@@ -256,7 +372,55 @@ class RayECHOTrainer(RayAlternatingGRPOTrainer):
             meta["response_curvature"] = self._response_curvature_enabled()
             meta["response_group_aligned"] = self._response_group_aligned_enabled()
             meta["response_fd_rel"] = float(response_cfg.get("fd_rel", 2e-2))
+            meta["response_estimator"] = self._response_estimator()
+            if self._response_aho_enabled():
+                meta["aho_tau"] = self._aho_tau()
+                meta["aho_gamma"] = self._aho_gamma()
         return meta
+
+    def _after_advantage(self, phase_batch, phase_name: str) -> dict:
+        """AHO estimator, leader phase: put A_L and the per-token weights on the batch.
+
+        Runs after _apply_tool_failure_before_grpo and compute_advantage, so an excised
+        sample already carries its fresh uid (a singleton group, hence A_L = 0) and a
+        demoted one already has R_L = 0 through the format gate. Everything the actor's
+        surrogate needs is then a plain batch tensor that survives micro-batching.
+        """
+        if not (self._response_aho_enabled() and phase_name == "high_level"):
+            return {}
+        follower_scores = phase_batch.non_tensor_batch.get("follower_score")
+        assert follower_scores is not None, (
+            "estimator=aho needs R_L on the leader batch: reward_manager=echo scores it when "
+            "meta_info.compute_follower_score is set (see ECHORewardManager)."
+        )
+        uid = phase_batch.non_tensor_batch["uid"]
+        norm_by_std = bool(self.config.algorithm.get("norm_adv_by_std_in_grpo", True))
+        follower_adv = echo_response.follower_group_advantage(follower_scores, uid, norm_by_std)
+
+        responses = phase_batch.batch["responses"]
+        response_length = responses.shape[-1]
+        device = responses.device
+        high = phase_batch.batch["high_level_loss_mask"][:, -response_length:]
+        low = phase_batch.batch["low_level_loss_mask"][:, -response_length:]
+        follower_adv = follower_adv.to(device)
+        weights = echo_response.aho_token_weights(high, low, follower_adv, gamma=self._aho_gamma())
+        phase_batch.batch["follower_scalar_advantages"] = follower_adv
+        phase_batch.batch["aho_token_weights"] = weights
+
+        with torch.no_grad():
+            high_f = high.to(torch.float32)
+            low_f = low.to(torch.float32)
+            n_high = torch.clamp(high_f.sum(), min=1.0)
+            metrics = {
+                "policy/aho_follower_adv_zero_frac": float((follower_adv.reshape(-1) == 0).float().mean().item()),
+                "policy/aho_no_tool_traj_frac": float((low_f.sum(dim=-1) == 0).float().mean().item()),
+                "policy/aho_weighted_reasoning_frac": float((((weights != 0) & (high_f > 0)).sum() / n_high).item()),
+            }
+            task_adv = phase_batch.batch.get("scalar_advantages", None)
+            if task_adv is not None:
+                product = task_adv.reshape(-1).to(torch.float32) * follower_adv.reshape(-1)
+                metrics["policy/aho_adv_product_mean"] = float(product.mean().item())
+        return metrics
 
     def _next_batch_dict(self, phase_name: str):
         """Algorithm 1 draws distinct query groups for the follower and the leader

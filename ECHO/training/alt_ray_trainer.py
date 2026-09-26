@@ -80,6 +80,12 @@ class RayAlternatingGRPOTrainer(RayPPOTrainer):
         "actor/response_blocks",
         "actor/follower_direction_pg_loss",
         "actor/follower_discarded",
+        # AHO estimator (phases.response.estimator=aho): the surrogate's own numbers.
+        "actor/aho_surrogate",
+        "actor/aho_omega_absmean",
+        "actor/aho_omega_absmax",
+        "actor/aho_weighted_frac",
+        "actor/aho_tau",
         # Post-response allocator state. vLLM's wake_up() maps physical pages, so what
         # matters for the next generation is what is left RESERVED here, not allocated.
         "actor/response_mem_reserved_gb",
@@ -123,6 +129,8 @@ class RayAlternatingGRPOTrainer(RayPPOTrainer):
             ("response_c_mean.jsonl", "actor/response_c_mean"),
             ("response_c_std.jsonl", "actor/response_c_std"),
             ("response_mem_reserved_gb.jsonl", "actor/response_mem_reserved_gb"),
+            ("aho_surrogate.jsonl", "actor/aho_surrogate"),
+            ("aho_omega_absmean.jsonl", "actor/aho_omega_absmean"),
         ],
         "policy": [
             ("reward.jsonl", "reward_mean"),
@@ -146,6 +154,10 @@ class RayAlternatingGRPOTrainer(RayPPOTrainer):
             ("fail_unclosed_tag.jsonl", "fail_unclosed_tag"),
             ("fail_no_boxed.jsonl", "fail_no_boxed"),
             ("fail_other.jsonl", "fail_other"),
+            ("follower_return_mean.jsonl", "follower_return_mean"),
+            ("aho_follower_adv_zero_frac.jsonl", "aho_follower_adv_zero_frac"),
+            ("aho_adv_product_mean.jsonl", "aho_adv_product_mean"),
+            ("aho_weighted_reasoning_frac.jsonl", "aho_weighted_reasoning_frac"),
         ],
     }
 
@@ -232,6 +244,12 @@ class RayAlternatingGRPOTrainer(RayPPOTrainer):
         if "f1_score" in reward_extra_info:
             f1_scores = torch.tensor(reward_extra_info["f1_score"], dtype=torch.float32)
             metrics["policy/f1_mean"] = f1_scores.mean().item()
+
+        if "follower_score" in reward_extra_info:
+            # R_L scored alongside the task return on a leader batch (AHO estimator). Same
+            # key as the follower phase's own R_L above, so the panel reads as one quantity.
+            follower_scores = torch.tensor(reward_extra_info["follower_score"], dtype=torch.float32)
+            metrics["policy/follower_return_mean"] = follower_scores.mean().item()
 
         if "no_tool_calls" in reward_extra_info:
             no_tool = torch.tensor(reward_extra_info["no_tool_calls"], dtype=torch.float32)
@@ -917,6 +935,9 @@ class RayAlternatingGRPOTrainer(RayPPOTrainer):
                     pf_ppo_reweight_method=self.config.algorithm.pf_ppo.reweight_method,
                     pf_ppo_weight_pow=self.config.algorithm.pf_ppo.weight_pow,
                 )
+                # HYPERGRADIENT seam: the subclass may derive extra per-trajectory / per-token
+                # tensors from the scored, advantaged batch before it reaches the actor.
+                metrics.update(self._after_advantage(phase_batch, phase_name))
                 data_metrics = compute_data_metrics(batch=phase_batch, use_critic=self.use_critic)
                 metrics.update(self._policy_from_data_metrics(data_metrics, phase_batch))
 
@@ -1141,6 +1162,11 @@ class RayAlternatingGRPOTrainer(RayPPOTrainer):
 
     def _phase_meta_info(self, phase_name: str) -> dict:
         """meta_info added to a phase batch before update_actor."""
+        return {}
+
+    def _after_advantage(self, phase_batch: DataProto, phase_name: str) -> dict:
+        """Called right after compute_advantage, before the critic/actor update. May add
+        batch tensors in place; returns driver-side (batch-correct) metrics."""
         return {}
 
     def _open_round(self) -> None:

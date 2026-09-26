@@ -45,6 +45,33 @@ checkpoint missing a phase fails loud on resume. `actor_rollout_ref.actor.optim`
 and `actor_rollout_ref.actor.ppo_*` are inherited from `ppo_trainer.yaml` and
 unused by ECHO.
 
+## Response-term estimators (`phases.response.estimator`)
+
+`gradient: true` adds `g_resp` to the leader step; the estimator decides how it is built.
+
+- **`adjoint`** (default): ECHO Algorithm 1's K-step reverse sweep over stashed follower
+  records (Eqs. 10-11, App. C.4). Costs 1 + 2K extra full-batch passes and K host weight
+  snapshots per round; `exact`, `curvature`, `group_aligned`, `fd_rel`, `replay_fraction`
+  and the SGD follower requirement all belong to it.
+- **`aho`**: arXiv:2607.28849 (Approximate Hypergradient Optimization), GRPO variant. An
+  entropy-regularised follower's optimum is Boltzmann, so its sensitivity to the leader is
+  `(grad_x Q - grad_x V) / tau` with no Hessian. In ECHO the leader enters the follower's
+  problem through the reasoning segments between tool tokens (the transition kernel), and
+  with the follower's own group advantage `A_L` standing in for the value the whole term
+  is one surrogate on the leader batch: *reinforce each reasoning token with weight*
+  `A_H * A_L * (tool tokens before it) / tau`. One extra leader-batch pass; no records,
+  snapshots, replay or HVP; the follower may stay on AdamW. Needs the follower scored by
+  `R_L` (`follower_return`), `grpo` advantages in both phases and a temperature
+  (`ll_entropy_enabled: true` with `ll_entropy_reg_coeff = tau`, or `aho_tau`). The
+  reasoning before the first tool call gets weight 0; the reasoning after the last call is
+  weighted (R_L is gated on the whole response's format). It targets the exact response
+  `xi(x)`, evaluated at `y_K`, so its accuracy is `||y_K - xi(x)||`. Derivation and the
+  named approximations: `echo_response.py` module docstring. Launch profile:
+  `training_config/config_aho_k8.yaml`.
+
+Both leave `p.grad = -g_resp` before the direct pass, so `high_level/actor/response_norm`,
+`response_to_direct_ratio` and `response_direct_cosine` mean the same thing under either.
+
 ## Current API (source of truth)
 
 - **Reward** is always scorer-based (`deep_research_echo.compute_score`): format gate → F1 (+ multi-tool bonus). No per-phase reward strategy channel.

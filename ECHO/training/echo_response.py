@@ -43,12 +43,73 @@ Every quantity is a gradient of the *same* parameter vector under a different lo
 so nothing here needs parameter partitioning or double backward. Gradients are read off
 ``p.grad`` after ``.backward()``, and every inner product is a per-rank partial that must
 be all-reduced -- each rank owns a disjoint shard.
+
+AHO estimator (``phases.response.estimator: aho``), GRPO variant
+---------------------------------------------------------------
+
+arXiv:2607.28849 (Saxena, Gaur, Aggarwal), Theorem 3.3 / Eq. (10). Same round structure
+as Algorithm 1; only the response term changes. For an entropy-regularised follower
+with temperature ``tau`` the optimum is Boltzmann, ``pi_L*(a|s) = exp((Q - V)/tau)``, so::
+
+    grad_x log pi_L*(a|s) = (grad_x Q(s,a) - grad_x V(s)) / tau =: (W(s,a) - U(s)) / tau
+    g_resp                = (1/tau) E[ A_H * sum_{h in I_L} (W - U)(s_h, a_h) ]
+
+Hessian-free: no adjoint, no ``grad^fix``, no per-step weight snapshots, no replay.
+
+In ECHO the follower's reward is x-independent (role-isolated coordinates, Eq. 38) and x
+enters through the TRANSITION KERNEL: the reasoning segment between two tool tokens is
+``P_x(s'|s,a)``. Differentiating the soft Bellman equation with the envelope identity
+``grad_x V(s) = E_{a~pi}[grad_x Q(s,a)]`` (AHO Lemma C.5, Eq. 58) and unrolling gives::
+
+    W(s_h,a_h) = sum_{k>=1} gamma^k E[ V(s_{h+k}) * score(segment before tool token h+k) ]
+    score(seg) = sum_{m in seg} grad_x log pi_H,x(m | c)
+
+GRPO substitution: ``V(s_{h+k}) -> A_L^j``, the trajectory's group-relative outcome
+advantage on R_L (what a follower GRPO step would score this group with), exactly as
+GRPO substitutes it for its own value function. Regrouping the h-sum by reasoning token
+m collapses the whole term into one surrogate on the leader batch::
+
+    omega_m = c_m * A_L^j        j(m) = #tool tokens before m,  c_m = sum_{k=1}^{j(m)} gamma^k  (= j(m) at gamma = 1)
+    L_resp  = -(coef / tau) * sum_j sum_{m in I_H(j)} A_H^j * omega_m * log pi_x(m)   / N_tool^{mb}
+
+``N_tool^{mb}`` is the micro-batch's tool-token count under ``token-mean`` (per-trajectory
+``1/max(1,|I_L(j)|)`` then ``/b`` under ``seq-mean-*``): the aggregation the code's
+``g_fol`` uses, with ``grad_y log pi_L(a_h)`` replaced by ``(W-U)/tau``. The m-sum is a
+score (a SUM, like :func:`reasoning_score`), never a mean. Read plainly: reinforce the
+leader batch's reasoning tokens with weight ``A_H * A_L * (tool tokens before them) / tau``.
+
+Conventions and approximations, all named:
+
+* Terminal transition. ``compute_tool_score`` gates R_L on ``validate_format`` of the
+  WHOLE response, so R_L depends on the reasoning after the last tool token; that segment
+  is a transition like any other and carries the same ``A_L``. Reasoning BEFORE the first
+  tool token is part of the follower's initial state and gets weight 0 (``g_dir`` credits
+  it); no-tool trajectories get 0 throughout.
+* ``U(s_h)`` is not estimated separately. With ``V -> A_L`` its role (centring W) is
+  carried by the group centring inside ``A_L``, the query-level baseline standing in for
+  the state-level one -- the substitution GRPO makes for its own gradient. Against the
+  exact term, ``E[A_H sum_h W]/tau = Dxi^T g_fol + (1/tau) sum_h E[U(s_h) (E[R_H|s_h] -
+  E[R_H|q]) / std_q]``: the residual vanishes only if the follower-value sensitivity at
+  ``s_h`` is uncorrelated with that state's conditional task advantage.
+* ``V -> A_L`` drops the per-step entropy return ``-tau log pi_L`` and any state
+  dependence of V; ``1/tau`` enters only through the explicit factor.
+* The identity is for the EXACT response ``xi(x)`` (ECHO Sec. 3.1), not the finite-K
+  ``xi_K``; it is evaluated with ``pi_L(y_K)`` standing in for ``pi_L*``, so its accuracy
+  is governed by ``||y_K - xi(x)||`` (AHO Lemma 4.9).
+* ``tau`` is the follower's entropy temperature: ``phases.low_level.entropy.reg_coeff``
+  (when enabled) plus the follower KL coefficient (KL to a fixed reference is entropy plus
+  x-independent shaping). ``phases.response.aho.tau`` overrides it.
+* Shared weights and tag tokens outside both masks are dropped exactly as ``g_dir``
+  drops them (see :func:`reasoning_score`).
+* Zero-std R_L groups (R_L is close to the format gate) give ``A_L = 0`` and no response
+  term for that group; the trainer logs the fraction.
 """
 
+import numpy as np
 import torch
 import torch.distributed as dist
 
-from .echo_core_algos import agg_loss
+from .echo_core_algos import agg_loss, compute_grpo_outcome_advantage
 
 
 def trainable_params(module) -> list:
@@ -234,6 +295,100 @@ def reasoning_score(log_prob, policy_mask):
     likelihoods too, so a reasoning-only score drops part of the dependence.
     """
     return (log_prob * policy_mask).sum()
+
+
+# --- AHO response term, GRPO variant (phases.response.estimator: aho) -----------------
+#
+# See the module docstring. Three pure functions: A_L for the leader batch, the per-token
+# weights omega, and the surrogate whose gradient is -g_resp. All fp32; nothing here
+# touches parameters, so the CPU check exercises them exactly as the actor calls them.
+
+
+def follower_group_advantage(follower_scores, uid, norm_adv_by_std: bool) -> torch.Tensor:
+    """``A_L`` for the leader batch: R_L scored as a follower GRPO step would score it. (B, 1)
+
+    Routed through :func:`compute_grpo_outcome_advantage` so epsilon, the singleton rule
+    (an excised sample with a fresh uid gets exactly 0) and ``norm_adv_by_std_in_grpo``
+    match the follower's own update. R_L is placed at one position with an all-ones
+    mask; only the unmasked scalar is returned.
+    """
+    scores = torch.as_tensor(np.asarray(follower_scores, dtype=np.float32)).reshape(-1)
+    token_level = scores.unsqueeze(-1).clone()
+    _, _, scalar = compute_grpo_outcome_advantage(
+        token_level_rewards=token_level,
+        response_mask=torch.ones_like(token_level),
+        index=np.asarray(uid),
+        norm_adv_by_std_in_grpo=bool(norm_adv_by_std),
+    )
+    return scalar.to(torch.float32)
+
+
+def aho_token_weights(high_mask, low_mask, follower_adv, gamma: float = 1.0) -> torch.Tensor:
+    """``omega_m = c_m * A_L`` on reasoning tokens, 0 elsewhere. (B, T) fp32, UNNORMALISED.
+
+    ``j(m)`` counts the tool tokens strictly before m, so reasoning before the first tool
+    token and every token of a no-tool trajectory get 0, and the segment after the last
+    tool token gets ``j(m) = |I_L|`` (terminal transition). ``c_m = sum_{k=1}^{j(m)} gamma^k``
+    in closed form; ``gamma`` discounts per tool TOKEN, the follower MDP's step.
+    """
+    high = high_mask.to(torch.float32)
+    low = low_mask.to(torch.float32)
+    n_before = torch.cumsum(low, dim=-1) - low
+    if float(gamma) == 1.0:
+        c = n_before
+    else:
+        g = float(gamma)
+        c = g * (1.0 - torch.pow(torch.full_like(n_before, g), n_before)) / (1.0 - g)
+    adv = follower_adv.to(torch.float32).reshape(-1, 1)
+    return c * adv * high
+
+
+def aho_response_surrogate(log_prob, scalar_adv, weights, high_mask, low_mask,
+                           loss_agg_mode: str, coef: float, tau: float):
+    """``L_resp`` for one micro-batch; ``grad_x L_resp = -g_resp``. Returns (loss, diagnostics).
+
+    The per-trajectory score ``S_j = sum_{m in I_H(j)} A_H^j * omega_m * log pi_x(m)`` is a
+    SUM over reasoning tokens. The h-sum it stands for is aggregated exactly as the code's
+    ``g_fol`` aggregates tool tokens (``_leader_follower_direction`` -> ``agg_loss`` over
+    the tool mask), so ``response_to_direct_ratio`` compares like with like:
+
+        token-mean            sum_j S_j / N_tool(micro-batch)
+        seq-mean-token-mean   mean_j S_j / max(1, |I_L(j)|)
+        seq-mean-token-sum    mean_j S_j
+        seq-mean-token-sum-norm  sum_j S_j / T
+    """
+    # fp32 at least: bf16 log-probs are upcast, a float64 reference stays float64.
+    dtype = torch.promote_types(log_prob.dtype, torch.float32)
+    high = high_mask.to(dtype)
+    low = low_mask.to(dtype)
+    adv = scalar_adv.to(dtype).reshape(-1, 1)
+    w = weights.to(dtype)
+    per_token = adv * w * log_prob.to(dtype) * high
+    seq_scores = per_token.sum(dim=-1)
+    n_tool = low.sum(dim=-1)
+    if loss_agg_mode == "token-mean":
+        agg = seq_scores.sum() / torch.clamp(n_tool.sum(), min=1.0)
+    elif loss_agg_mode == "seq-mean-token-mean":
+        agg = (seq_scores / torch.clamp(n_tool, min=1.0)).mean()
+    elif loss_agg_mode == "seq-mean-token-sum":
+        agg = seq_scores.mean()
+    elif loss_agg_mode == "seq-mean-token-sum-norm":
+        agg = seq_scores.sum() / low.shape[-1]
+    else:
+        raise ValueError(f"Invalid loss_agg_mode: {loss_agg_mode}")
+    assert tau > 0.0, f"AHO needs tau > 0, got {tau}"
+    loss = -(float(coef) / float(tau)) * agg
+
+    with torch.no_grad():
+        n_high = torch.clamp(high.sum(), min=1.0)
+        abs_w = (w.abs() * high)
+        diag = {
+            "aho_surrogate": float(loss.detach().item()),
+            "aho_omega_absmean": float((abs_w.sum() / n_high).item()),
+            "aho_omega_absmax": float(abs_w.max().item()),
+            "aho_weighted_frac": float((((w != 0) & (high > 0)).sum().float() / n_high).item()),
+        }
+    return loss, diag
 
 
 # --- exact K=1 hypergradient (Algorithm 1 with one follower step) --------------------

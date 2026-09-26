@@ -2,6 +2,13 @@
 
 Everything here exists for the response term. The shared two-phase GRPO update
 lives in DataParallelPhaseActor (alt_dp_actor.py); this class fills its hooks.
+
+Two estimators compute g_resp, selected by phases.response.estimator:
+  adjoint  the K-step reverse sweep over stashed follower records (Eqs. 10-11, C.4);
+  aho      arXiv:2607.28849's Hessian-free Boltzmann sensitivity, GRPO variant --
+           one surrogate on the leader batch, no records or snapshots
+           (_aho_response_gradient; math in echo_response's module docstring).
+Both leave p.grad = -g_resp for the base loop to accumulate -g_dir on top of.
 """
 import gc
 import logging
@@ -709,6 +716,75 @@ class DataParallelECHOActor(DataParallelPhaseActor):
         })
         return metrics, v_buf
 
+    def _aho_response_gradient(self, mini_batch, temperature, mini_batch_size,
+                               micro_batch_size_per_gpu, use_dataproto_batches,
+                               coef: float, tau: float, gamma: float):
+        """AHO estimator: leave ``p.grad = -g_resp`` from ONE pass over the leader batch.
+
+        Backwards ``echo_response.aho_response_surrogate`` on the leader batch's own
+        micro-batches (same partition as the direct term) with the same loss scaling the
+        base loop applies, so the accumulated gradient is the mini-batch's ``-g_resp`` in
+        the same units as ``-g_dir``. Every input is a batch tensor: the trainer's
+        ``_after_advantage`` put ``follower_scalar_advantages`` (A_L) and
+        ``aho_token_weights`` (omega) there; ``scalar_advantages`` (A_H) and both role
+        masks were already carried for the adjoint path.
+
+        Kept as a separate pass rather than folded into the direct loss so
+        ``_response_diagnostics`` can still read ``||g_resp||`` and its angle to ``g_dir``.
+        """
+        self.actor_optimizer.zero_grad(set_to_none=False)
+        micro_batches, mini_batch_seqs = self._leader_micro_batches(
+            mini_batch, micro_batch_size_per_gpu, use_dataproto_batches
+        )
+        if not self.config.use_dynamic_bsz:
+            self.gradient_accumulation = mini_batch_size // micro_batch_size_per_gpu
+
+        diags = {}
+        for micro in micro_batches:
+            if isinstance(micro, DataProto):
+                micro = {**micro.batch.to(get_torch_device().current_device()), **micro.non_tensor_batch}
+            else:
+                micro = micro.to(get_torch_device().current_device())
+            missing = [k for k in ("follower_scalar_advantages", "aho_token_weights", "scalar_advantages")
+                       if k not in micro]
+            assert not missing, f"AHO leader micro-batch is missing {missing}"
+
+            response_length = micro["responses"].size(1)
+            high = micro["high_level_loss_mask"][:, -response_length:]
+            low = micro["low_level_loss_mask"][:, -response_length:]
+            weights = micro["aho_token_weights"][:, -response_length:]
+            _, log_prob = self._forward_micro_batch(
+                micro_batch=micro, temperature=temperature, calculate_entropy=False
+            )
+            loss, diag = echo_response.aho_response_surrogate(
+                log_prob=log_prob,
+                scalar_adv=micro["scalar_advantages"],
+                weights=weights,
+                high_mask=high,
+                low_mask=low,
+                loss_agg_mode=self.config.loss_agg_mode,
+                coef=coef,
+                tau=tau,
+            )
+            if self.config.use_dynamic_bsz:
+                loss = loss * (micro["responses"].size(0) / mini_batch_seqs)
+            else:
+                loss = loss / self.gradient_accumulation
+            loss.backward()
+            for key, value in diag.items():
+                diags.setdefault(key, []).append(value)
+
+        params = echo_response.trainable_params(self.actor_module)
+        # The one full-size buffer this path allocates; _response_diagnostics reads it and
+        # _on_response_grad_consumed releases it before the optimizer step.
+        response_grad = echo_response.clone_grads(params)
+
+        metrics = {f"actor/{k}": (sum(v) / max(len(v), 1)) for k, v in diags.items()}
+        metrics["actor/aho_omega_absmax"] = max(diags.get("aho_omega_absmax", [0.0]))
+        metrics["actor/aho_tau"] = float(tau)
+        metrics["actor/response_blocks"] = float(len(micro_batches))
+        return metrics, response_grad
+
     def _response_diagnostics(self, response_grad):
         """Size of the response term against the direct one, without a second buffer.
 
@@ -742,8 +818,14 @@ class DataParallelECHOActor(DataParallelPhaseActor):
         phase adds the response term and applies the result to x (lines 12-14)."""
         m = data.meta_info
         response_enabled = bool(m.get("response_enabled", False))
+        estimator = str(m.get("response_estimator", "adjoint"))
         self._resp = {
             "enabled": response_enabled,
+            "estimator": estimator,
+            # AHO: tau is the follower's temperature (or the explicit override), gamma the
+            # per-tool-token discount; both resolved by the trainer.
+            "aho_tau": float(m.get("aho_tau", 0.0)),
+            "aho_gamma": float(m.get("aho_gamma", 1.0)),
             "coef": float(m.get("response_coef", 1.0)),
             "replay_fraction": float(m.get("response_replay_fraction", 1.0)),
             # The exact K=1 path. Both halves of Eq. (35), the optimizer Jacobian taken
@@ -752,7 +834,9 @@ class DataParallelECHOActor(DataParallelPhaseActor):
             "fd_rel": float(m.get("response_fd_rel", 2e-2)),
             "curvature": bool(m.get("response_curvature", False)),
             "group_aligned": bool(m.get("response_group_aligned", False)),
-            "stash_record": response_enabled and phase == "low_level",
+            # Only the adjoint estimator replays follower records; AHO needs nothing from
+            # the follower phase, so it stashes no records and pushes no weight snapshots.
+            "stash_record": response_enabled and phase == "low_level" and estimator == "adjoint",
             "do_response": response_enabled and phase == "high_level",
             # Algorithm 1 line 14 belongs to the ROUND STRUCTURE, not to the response
             # gradient: the adapted follower must be discarded and the leader step applied
@@ -767,8 +851,11 @@ class DataParallelECHOActor(DataParallelPhaseActor):
         g_fol and the Eq.-(47) surrogate, the reasoning mask for the Eq.-(48) score."""
         if not self._resp.get("enabled"):
             return []
-        return [k for k in ("high_level_loss_mask", "low_level_loss_mask", "scalar_advantages")
-                if k in data.batch.keys()]
+        keys = ["high_level_loss_mask", "low_level_loss_mask", "scalar_advantages"]
+        if self._resp.get("estimator") == "aho":
+            # A_L and omega, prepared by the trainer's _after_advantage on the leader batch.
+            keys += ["follower_scalar_advantages", "aho_token_weights"]
+        return [k for k in keys if k in data.batch.keys()]
 
     def _on_batch_selected(self, selected, data, phase):
         if not self._resp.get("stash_record"):
@@ -795,6 +882,15 @@ class DataParallelECHOActor(DataParallelPhaseActor):
             f"{len(dataloader)} mini-batches. Set ppo_mini_batch_size to the phase's "
             "prompt batch."
         )
+        if r["estimator"] == "aho":
+            # No g_fol, no records, no sweep: the Boltzmann sensitivity is a surrogate on
+            # the leader batch itself, evaluated at (x_t, y_K) like the direct term.
+            response_metrics, response_grad = self._aho_response_gradient(
+                dataloader[0], temperature, mini_batch_size, micro_batch_size_per_gpu,
+                use_dataproto_batches, coef=r["coef"], tau=r["aho_tau"], gamma=r["aho_gamma"],
+            )
+            metrics.update(response_metrics)
+            return response_grad, metrics
         # Stage 1 and the direct gradient are BOTH evaluated at the adapted point
         # w_1: v = grad_y U_H(x, y_1) and grad_x U_H(x, y_1) are what Algorithm 1
         # line 12 asks for. Only the response term moves back to w_0.

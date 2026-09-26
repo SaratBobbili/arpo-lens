@@ -66,6 +66,11 @@ wandb curve for π_θ.
 | `policy/fail_unclosed_tag` | Format failures from an unclosed tag. |
 | `policy/fail_no_boxed` | Format failures from a missing/malformed `\boxed{}`. |
 | `policy/fail_other` | Remaining format failures (ordering violations etc.). |
+| `policy/follower_return_mean` | Mean `R_L` (tool validity). On follower steps when `follower_return` is on; on leader steps too under `response_estimator: aho`. |
+| `policy/aho_follower_adv_zero_frac` | AHO: fraction of leader trajectories whose `A_L` is exactly 0 (zero-std `R_L` group or excised singleton). Those carry no response term. Batch-correct. |
+| `policy/aho_adv_product_mean` | AHO: mean of `A_H * A_L` over the leader batch — the sign the response term pushes with. Batch-correct. |
+| `policy/aho_weighted_reasoning_frac` | AHO: fraction of reasoning tokens with a non-zero weight (i.e. after the first tool call, in a row with `A_L != 0`). Batch-correct. |
+| `policy/aho_no_tool_traj_frac` | AHO: fraction of leader trajectories with no tool token at all (weight 0 throughout). Batch-correct. |
 | `policy/tools_total_calls` | `<search>` + `<python>` calls this step. **Rank-0 only** — see caveat below. |
 | `policy/tools_successful_calls` | Successful tool returns. **Rank-0 only.** |
 
@@ -101,6 +106,10 @@ entropy reg). Prefixed so HL and LL stay separable.
 | `<phase>/actor/opefo_lambda` | OPEFO λ* ∈ (−1,1) when `opefo.enabled`. |
 | `<phase>/actor/opefo_delta_H_net` | Masked sum of Theorem-1 ΔH. Toward 0 when balanced. |
 | `<phase>/actor/opefo_pos_mag` / `opefo_neg_mag` | Positive / \|negative\| ΔH masses for λ*. |
+| `high_level/actor/aho_surrogate` | AHO: the response surrogate `-(coef/tau) Σ A_H ω log π / N_tool`, mean over micro-batches (rank-0 via `meta_info`). |
+| `high_level/actor/aho_omega_absmean` / `aho_omega_absmax` | AHO: size of the per-token weight `ω = c_m A_L` on reasoning tokens. Grows with tool tokens before the token; scales with `A_L`. |
+| `high_level/actor/aho_weighted_frac` | AHO: fraction of reasoning tokens in the micro-batch with non-zero `ω`. |
+| `high_level/actor/aho_tau` | AHO: the temperature actually divided by (derived from the follower's entropy/KL coefficients unless `aho_tau` is set). |
 
 ---
 

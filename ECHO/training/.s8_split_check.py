@@ -50,8 +50,8 @@ for sub, base in ((RayECHOTrainer, RayAlternatingGRPOTrainer),
 # --- 2. hooks are defined in the base and overridden in the subclass -----------------
 print("=== 2. hooks ===")
 TRAINER_HOOKS = ["_validate_extra", "_rollout_meta_info", "_scorer_metric_kwargs",
-                 "_phase_meta_info", "_open_round", "_close_cycle", "_after_fit",
-                 "_next_batch_dict"]
+                 "_phase_meta_info", "_after_advantage", "_open_round", "_close_cycle",
+                 "_after_fit", "_next_batch_dict"]
 ACTOR_HOOKS = ["_update_begin", "_extra_select_keys", "_on_batch_selected",
                "_compute_response_gradient", "_should_zero_grad",
                "_on_response_grad_consumed", "_before_optimizer_step",

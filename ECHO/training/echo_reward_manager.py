@@ -63,6 +63,14 @@ class ECHORewardManager:
         # which is the pre-Algorithm-1 behavior.
         use_follower_return = bool(data.meta_info.get("use_follower_return", False)) if data.meta_info else False
         score_fn = compute_tool_score if (use_follower_return and phase == "low_level") else self.compute_score
+        # AHO estimator (phases.response.estimator=aho): the leader batch also needs R_L,
+        # because the response term contracts the follower's own advantage A_L against the
+        # task advantage A_H on the SAME trajectories. Scored alongside, never in place of,
+        # the task return, and stored under its own keys so the task scorer's
+        # score/format_valid/reason columns stay what _build_scorer_metrics expects.
+        compute_follower_score = (
+            bool(data.meta_info.get("compute_follower_score", False)) if data.meta_info else False
+        ) and phase == "high_level"
 
         for i in range(len(data)):
             data_item = data[i]  # DataProtoItem
@@ -114,6 +122,16 @@ class ECHORewardManager:
                     reward_extra_info[key].append(value)
             else:
                 reward = score
+
+            if compute_follower_score:
+                follower = compute_tool_score(
+                    data_source=data_source,
+                    solution_str=response_str,
+                    ground_truth=ground_truth,
+                    extra_info=extra_info,
+                )
+                reward_extra_info["follower_score"].append(float(follower["score"]))
+                reward_extra_info["follower_reason"].append(str(follower["reason"]))
 
             reward_tensor[i, valid_response_length - 1] = reward
 

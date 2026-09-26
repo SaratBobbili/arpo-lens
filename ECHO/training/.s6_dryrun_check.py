@@ -357,8 +357,18 @@ for name, profile in profiles.items():
 
     assert float(profile["hl_kl_loss_coef"]) == 0.0 and float(profile["ll_kl_loss_coef"]) == 0.0, \
         f"{name}: utilities carry no KL term"
-    assert profile["hl_entropy_enabled"] is False and profile["ll_entropy_enabled"] is False, \
-        f"{name}: lambda_ent H_tool should be off by default"
+    if profile.get("response_estimator", "adjoint") == "aho":
+        # AHO's identity is about the Boltzmann optimum of an ENTROPY-REGULARISED
+        # follower, so an aho profile must give the follower a temperature (or set
+        # aho_tau explicitly); the leader's regulariser stays off.
+        assert profile["hl_entropy_enabled"] is False, f"{name}: leader entropy should stay off"
+        assert (profile["ll_entropy_enabled"] is True and float(profile["ll_entropy_reg_coeff"]) > 0.0) \
+            or profile.get("aho_tau") is not None, f"{name}: estimator=aho needs a follower temperature"
+        assert profile.get("response_exact", False) is False, f"{name}: response_exact is adjoint-only"
+        assert profile["low_level_advantage_algorithm"] == "grpo", f"{name}: aho needs grpo follower advantages"
+    else:
+        assert profile["hl_entropy_enabled"] is False and profile["ll_entropy_enabled"] is False, \
+            f"{name}: lambda_ent H_tool should be off by default"
     assert profile["response_gradient"] is True, \
         f"{name}: the g_resp sweep should be on now that its seed survives the tool mask"
     # The sweep's transient buffers are what OOMed vLLM's wake_up() at 0.7.

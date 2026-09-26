@@ -67,6 +67,7 @@ VALID_LAUNCH_KEYS=(
     hl_entropy_enabled ll_entropy_enabled
     response_enabled response_gradient response_coef response_replay_fraction response_follower_return
     response_exact response_curvature response_group_aligned response_fd_rel hl_optimizer ll_optimizer
+    response_estimator aho_tau aho_gamma
     loss_agg_mode
     hl_opefo_enabled ll_opefo_enabled
     high_level_rollout_strategy low_level_rollout_strategy
@@ -208,6 +209,9 @@ ARGS=(
     phases.response.curvature="${RESPONSE_CURVATURE:-false}"
     phases.response.group_aligned="${RESPONSE_GROUP_ALIGNED:-false}"
     "phases.response.fd_rel=${RESPONSE_FD_REL:-2e-2}"
+    phases.response.estimator="${RESPONSE_ESTIMATOR:-adjoint}"
+    "phases.response.aho.tau=${AHO_TAU:-null}"
+    "phases.response.aho.gamma=${AHO_GAMMA:-1.0}"
     phases.high_level.opefo.enabled="${HL_OPEFO_ENABLED:-false}"
     phases.low_level.opefo.enabled="${LL_OPEFO_ENABLED:-false}"
     "phases.high_level.rollout.strategy=${HIGH_LEVEL_ROLLOUT_STRATEGY:-default}"

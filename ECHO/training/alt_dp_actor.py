@@ -206,6 +206,11 @@ class DataParallelPhaseActor(DataParallelPPOActor):
                 select_keys.append(_k)
         if entropy_loss_mask_key is not None and entropy_loss_mask_key not in select_keys:
             select_keys.append(entropy_loss_mask_key)
+        # Entropy advantage: the phase-owned format gate rides in as a per-sample tensor.
+        entropy_gate_key = "phase_format_valid"
+        use_entropy_gate = advantage_algorithm == "entropy" and entropy_gate_key in data.batch.keys()
+        if use_entropy_gate:
+            select_keys.append(entropy_gate_key)
         if self.config.use_kl_loss:
             select_keys.append("ref_log_prob")
 
@@ -307,8 +312,17 @@ class DataParallelPhaseActor(DataParallelPPOActor):
                         )
 
                     if needs_entropy_norm:
+                        entropy_for_adv = entropy
+                        if use_entropy_gate:
+                            # A sample that failed this phase's schema rows gets H_t = -1 on
+                            # every token BEFORE the pool statistics, so after the z-score its
+                            # tokens sit strictly below every passing token (entropy >= 0) and
+                            # the penalty is uniform over the trajectory. aepo/grpo carry the
+                            # -1 in the score instead and leave the entropy untouched.
+                            failed = (data[entropy_gate_key] < 0.5).unsqueeze(-1)
+                            entropy_for_adv = entropy.detach().masked_fill(failed, -1.0)
                         entropy_norm = compute_entropy_normalized(
-                            entropy=entropy,
+                            entropy=entropy_for_adv,
                             response_mask=response_mask,
                             normalization=entropy_normalization,
                             index=uid,
@@ -316,6 +330,22 @@ class DataParallelPhaseActor(DataParallelPPOActor):
                         advantages = resolve_advantage_signal(
                             advantage_algorithm, grpo_advantages, entropy_norm, entropy_alpha
                         )
+
+                    # Advantage stats on the tokens this update actually used (after any
+                    # entropy substitution / aepo rescaling), which the driver cannot see.
+                    with torch.no_grad():
+                        mask_b = response_mask.bool()
+                        adv_valid = advantages[mask_b]
+                        adv_stats = {
+                            "actor/advantage_mean": adv_valid.mean().item() if adv_valid.numel() else 0.0,
+                            "actor/advantage_std": adv_valid.std().item() if adv_valid.numel() > 1 else 0.0,
+                        }
+                        if use_entropy_gate:
+                            failed_tok = (data[entropy_gate_key] < 0.5).unsqueeze(-1) & mask_b
+                            adv_stats["actor/advantage_penalty_frac"] = (
+                                failed_tok.sum().item() / max(mask_b.sum().item(), 1)
+                            )
+                    append_to_dict(metrics, adv_stats)
 
                     if opefo_enabled:
                         delta_H = -advantages * flow_E
@@ -374,10 +404,7 @@ class DataParallelPhaseActor(DataParallelPPOActor):
                         entropy_loss = agg_loss(loss_mat=entropy_for_reg, loss_mask=entropy_loss_mask, loss_agg_mode=loss_agg_mode)
 
                         policy_loss = pg_loss - entropy_loss * entropy_coeff
-                        append_to_dict(metrics, {
-                            "actor/entropy_reg_loss": entropy_loss.detach().item(),
-                            "actor/entropy_reg_coef": float(entropy_coeff),
-                        })
+                        append_to_dict(metrics, {"actor/entropy_reg_loss": entropy_loss.detach().item()})
                     else:
                         policy_loss = pg_loss
 
@@ -389,7 +416,6 @@ class DataParallelPhaseActor(DataParallelPPOActor):
 
                         policy_loss = policy_loss + kl_loss * kl_loss_coef
                         metrics["actor/kl_loss"] = kl_loss.detach().item()
-                        metrics["actor/kl_coef"] = float(kl_loss_coef)
 
                     if self.config.use_dynamic_bsz:
                         loss = policy_loss * (responses.size(0) / mini_batch_seqs)
@@ -407,7 +433,12 @@ class DataParallelPhaseActor(DataParallelPPOActor):
                 response_grad = self._on_response_grad_consumed(response_grad, metrics)
                 self._before_optimizer_step(phase, metrics)
                 grad_norm = self._optimizer_step()
-                append_to_dict(metrics, {"actor/grad_norm": grad_norm.detach().item()})
+                append_to_dict(metrics, {
+                    "actor/grad_norm": grad_norm.detach().item(),
+                    # _optimizer_step skips the update on a non-finite norm with only a print;
+                    # this makes the skipped step visible on the dashboard.
+                    "actor/step_skipped": 0.0 if bool(torch.isfinite(grad_norm)) else 1.0,
+                })
                 self._after_optimizer_step(phase, grad_norm)
         self.actor_optimizer.zero_grad()
 

@@ -63,16 +63,11 @@ phases:
     # follower's own r_valid return (Eq. 2), one optimizer step per fresh group (C.3), and
     # the final re-adaptation (line 16). Independent of the response gradient below.
     enabled: true
-    # Score the follower phase by R_L (v10 Eq. 2 / the first surrogate of Eq. 32: tool
-    # validity) instead of the task return. null inherits `enabled`, which is the historical
-    # coupling; set it explicitly to vary this on its own.
-    #
-    # Worth separating because `enabled` above changes FOUR things at once -- the follower's
-    # reward, the follower discard, the round structure and the precondition for `gradient`.
-    # A run with all four flipped cannot attribute its result to any one of them, which is
-    # what made echo7B_sft1e8_rl1e-6-hypergrad-fix uninterpretable against the -r3 GRPO runs.
-    # false + enabled:true  -> Algorithm 1's structure, task return in both phases
-    # true  + enabled:false -> paper reward split, no round structure or response term
+    # RETIRED 2026-09-27 (must stay null; the trainer asserts). Scoring is phase-owned and
+    # algorithm-independent: both phases are scored by the task return (F1 of the boxed
+    # answer, or -1 on a schema failure in the tags that phase owns per
+    # rollout.mask_categories), on every family. The tool-validity R_L that this key used to
+    # select is gone, so hypergradient/AHO vs alt_grpo differ only in the leader's gradient.
     follower_return: null
     # The response term g_resp itself. ON: its terminal seed g_fol now survives the tool
     # mask (the unmasked per-trajectory scalar of v10 Eq. (30) is carried alongside the
@@ -206,12 +201,12 @@ phases:
     #              standing in for the optimum, so its accuracy is ||y_K - xi(x)|| (AHO
     #              Lemma 4.9); V -> A_L drops the state dependence of the value; the U(s)
     #              baseline is carried by A_L's group centring (query-level, not state-
-    #              level). R_L is gated on the whole response's format, so the reasoning
-    #              AFTER the last tool call is weighted too (terminal transition); the
-    #              reasoning BEFORE the first call is the follower's initial state and gets 0.
+    #              level). A_L is the group advantage of the leader batch scored under the
+    #              follower's schema rows (same task return, follower-owned gate); the
+    #              reasoning AFTER the last tool call is weighted too (terminal transition);
+    #              the reasoning BEFORE the first call is the follower's initial state and gets 0.
     #
-    #              Requires: follower_return on (A_L must be the follower's own advantage),
-    #              both advantage_algorithms grpo, opefo off, and tau > 0 (below).
+    #              Requires: both advantage_algorithms grpo, opefo off, and tau > 0 (below).
     estimator: adjoint
     aho:
       # tau in the 1/tau factor. null derives it from the follower's own regularisers --
@@ -220,9 +215,10 @@ phases:
       # is about. A number overrides it (printed at startup); with no follower entropy/KL
       # term at all the premise is nominal and tau is a scale knob next to `coef`.
       tau: null
-      # Discount per tool TOKEN (the follower MDP's step) in c_m = sum_{k=1}^{j(m)} gamma^k.
-      # 1.0 makes c_m the plain count of tool tokens before the reasoning token; the paper's
-      # 0.99 was per environment step in continuous control.
+      # Discount per tool TOKEN (the follower MDP's step): c_m = gamma^{j(m)} for reasoning
+      # tokens with j(m) >= 1 tool tokens before them, 0 before the first call. 1.0 makes
+      # c_m an indicator -- each segment counted once (the telescoped sum_h (W - U)); the
+      # paper's 0.99 was per environment step in continuous control.
       gamma: 1.0
   high_level:
     # Number of outer cycles. Prompt batch = (len(train_dataset) // num_iters) floored to a

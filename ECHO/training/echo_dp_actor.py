@@ -797,13 +797,16 @@ class DataParallelECHOActor(DataParallelPhaseActor):
         group = getattr(self.actor_module, "process_group", None)
         total = echo_response.grads(params)
 
-        n_resp_sq = echo_response.dot(response_grad, response_grad, group)
-        n_tot_sq = echo_response.dot(total, total, group)
-        cross = echo_response.dot(response_grad, total, group)
-
-        n_dir_sq = max(n_tot_sq - 2.0 * cross + n_resp_sq, 0.0)
+        # g_dir = total - g_resp is formed elementwise, per shard, before any reduction.
+        # Recovering ||g_dir||^2 as ||total||^2 - 2<resp,total> + ||resp||^2 cancels two
+        # fp32 numbers of ~1e7 when the response term is 1e3x the direct one, and on the
+        # 2026-09-25 AHO runs that gave direct_norm in {0, 0.707, 1, 1.225} -- sqrt of the
+        # rounding floor -- and a ratio of 0.000 for a term that was in fact dominant.
+        n_resp_sq, n_dir_sq, resp_dot_dir = echo_response.direct_decomposition(
+            response_grad, total, group
+        )
         n_resp, n_dir = n_resp_sq**0.5, n_dir_sq**0.5
-        cos = (cross - n_resp_sq) / (n_resp * n_dir) if n_resp > 0 and n_dir > 0 else 0.0
+        cos = resp_dot_dir / (n_resp * n_dir) if n_resp > 0 and n_dir > 0 else 0.0
         return {
             "actor/response_norm": n_resp,
             "actor/direct_norm": n_dir,

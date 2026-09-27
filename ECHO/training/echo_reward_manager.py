@@ -22,7 +22,6 @@ import torch
 from verl import DataProto
 from verl.trainer.ppo.reward import get_custom_reward_fn
 from verl.utils.reward_score import default_compute_score
-from verl.utils.reward_score.deep_research_echo import compute_tool_score
 from verl.workers.reward_manager import BatchRewardManager, NaiveRewardManager, PrimeRewardManager
 
 # Per-sample rollout counters R_L needs. Read off non_tensor_batch rather than the
@@ -57,17 +56,17 @@ class ECHORewardManager:
         phase = data.meta_info.get("phase") if data.meta_info else None
         mask_categories = data.meta_info.get("mask_categories") if data.meta_info else None
 
-        # ECHO Algorithm 1 scores the two utilities with different returns: u_L by the
-        # tool-level r_valid (Eq. 2) and u_H by the task return r_task (Eq. 3). Without
-        # the response term this channel is off and both phases share the task score,
-        # which is the pre-Algorithm-1 behavior.
-        use_follower_return = bool(data.meta_info.get("use_follower_return", False)) if data.meta_info else False
-        score_fn = compute_tool_score if (use_follower_return and phase == "low_level") else self.compute_score
-        # AHO estimator (phases.response.estimator=aho): the leader batch also needs R_L,
-        # because the response term contracts the follower's own advantage A_L against the
-        # task advantage A_H on the SAME trajectories. Scored alongside, never in place of,
-        # the task return, and stored under its own keys so the task scorer's
-        # score/format_valid/reason columns stay what _build_scorer_metrics expects.
+        # One scorer for both phases and every algorithm family: F1 of the boxed answer,
+        # or -1 on a schema failure in the tags the phase being scored owns. The phase
+        # reaches the scorer through extra_info["phase"] (set below); nothing about the
+        # response term, the estimator or the round structure changes how a phase is scored.
+        score_fn = self.compute_score
+        # AHO estimator (phases.response.estimator=aho): the leader batch also needs the
+        # follower's score, because the response term contracts the follower's advantage
+        # A_L against the task advantage A_H on the SAME trajectories. It is the same
+        # scorer run under the follower's phase rows, scored alongside (never in place of)
+        # the leader's, and stored under its own keys so the leader's score/format_valid/
+        # reason columns stay what _build_scorer_metrics expects.
         compute_follower_score = (
             bool(data.meta_info.get("compute_follower_score", False)) if data.meta_info else False
         ) and phase == "high_level"
@@ -124,14 +123,15 @@ class ECHORewardManager:
                 reward = score
 
             if compute_follower_score:
-                follower = compute_tool_score(
+                follower = score_fn(
                     data_source=data_source,
                     solution_str=response_str,
                     ground_truth=ground_truth,
-                    extra_info=extra_info,
+                    extra_info={**extra_info, "phase": "low_level"},
                 )
                 reward_extra_info["follower_score"].append(float(follower["score"]))
                 reward_extra_info["follower_reason"].append(str(follower["reason"]))
+                reward_extra_info["follower_phase_format_valid"].append(bool(follower["phase_format_valid"]))
 
             reward_tensor[i, valid_response_length - 1] = reward
 

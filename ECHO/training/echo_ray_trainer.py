@@ -113,11 +113,6 @@ class RayECHOTrainer(RayAlternatingGRPOTrainer):
             "value function; phases.low_level.advantage_algorithm must be grpo (the yaml "
             "default is `entropy`, which makes A_L = alpha * H_norm and the derivation false)."
         )
-        assert self._follower_return_enabled(), (
-            "estimator=aho contracts A_L, the follower's advantage on R_L, against A_H. With "
-            "phases.response.follower_return off the follower optimised R_H and A_L is not "
-            "the advantage of the objective whose optimum the Boltzmann identity describes."
-        )
         for name, phase_cfg in (("high_level", high), ("low_level", low)):
             opefo = phase_cfg.get("opefo", None)
             assert not (opefo is not None and bool(opefo.get("enabled", False))), (
@@ -188,24 +183,6 @@ class RayECHOTrainer(RayAlternatingGRPOTrainer):
             return False
         return bool(cfg.get("curvature", False))
 
-    def _follower_return_enabled(self) -> bool:
-        """Whether the follower phase is scored by R_L (Eq. 2) rather than the task return.
-
-        v10 Eq. (32): the first surrogate adapts the tool policy with the TOOL-level return,
-        while both leader surrogates use the task return. This is split out from
-        `phases.response.enabled` because that one flag also gates the round structure, the
-        follower discard and the response term -- four changes in a single switch, which
-        makes any A/B against a plain-GRPO run uninterpretable. Null inherits `enabled`, so
-        existing launch configs behave exactly as before.
-        """
-        cfg = self._response_cfg()
-        if cfg is None:
-            return False
-        value = cfg.get("follower_return", None)
-        if value is None:
-            return self._response_enabled()
-        return bool(value)
-
     def _validate_response_config(self) -> None:
         """Algorithm 1 takes one update per fresh group; the code must too.
 
@@ -215,16 +192,12 @@ class RayECHOTrainer(RayAlternatingGRPOTrainer):
         stashed-record-to-substep correspondence the reverse sweep relies on would break.
         Requiring one step per iteration keeps K = phases.low_level.num_iters exactly.
         """
-        if self._response_gradient_enabled() and not self._follower_return_enabled():
-            # Eq. (33)'s g_grp_L is built from the follower's OWN advantages. Scoring the
-            # follower phase by the task return instead makes the replayed surrogate a
-            # different object from the update it is supposed to stand for.
-            print(
-                "[echo] WARNING: phases.response.gradient is on but phases.response."
-                "follower_return is off, so the response term contracts against task-return "
-                "advantages rather than R_L. This is not Eq. (33); the run is measuring "
-                "something else."
-            )
+        cfg = self._response_cfg()
+        assert cfg is None or cfg.get("follower_return", None) is None, (
+            "phases.response.follower_return is retired (2026-09-27): scoring is phase-owned "
+            "and algorithm-independent, so the follower is scored by the task return under "
+            "its own schema rows on every family. Remove the key."
+        )
         if not self._response_enabled():
             return
         ppo_epochs = int(self.config.actor_rollout_ref.actor.get("ppo_epochs", 1))
@@ -347,16 +320,11 @@ class RayECHOTrainer(RayAlternatingGRPOTrainer):
         self._validate_response_config()
 
     def _rollout_meta_info(self, phase_name: str) -> dict:
-        """Algorithm 1 scores u_L by r_valid (Eq. 2) and u_H by r_task (Eq. 3). Off, both
-        phases share the task score, which is the pre-Algorithm-1 behavior."""
+        """Scoring is the same on every family; the only extra is AHO's second pass, which
+        scores the leader batch under the follower's schema rows as well (for A_L)."""
         return {
-            "use_follower_return": self._follower_return_enabled(),
-            # AHO: the leader batch is scored by R_L too (alongside the task return).
             "compute_follower_score": self._response_aho_enabled() and phase_name == "high_level",
         }
-
-    def _scorer_metric_kwargs(self, phase_name: str) -> dict:
-        return {"follower_return": self._follower_return_enabled() and phase_name == "low_level"}
 
     def _phase_meta_info(self, phase_name: str) -> dict:
         response_cfg = self._response_cfg()
@@ -383,7 +351,7 @@ class RayECHOTrainer(RayAlternatingGRPOTrainer):
 
         Runs after _apply_tool_failure_before_grpo and compute_advantage, so an excised
         sample already carries its fresh uid (a singleton group, hence A_L = 0) and a
-        demoted one already has R_L = 0 through the format gate. Everything the actor's
+        demoted one already carries its follower-side format penalty. Everything the actor's
         surrogate needs is then a plain batch tensor that survives micro-batching.
         """
         if not (self._response_aho_enabled() and phase_name == "high_level"):
@@ -412,14 +380,14 @@ class RayECHOTrainer(RayAlternatingGRPOTrainer):
             low_f = low.to(torch.float32)
             n_high = torch.clamp(high_f.sum(), min=1.0)
             metrics = {
-                "policy/aho_follower_adv_zero_frac": float((follower_adv.reshape(-1) == 0).float().mean().item()),
-                "policy/aho_no_tool_traj_frac": float((low_f.sum(dim=-1) == 0).float().mean().item()),
-                "policy/aho_weighted_reasoning_frac": float((((weights != 0) & (high_f > 0)).sum() / n_high).item()),
+                "high_level/aho/follower_adv_zero_frac": float((follower_adv.reshape(-1) == 0).float().mean().item()),
+                "high_level/aho/no_tool_traj_frac": float((low_f.sum(dim=-1) == 0).float().mean().item()),
+                "high_level/aho/weighted_reasoning_frac": float((((weights != 0) & (high_f > 0)).sum() / n_high).item()),
             }
             task_adv = phase_batch.batch.get("scalar_advantages", None)
             if task_adv is not None:
                 product = task_adv.reshape(-1).to(torch.float32) * follower_adv.reshape(-1)
-                metrics["policy/aho_adv_product_mean"] = float(product.mean().item())
+                metrics["high_level/aho/adv_product_mean"] = float(product.mean().item())
         return metrics
 
     def _next_batch_dict(self, phase_name: str):

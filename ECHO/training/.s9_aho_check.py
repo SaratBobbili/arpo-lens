@@ -75,7 +75,7 @@ def loop_weights(gamma):
             if ch != "H":
                 continue
             j = sum(1 for q in range(p) if row[q] == "L")
-            c = sum(gamma ** k for k in range(1, j + 1))
+            c = gamma ** j if j >= 1 else 0.0
             out[i, p] = c * A_L[i, 0]
     return out
 
@@ -88,14 +88,16 @@ for gamma in (1.0, 0.9):
 
 w1 = echo_response.aho_token_weights(high, low, A_L, gamma=1.0)
 assert torch.all(w1[1] == 0), "a no-tool trajectory must carry no response weight"
-assert torch.all(w1[2, :3] == 0) and torch.allclose(w1[2, 3:6], torch.full((3,), 3 * -0.5)), \
-    "reasoning after a 3-token call gets c_m = 3; nothing before the first call"
-assert torch.allclose(w1[0, 16:19], torch.full((3,), 4 * 0.7)), \
-    "post-last-tool reasoning is a terminal transition and gets c_m = |I_L| = 4"
-assert torch.allclose(w1[0, 10:12], torch.full((2,), 3 * 0.7)), "between the calls: 3 tool tokens before"
+assert torch.all(w1[2, :3] == 0) and torch.allclose(w1[2, 3:6], torch.full((3,), -0.5)), \
+    "reasoning after a 3-token call gets c_m = 1 (counted once); nothing before the first call"
+assert torch.allclose(w1[0, 16:19], torch.full((3,), 0.7)), \
+    "post-last-tool reasoning is a terminal transition and gets c_m = 1 like any other"
+assert torch.allclose(w1[0, 10:12], torch.full((2,), 0.7)), "between the calls: c_m = 1, not the tool-token count"
 assert torch.all(w1[3, 11:] == 0) and torch.all(w1[4, :4] == 0), "padding and result/tag spans are 0"
 assert torch.all((w1 != 0) <= (high > 0)), "weights live on the reasoning mask only"
-print("  conventions: pre-first-tool 0, terminal segment c_m = |I_L|, no-tool row 0, off-mask 0")
+w9 = echo_response.aho_token_weights(high, low, A_L, gamma=0.9)
+assert torch.allclose(w9[0, 10:12], torch.full((2,), 0.9 ** 3 * 0.7)), "gamma < 1: gamma^{j(m)}, not a partial sum"
+print("  conventions: pre-first-tool 0, every later token c_m = gamma^j(m), no-tool row 0, off-mask 0")
 
 # --- 2. the surrogate's gradient ----------------------------------------------------
 print("=== 2. surrogate gradient ===")
@@ -250,7 +252,7 @@ def _must_fail(overrides, needle):
 _must_fail(["phases.low_level.entropy.enabled=false"], "tau > 0")
 _must_fail(["phases.low_level.advantage_algorithm=entropy"], "low_level.advantage_algorithm")
 _must_fail(["phases.high_level.advantage_algorithm=aepo"], "high_level.advantage_algorithm")
-_must_fail(["phases.response.follower_return=false"], "follower_return")
+_must_fail(["phases.response.follower_return=false"], "retired")
 _must_fail(["phases.response.exact=true"], "phases.response.exact")
 _must_fail(["phases.response.curvature=true"], "phases.response.curvature")
 _must_fail(["phases.low_level.opefo.enabled=true"], "opefo")
@@ -283,7 +285,7 @@ print("  actor: aho stashes nothing, skips g_fol, selects A_L and omega; trainer
 
 # The base tree still knows nothing about the response path: no identifier, attribute or
 # config access mentions the estimator. Metric NAMES (strings) are allowed there, exactly
-# as the base already owns "actor/response_norm" in _PHASE_OWNED_KEYS.
+# as the base's _route_actor_metrics already routes "actor/response_*" and "actor/aho_*".
 import ast
 
 for fname in ("alt_ray_trainer.py", "alt_dp_actor.py"):

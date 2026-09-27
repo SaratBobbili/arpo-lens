@@ -16,8 +16,10 @@ prompt_batch_size: 128
 #
 # The term: an entropy-regularised follower's optimum is Boltzmann, so its sensitivity to
 # the leader is (grad_x Q - grad_x V)/tau with no Hessian (AHO Thm 3.3). With the GRPO
-# substitution V -> A_L, the whole response term is one surrogate on the leader batch:
-#   reinforce each reasoning token with weight  A_H * A_L * (tool tokens before it) / tau
+# substitution V -> A_L and the telescoped sum over follower steps (deterministic LLM
+# transitions; echo_response.py docstring), the whole response term is one surrogate on
+# the leader batch:
+#   reinforce each reasoning token after the first tool call with weight  coef * A_H * A_L / tau
 # One extra leader-batch pass per round instead of 1 + 2K passes and K host snapshots.
 # It targets the EXACT response xi(x), evaluated at y_K -- its accuracy is ||y_K - xi(x)||.
 #
@@ -74,7 +76,7 @@ checkpoint_contents: "[model,extra]"
 resume_mode: disable
 
 shared_prompt_stream: true
-total_epochs: 4
+total_epochs: 5
 
 norm_adv_by_std_in_grpo: off
 
@@ -142,17 +144,22 @@ ll_aepo_entropy_weight: 0.2
 response_enabled: true
 # The g_resp term itself; the estimator below decides how it is computed.
 response_gradient: true
-# AHO: the Hessian-free Boltzmann-sensitivity estimator, GRPO variant. Requires
-# follower_return (inherited from response_enabled), grpo advantages in both phases and
+# AHO: the Hessian-free Boltzmann-sensitivity estimator, GRPO variant. Requires grpo
+# advantages in both phases and
 # tau > 0 (ll_entropy_* above). Asserted at startup.
 response_estimator: aho
-# Read on this path: scale on the term, next to 1/tau. Untuned; set from
-# high_level/actor/response_to_direct_ratio and response_direct_cosine after the first
-# leader step.
-response_coef: 1.0
+# Read on this path: scale on the term, next to 1/tau; coef/tau is the one effective
+# number (the paper's experiments sit at 1/tau = 0.01 with a 0/1 leader label). The
+# 2026-09-25 runs at coef 1.0 had ||g_resp|| = 1700-3900 against a direct gradient of ~1,
+# with the tool-token count (~400 per weighted token) multiplying the weights. The count
+# is gone; what is left at coef 1.0 is estimated at ~3-30 in norm, so 0.1 aims the ratio
+# at roughly 0.3-3. response_to_direct_ratio is now computed without cancellation (see
+# _response_diagnostics) and is the number to correct this by after the first leader step.
+response_coef: 0.1
 # null: tau = ll_entropy_reg_coeff (+ ll_kl_loss_coef). A number overrides it.
 aho_tau: null
-# Discount per tool token in the count of tool tokens before a reasoning token.
+# Discount per tool token: c_m = gamma^{j(m)} on reasoning tokens with j(m) >= 1 tool
+# tokens before them (an indicator at 1.0). Never a count.
 aho_gamma: 1.0
 # Adjoint-only knobs, asserted off / not read under response_estimator: aho.
 response_exact: false

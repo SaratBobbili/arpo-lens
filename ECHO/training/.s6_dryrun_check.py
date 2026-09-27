@@ -22,7 +22,7 @@ from torch import nn
 
 from training import echo_response
 from training.echo_ray_trainer import RayECHOTrainer
-from verl.utils.reward_score.deep_research_echo import compute_tool_score
+from verl.utils.reward_score.deep_research_echo import compute_score, format_failures
 
 CONFIG_DIR = os.path.join(ECHO_TOP, "training", "config")
 
@@ -151,30 +151,58 @@ step_at = loop.index("grad_norm = self._optimizer_step()")
 assert resp_at < discard_at, "diagnostics read the response buffer before it is released"
 assert discard_at < step_at, "y_K must be discarded BEFORE the leader optimizer step"
 
-# --- 4. R_L: tool validity, gated on the schema ---------------------------------------
+# --- 4. one scorer, phase-owned format gate ------------------------------------------
+#
+# Both phases are scored by the task return (F1 of the boxed answer, -1 on a schema failure
+# in the tags that phase owns). extra_info["phase"] picks the rows; nothing about the
+# estimator or the round structure reaches the scorer.
 GOOD = (
     "<think> Need a lookup. </think><tool> use search </tool><search> q </search>"
     "<result> r </result><think> Done. </think><tool> no more tools </tool>"
     "<answer>\\boxed{42}</answer>"
 )
-r = compute_tool_score("t", GOOD, "42", {"tool_calls_made": 4, "tool_calls_succeeded": 3})
-assert r["format_valid"] and abs(r["score"] - 0.75) < 1e-9, r
+HI, LO = {"phase": "high_level"}, {"phase": "low_level"}
+assert format_failures(GOOD) == []
+assert compute_score("t", GOOD, "42", HI)["score"] == 1.0 and compute_score("t", GOOD, "42", LO)["score"] == 1.0
+# same trajectory, wrong ground truth: both phases read the same F1.
+assert compute_score("t", GOOD, "not-42", HI)["score"] == 0 and compute_score("t", GOOD, "not-42", LO)["score"] == 0
 
-r = compute_tool_score("t", GOOD, "42", {"tool_calls_made": 2, "tool_calls_succeeded": 2})
-assert r["score"] == 1.0, r
-
-r = compute_tool_score("t", GOOD, "42", {"tool_calls_made": 0, "tool_calls_succeeded": 0})
-assert r["score"] == 0.0 and r["no_tool_calls"], r
-
-r = compute_tool_score("t", "no schema here at all", "42", {"tool_calls_made": 4, "tool_calls_succeeded": 4})
-assert r["score"] == 0.0 and not r["format_valid"], r
-
-# Missing counters must not crash the scorer; they read as zero.
-r = compute_tool_score("t", GOOD, "42", {})
-assert r["score"] == 0.0 and r["no_tool_calls"], r
-
-# R_L must be independent of the task answer: same trajectory, wrong ground truth.
-assert compute_tool_score("t", GOOD, "not-42", {"tool_calls_made": 4, "tool_calls_succeeded": 3})["score"] == 0.75
+UNCLOSED_TOOL = GOOD.replace("<tool> no more tools </tool>", "<tool> no more tools")
+r_h, r_l = compute_score("t", UNCLOSED_TOOL, "42", HI), compute_score("t", UNCLOSED_TOOL, "42", LO)
+assert r_h["score"] == 1.0 and r_h["phase_format_valid"] and not r_h["format_valid"], r_h
+assert r_l["score"] == -1 and not r_l["phase_format_valid"] and "not closed" in r_l["reason"], r_l
+NO_BOXED = GOOD.replace("\\boxed{42}", "42")
+r_h, r_l = compute_score("t", NO_BOXED, "42", HI), compute_score("t", NO_BOXED, "42", LO)
+assert r_h["score"] == -1 and "boxed" in r_h["reason"], r_h
+assert r_l["score"] == 0 and r_l["phase_format_valid"] and not r_l["format_valid"], r_l  # no answer to grade
+NO_ANSWER = GOOD.split("<answer>")[0]
+assert compute_score("t", NO_ANSWER, "42", HI)["score"] == -1
+assert compute_score("t", NO_ANSWER, "42", LO)["score"] == 0
+SEARCH_NO_TOOL = GOOD.replace("<tool> use search </tool>", "")
+assert compute_score("t", SEARCH_NO_TOOL, "42", HI)["score"] == 1.0
+assert compute_score("t", SEARCH_NO_TOOL, "42", LO)["score"] == -1
+UNSERVED_CALL = "<think> a </think><tool> b </tool><search> q </search>"  # terminated after the budget notice
+assert compute_score("t", UNSERVED_CALL, "42", LO)["score"] == -1 and compute_score("t", UNSERVED_CALL, "42", HI)["score"] == -1
+CHAINED = (
+    "<think> a </think><tool> b </tool><search> q </search><result> r </result>"
+    "<tool> c, chained </tool><python> 1 </python><result> 1 </result>"
+    "<think> d </think><tool> e </tool><answer>\\boxed{42}</answer>"
+)
+assert format_failures(CHAINED) == [] and abs(compute_score("t", CHAINED, "42", LO)["score"] - 1.1) < 1e-9  # search+python bonus
+THINK_ANSWER = "<think> a </think><answer>\\boxed{42}</answer>"
+assert compute_score("t", THINK_ANSWER, "42", HI)["score"] == -1 and compute_score("t", THINK_ANSWER, "42", LO)["score"] == 1.0
+TOOL_FIRST = GOOD.replace("<think> Need a lookup. </think>", "")
+assert compute_score("t", TOOL_FIRST, "42", HI)["score"] == 1.0 and compute_score("t", TOOL_FIRST, "42", LO)["score"] == -1
+UNCLOSED_RESULT = "<think> a </think><tool> b </tool><search> q </search><result> r"
+assert compute_score("t", UNCLOSED_RESULT, "42", LO)["score"] == 0  # env text, no answer yet
+assert compute_score("t", UNCLOSED_RESULT, "42", HI)["score"] == -1
+# mask_categories overrides the ownership: hand <tool> to the leader and the gate follows.
+assert compute_score("t", UNCLOSED_TOOL, "42", {**LO, "mask_categories": {"tool": "high"}})["score"] == 1.0
+assert compute_score("t", UNCLOSED_TOOL, "42", {**HI, "mask_categories": {"tool": "high"}})["score"] == -1
+# whole-response failures gate both; a missing phase defaults to the leader's rows.
+assert compute_score("t", "", "42", HI)["score"] == -1 and compute_score("t", "", "42", LO)["score"] == -1
+assert compute_score("t", NO_ANSWER, "42", {})["score"] == -1
+print("  4. one scorer, phase-owned gate: leader ignores tool-side failures, follower ignores answer-side")
 
 # --- 4b. the terminal seed g_fol must survive the tool mask ---------------------------
 #

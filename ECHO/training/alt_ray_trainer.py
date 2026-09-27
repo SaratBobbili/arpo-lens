@@ -58,120 +58,52 @@ class RayAlternatingGRPOTrainer(RayPPOTrainer):
     _PHASE_NAMES = ("low_level", "high_level")
     _PHASE_MASK_KEYS = {"low_level": "low_level_loss_mask", "high_level": "high_level_loss_mask"}
 
-    # Phase-owned optimizer signals only (prefixed high_level/|low_level/).
-    _PHASE_OWNED_KEYS = frozenset({
-        "actor/lr",
-        "actor/pg_loss",
-        "actor/grad_norm",
-        "actor/entropy_reg_loss",
-        "actor/entropy_reg_coef",
-        "actor/opefo_lambda",
-        "actor/opefo_delta_H_net",
-        "actor/opefo_pos_mag",
-        "actor/opefo_neg_mag",
-        # Response term (Eqs. 15-16). response_to_direct_ratio is the empirical content of
-        # Proposition 1: how far the frozen-response stationary point sits from x*.
-        "actor/response_norm",
-        "actor/direct_norm",
-        "actor/response_to_direct_ratio",
-        "actor/response_direct_cosine",
-        "actor/response_c_mean",
-        "actor/response_c_std",
-        "actor/response_blocks",
-        "actor/follower_direction_pg_loss",
-        "actor/follower_discarded",
-        # AHO estimator (phases.response.estimator=aho): the surrogate's own numbers.
-        "actor/aho_surrogate",
-        "actor/aho_omega_absmean",
-        "actor/aho_omega_absmax",
-        "actor/aho_weighted_frac",
-        "actor/aho_tau",
-        # Post-response allocator state. vLLM's wake_up() maps physical pages, so what
-        # matters for the next generation is what is left RESERVED here, not allocated.
-        "actor/response_mem_reserved_gb",
-        "actor/response_mem_allocated_gb",
-    })
-
-    _ACTOR_TO_POLICY = {
-        "actor/ppo_kl": "policy/ppo_kl",
-        "actor/pg_clipfrac": "policy/pg_clipfrac",
+    # ---- metric layout (2026-09-27) --------------------------------------------------
+    # Keys are namespaced by what the number is computed on, not by which phase's step it
+    # landed in. The policy is one object and every rollout is a full trajectory from it,
+    # so trajectory- and policy-level numbers are ONE dense series each, logged every step
+    # with train/phase (0 follower, 1 leader) as the marker:
+    #   reward/*   reward_mean, f1_mean, whole-schema format_valid_rate, fail_* buckets,
+    #              in-group std / zero-std fraction (raw and _post the GRPO adjustment)
+    #   rollout/*  response length, tool calls, budget exhaustion, no-tool rate, infra excision
+    #   policy/*   entropy of the pre-update policy on the two token populations
+    # Only numbers whose value depends on the phase's mask, gate or advantage rule carry
+    # the phase prefix:
+    #   {phase}/reward_mean, {phase}/gate_pass_rate, {phase}/budget_*   (gate-dependent)
+    #   {phase}/actor/*      loss, grad norm, clip stats, advantage stats from the update
+    #   high_level/response/* and high_level/aho/*   leader-only estimator diagnostics
+    # val-core/*, val-aux/*, perf/*, timing_s/* and train/* are shared as before.
+    _ACTOR_DROPPED = frozenset({"entropy_reg_coef", "kl_coef", "aho_tau"})
+    _RESPONSE_RENAMES = {
+        "response_norm": "norm",
+        "direct_norm": "direct_norm",
+        "response_to_direct_ratio": "ratio",
+        "response_direct_cosine": "cosine",
     }
 
-    # WARNING: these come from the rollout's meta_info, and DataProto.concat keeps meta_info from
-    # rank 0 only (verl/protocol.py:710), so they report a SINGLE data-parallel shard, not the
-    # batch. Treat them as relative trends only. policy/tool_calls_per_traj_mean and
-    # policy/budget_exhausted_rate are computed from per-sample arrays and are batch-correct.
-    _TOOL_TO_POLICY = {
-        "tools/total_calls": "policy/tools_total_calls",
-        "tools/successful_calls": "policy/tools_successful_calls",
-    }
-
-    # JSONL dump spec: phase-owned under {phase}/, shared health under policy/.
-    _LOGGING_SPEC = {
-        "low_level": [
-            ("pg_loss.jsonl", "actor/pg_loss"),
-            ("entropy_reg_loss.jsonl", "actor/entropy_reg_loss"),
-            ("grad_norm.jsonl", "actor/grad_norm"),
-            ("opefo_lambda.jsonl", "actor/opefo_lambda"),
-            ("opefo_delta_H_net.jsonl", "actor/opefo_delta_H_net"),
-            ("entropy_phase_mask.jsonl", "actor/entropy_phase_mask"),
-        ],
-        "high_level": [
-            ("pg_loss.jsonl", "actor/pg_loss"),
-            ("entropy_reg_loss.jsonl", "actor/entropy_reg_loss"),
-            ("grad_norm.jsonl", "actor/grad_norm"),
-            ("opefo_lambda.jsonl", "actor/opefo_lambda"),
-            ("opefo_delta_H_net.jsonl", "actor/opefo_delta_H_net"),
-            ("entropy_phase_mask.jsonl", "actor/entropy_phase_mask"),
-            ("response_norm.jsonl", "actor/response_norm"),
-            ("response_to_direct_ratio.jsonl", "actor/response_to_direct_ratio"),
-            ("response_direct_cosine.jsonl", "actor/response_direct_cosine"),
-            ("response_c_mean.jsonl", "actor/response_c_mean"),
-            ("response_c_std.jsonl", "actor/response_c_std"),
-            ("response_mem_reserved_gb.jsonl", "actor/response_mem_reserved_gb"),
-            ("aho_surrogate.jsonl", "actor/aho_surrogate"),
-            ("aho_omega_absmean.jsonl", "actor/aho_omega_absmean"),
-        ],
-        "policy": [
-            ("reward.jsonl", "reward_mean"),
-            ("format_penalty.jsonl", "bad_format_rate"),
-            ("in_group_reward_std.jsonl", "in_group_reward_std"),
-            ("format_valid_rate.jsonl", "format_valid_rate"),
-            ("f1_mean.jsonl", "f1_mean"),
-            ("no_tool_rate.jsonl", "no_tool_rate"),
-            ("advantage_std.jsonl", "advantage_std"),
-            ("ppo_kl.jsonl", "ppo_kl"),
-            ("pg_clipfrac.jsonl", "pg_clipfrac"),
-            ("response_length_mean.jsonl", "response_length_mean"),
-            ("response_length_clip_ratio.jsonl", "response_length_clip_ratio"),
-            ("tools_total_calls.jsonl", "tools_total_calls"),
-            ("tools_successful_calls.jsonl", "tools_successful_calls"),
-            ("entropy.jsonl", "entropy"),
-            ("group_zero_std_frac.jsonl", "group_zero_std_frac"),
-            ("budget_exhausted_rate.jsonl", "budget_exhausted_rate"),
-            ("tool_calls_per_traj_mean.jsonl", "tool_calls_per_traj_mean"),
-            ("fail_answer_count_0.jsonl", "fail_answer_count_0"),
-            ("fail_unclosed_tag.jsonl", "fail_unclosed_tag"),
-            ("fail_no_boxed.jsonl", "fail_no_boxed"),
-            ("fail_other.jsonl", "fail_other"),
-            ("follower_return_mean.jsonl", "follower_return_mean"),
-            ("aho_follower_adv_zero_frac.jsonl", "aho_follower_adv_zero_frac"),
-            ("aho_adv_product_mean.jsonl", "aho_adv_product_mean"),
-            ("aho_weighted_reasoning_frac.jsonl", "aho_weighted_reasoning_frac"),
-        ],
-    }
-
-    @staticmethod
-    def _prefix_phase_owned(metrics_dict: dict, phase_prefix: str) -> dict:
-        return {
-            f"{phase_prefix}{key}": value
-            for key, value in metrics_dict.items()
-            if key in RayAlternatingGRPOTrainer._PHASE_OWNED_KEYS
-        }
-
-    @staticmethod
-    def _remap_to_policy(metrics_dict: dict, mapping: dict) -> dict:
-        return {dst: metrics_dict[src] for src, dst in mapping.items() if src in metrics_dict}
+    @classmethod
+    def _route_actor_metrics(cls, actor_metrics: dict, phase_name: str) -> dict:
+        """Route the actor's ``actor/*`` numbers into the layout above."""
+        out: dict = {}
+        for key, value in actor_metrics.items():
+            if key.startswith("perf/"):
+                out[key] = value
+                continue
+            if not key.startswith("actor/"):
+                continue
+            name = key[len("actor/"):]
+            if name in cls._ACTOR_DROPPED:
+                continue
+            if name.startswith("aho_"):
+                out[f"{phase_name}/aho/{name[len('aho_'):]}"] = value
+            elif name in cls._RESPONSE_RENAMES:
+                out[f"{phase_name}/response/{cls._RESPONSE_RENAMES[name]}"] = value
+            elif name.startswith(("response_", "follower_", "hvp_")):
+                sub = name[len("response_"):] if name.startswith("response_") else name
+                out[f"{phase_name}/response/{sub}"] = value
+            else:
+                out[f"{phase_name}/actor/{name}"] = value
+        return out
 
     def _phase_cfg(self, phase_name: str):
         return self.config.phases[phase_name]
@@ -193,94 +125,86 @@ class RayAlternatingGRPOTrainer(RayPPOTrainer):
         return RayAlternatingGRPOTrainer._entropy_reg_coeff(phase_cfg) > 0.0
 
     def _init_logging_data(self) -> None:
-        # One JSONL per (phase, metric) under {default_local_dir}/logging_data/.
-        # Read by training/analysis/plot_training_log.py for offline per-step plots.
+        # One JSONL per logged metric under {default_local_dir}/logging_data/<key>.jsonl,
+        # mirroring the wandb key exactly. Read by training/analysis/plot_training_log.py.
         self._logging_data_root = os.path.join(self.config.trainer.default_local_dir, "logging_data")
         self._prev_logged_values: dict[str, float] = {}
-        for phase in self._LOGGING_SPEC:
-            os.makedirs(os.path.join(self._logging_data_root, phase), exist_ok=True)
+        os.makedirs(self._logging_data_root, exist_ok=True)
 
     def _dump_logging_data(self, metrics: dict) -> None:
-        # Append one line per metric file: {"step", "value", "gain"}. `gain` is
-        # the difference vs the previous dumped step for the same key, or null
-        # on the first dump. Keys absent from `metrics` (e.g. entropy_reg_loss
-        # when reg_coeff=0) are skipped without erroring.
-        for phase, specs in self._LOGGING_SPEC.items():
-            phase_dir = os.path.join(self._logging_data_root, phase)
-            for filename, metric_suffix in specs:
-                full_key = f"{phase}/{metric_suffix}"
-                if full_key not in metrics:
-                    continue
-                value = float(metrics[full_key])
-                prev = self._prev_logged_values.get(full_key)
-                gain = None if prev is None else value - prev
-                self._prev_logged_values[full_key] = value
-                with open(os.path.join(phase_dir, filename), "a") as f:
-                    f.write(json.dumps({"step": self.global_steps, "value": value, "gain": gain}) + "\n")
+        # Append one line per metric file: {"step", "value", "gain"}. `gain` is the
+        # difference vs the previous dumped step for the same key, or null on the first
+        # dump. perf/ and timing keys are skipped; everything else is written.
+        for key, raw in metrics.items():
+            if key.startswith(("perf/", "timing_s/")):
+                continue
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                continue
+            path = os.path.join(self._logging_data_root, f"{key}.jsonl")
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            prev = self._prev_logged_values.get(key)
+            gain = None if prev is None else value - prev
+            self._prev_logged_values[key] = value
+            with open(path, "a") as f:
+                f.write(json.dumps({"step": self.global_steps, "value": value, "gain": gain}) + "\n")
 
     @staticmethod
-    def _build_scorer_metrics(reward_extra_info: dict, follower_return: bool = False) -> dict:
+    def _build_scorer_metrics(reward_extra_info: dict, phase_name: str) -> dict:
         metrics: dict = {}
         if not reward_extra_info:
             return metrics
 
-        if "score" in reward_extra_info:
-            scores = torch.tensor(reward_extra_info["score"], dtype=torch.float32)
-            if follower_return:
-                # R_L (Eq. 2) is tool validity in [0, 1], NOT the task return, and with a
-                # ~99% tool success rate it is very nearly the format gate. Logging it as
-                # policy/reward_mean put two different reward functions on one panel: 8 of
-                # every 9 points read ~0.75 (R_L) and every 9th read ~-0.2 (the task
-                # return), which reads as a periodic instability that is not there. Its own
-                # key keeps policy/reward_mean one comparable quantity across phases and
-                # runs -- sparse for a follower-return run, but honest.
-                metrics["policy/follower_return_mean"] = scores.mean().item()
-                # bad_format_rate counts negative scores; R_L is never negative, so the
-                # format gate is read off policy/format_valid_rate below instead.
-            else:
-                metrics["policy/reward_mean"] = scores.mean().item()
-                metrics["policy/bad_format_rate"] = (scores < 0.0).to(torch.float32).mean().item()
-
         if "f1_score" in reward_extra_info:
             f1_scores = torch.tensor(reward_extra_info["f1_score"], dtype=torch.float32)
-            metrics["policy/f1_mean"] = f1_scores.mean().item()
+            metrics["reward/f1_mean"] = f1_scores.mean().item()
 
-        if "follower_score" in reward_extra_info:
-            # R_L scored alongside the task return on a leader batch (AHO estimator). Same
-            # key as the follower phase's own R_L above, so the panel reads as one quantity.
-            follower_scores = torch.tensor(reward_extra_info["follower_score"], dtype=torch.float32)
-            metrics["policy/follower_return_mean"] = follower_scores.mean().item()
+        if "format_valid" in reward_extra_info:
+            # Whole-schema bit, the same quantity on either phase's step.
+            fmt_valid = torch.tensor(reward_extra_info["format_valid"], dtype=torch.float32)
+            metrics["reward/format_valid_rate"] = fmt_valid.mean().item()
+
+        if "phase_format_valid" in reward_extra_info:
+            # The gate this phase's scorer applied (its own tags only), hence phase-prefixed.
+            phase_valid = torch.tensor(reward_extra_info["phase_format_valid"], dtype=torch.float32)
+            metrics[f"{phase_name}/gate_pass_rate"] = phase_valid.mean().item()
 
         if "no_tool_calls" in reward_extra_info:
             no_tool = torch.tensor(reward_extra_info["no_tool_calls"], dtype=torch.float32)
-            metrics["policy/no_tool_rate"] = no_tool.mean().item()
+            metrics["rollout/no_tool_rate"] = no_tool.mean().item()
 
-        if "format_valid" in reward_extra_info:
-            fmt_valid = torch.tensor(reward_extra_info["format_valid"], dtype=torch.float32)
-            metrics["policy/format_valid_rate"] = fmt_valid.mean().item()
+        if "follower_score" in reward_extra_info:
+            # The leader batch scored under the follower's schema rows (AHO estimator, A_L).
+            follower_scores = torch.tensor(reward_extra_info["follower_score"], dtype=torch.float32)
+            metrics[f"{phase_name}/aho/follower_score_mean"] = follower_scores.mean().item()
 
         # A single bad_format_rate scalar hid a reward bug for six runs: ~86% of step-1 format
         # failures were tool-budget truncations scored -1, not real schema errors. Bucket the
-        # scorer's own reason string so the next one is visible in one glance.
-        reasons = reward_extra_info.get("reason")
-        if reasons:
-            total = float(len(reasons))
+        # whole-schema violations (format_issues, every violation with its owner) so the next
+        # one is visible in one glance; one bucket per sample, by priority.
+        issues = reward_extra_info.get("format_issues")
+        if issues is None:
+            issues = reward_extra_info.get("reason")
+        if issues:
+            total = float(len(issues))
             buckets = {"answer_count_0": 0, "unclosed_tag": 0, "no_boxed": 0, "other": 0}
-            for raw in reasons:
-                reason = str(raw)
-                if not reason.startswith("bad format: ") and "cannot extract answer" not in reason and "boxed" not in reason:
+            for raw in issues:
+                text = str(raw)
+                if not text or text == "format is correct" or not (
+                    "bad format" in text or ": " in text or "boxed" in text or "cannot extract answer" in text
+                ):
                     continue
-                detail = reason[len("bad format: "):] if reason.startswith("bad format: ") else reason
-                if detail.startswith("answer_count=0"):
+                if "answer_count=0" in text:
                     buckets["answer_count_0"] += 1
-                elif "is not closed" in detail:
+                elif "is not closed" in text:
                     buckets["unclosed_tag"] += 1
-                elif "boxed" in detail:
+                elif "boxed" in text:
                     buckets["no_boxed"] += 1
                 else:
                     buckets["other"] += 1
             for name, count in buckets.items():
-                metrics[f"policy/fail_{name}"] = count / total
+                metrics[f"reward/fail_{name}"] = count / total
 
         return metrics
 
@@ -289,33 +213,29 @@ class RayAlternatingGRPOTrainer(RayPPOTrainer):
         """Tool-use metrics computed from per-sample arrays, not from the rollout's counters.
 
         tools/* counters ride in meta_info, and DataProto.concat keeps meta_info from rank 0
-        only (verl/protocol.py:710), so every tools/* number in the logs is a single shard.
-        These are the world-size-correct versions.
+        only (verl/protocol.py:710), so they are not logged at all; these are the
+        world-size-correct versions.
         """
         out: dict = {}
         calls = phase_batch.non_tensor_batch.get("tool_calls_made")
         if calls is not None:
             calls_t = torch.tensor(np.asarray(calls, dtype=np.float32))
-            out["policy/tool_calls_per_traj_mean"] = calls_t.mean().item()
+            out["rollout/tool_calls_per_traj_mean"] = calls_t.mean().item()
         exhausted = phase_batch.non_tensor_batch.get("tool_budget_exhausted")
         if exhausted is not None:
-            out["policy/budget_exhausted_rate"] = float(np.asarray(exhausted, dtype=np.float32).mean())
+            out["rollout/budget_exhausted_rate"] = float(np.asarray(exhausted, dtype=np.float32).mean())
         return out
 
     @staticmethod
     def _policy_from_data_metrics(data_metrics: dict, phase_batch: DataProto) -> dict:
+        # advantage stats are NOT read here: in entropy/aepo mode the actor substitutes or
+        # rescales the batch advantages, so the driver-side tensor is not what was used.
+        # They come from inside the update instead ({phase}/actor/advantage_*).
         out: dict = {}
         if "response_length/mean" in data_metrics:
-            out["policy/response_length_mean"] = data_metrics["response_length/mean"]
+            out["rollout/response_length_mean"] = data_metrics["response_length/mean"]
         if "response_length/clip_ratio" in data_metrics:
-            out["policy/response_length_clip_ratio"] = data_metrics["response_length/clip_ratio"]
-        advantages = phase_batch.batch["advantages"]
-        max_response_length = phase_batch.batch["responses"].shape[-1]
-        response_mask = phase_batch.batch["attention_mask"][:, -max_response_length:].bool()
-        valid_adv = torch.masked_select(advantages, response_mask)
-        out["policy/advantage_std"] = (
-            torch.std(valid_adv).detach().item() if valid_adv.numel() > 1 else 0.0
-        )
+            out["rollout/response_length_clip_ratio"] = data_metrics["response_length/clip_ratio"]
         return out
 
     def _echo_rollout_tools_cfg(self):
@@ -368,7 +288,10 @@ class RayAlternatingGRPOTrainer(RayPPOTrainer):
         exhausted = phase_batch.non_tensor_batch.get("tool_budget_exhausted")
         if exhausted is None:
             return None
-        fmt_valid = phase_batch.non_tensor_batch.get("format_valid")
+        # "Nothing scoreable" for THIS phase: the phase-owned gate, not the whole schema.
+        fmt_valid = phase_batch.non_tensor_batch.get("phase_format_valid")
+        if fmt_valid is None:
+            fmt_valid = phase_batch.non_tensor_batch.get("format_valid")
         if fmt_valid is None:
             return None
         flags = np.asarray(exhausted, dtype=np.bool_) & ~np.asarray(fmt_valid, dtype=np.bool_)
@@ -408,8 +331,9 @@ class RayAlternatingGRPOTrainer(RayPPOTrainer):
         demote = self._budget_exhausted_and_invalid(phase_batch)
         # Both counted before the mode folds anything together, so each number means the same
         # thing in every mode: infra failures excised, and rollouts that hit the budget failure.
-        out["policy/tool_failure_excised_rate"] = float(infra.mean()) if infra is not None else 0.0
-        out["policy/budget_exhausted_invalid_rate"] = float(demote.mean()) if demote is not None else 0.0
+        phase = (phase_batch.meta_info or {}).get("phase") or "policy"
+        out["rollout/tool_failure_excised_rate"] = float(infra.mean()) if infra is not None else 0.0
+        out[f"{phase}/budget_failed_rate"] = float(demote.mean()) if demote is not None else 0.0
 
         excise = infra
         if demote is not None and mode == "excise":
@@ -424,7 +348,7 @@ class RayAlternatingGRPOTrainer(RayPPOTrainer):
 
         # Of the above, how much stayed in its group and so actually carries counter-pressure.
         # Zero in every mode but in_group_zero; the gap against the rate above is the bug closed.
-        out["policy/budget_demoted_rate"] = float(demote.mean()) if demote is not None else 0.0
+        out[f"{phase}/budget_demoted_rate"] = float(demote.mean()) if demote is not None else 0.0
 
         if excise is None and demote is None:
             return out
@@ -769,8 +693,8 @@ class RayAlternatingGRPOTrainer(RayPPOTrainer):
                 self.async_rollout_manager.wake_up()
                 gen_batch_output = self.async_rollout_manager.generate_sequences(phase_gen_batch)
                 self.async_rollout_manager.sleep()
-            if gen_batch_output.meta_info and "metrics" in gen_batch_output.meta_info:
-                metrics.update(self._remap_to_policy(gen_batch_output.meta_info["metrics"], self._TOOL_TO_POLICY))
+            # The rollout's tools/* counters ride in meta_info, which DataProto.concat keeps
+            # from rank 0 only; they are not logged. See _rollout_behavior_metrics.
 
         if self.config.algorithm.adv_estimator == AdvantageEstimator.REMAX:
             with _timer(f"{phase_name}_gen_max", timing_raw):
@@ -821,20 +745,17 @@ class RayAlternatingGRPOTrainer(RayPPOTrainer):
             phase_batch.meta_info["calculate_entropy"] = True
             old_log_prob = self.actor_rollout_wg.compute_log_prob(phase_batch)
             entropys = old_log_prob.batch["entropys"]
-            attention_mask = phase_batch.batch["attention_mask"]
-            responses = phase_batch.batch["responses"]
-            response_length = responses.size(1)
-            full_response_mask = attention_mask[:, -response_length:]
             loss_agg_mode = self.config.actor_rollout_ref.actor.loss_agg_mode
-            # policy/entropy is the whole-policy number over every response token, including the
-            # <result> spans the loss never sees. The phase-mask version below is the entropy of
-            # what this phase actually optimizes; report both so the two are never confused.
-            metrics["policy/entropy"] = agg_loss(
-                loss_mat=entropys, loss_mask=full_response_mask, loss_agg_mode=loss_agg_mode
-            ).detach().item()
-            metrics[f"{phase_name}/actor/entropy_phase_mask"] = agg_loss(
-                loss_mat=entropys, loss_mask=phase_batch.batch[phase_mask_key], loss_agg_mode=loss_agg_mode
-            ).detach().item()
+            # Entropy of the ONE pre-update policy on its two token populations, logged on
+            # every step whichever phase is training: reasoning = think/answer tokens,
+            # tool = tool/search/python tokens. The all-token mean is not logged: it is
+            # dominated by the injected <result> spans (retrieved text, ~1.2 nats vs ~0.1)
+            # and tracks search-cache coverage rather than the policy.
+            for pop, mask_key in (("reasoning", "high_level_loss_mask"), ("tool", "low_level_loss_mask")):
+                if mask_key in phase_batch.batch:
+                    metrics[f"policy/entropy_{pop}"] = agg_loss(
+                        loss_mat=entropys, loss_mask=phase_batch.batch[mask_key], loss_agg_mode=loss_agg_mode
+                    ).detach().item()
             old_log_prob.batch.pop("entropys")
             phase_batch = phase_batch.union(old_log_prob)
 
@@ -861,18 +782,20 @@ class RayAlternatingGRPOTrainer(RayPPOTrainer):
 
         if self.config.reward_model.launch_reward_fn_async:
             reward_tensor, phase_reward_extra_infos_dict = ray.get(future_reward)
-        metrics["policy/reward_mean"] = (
-            reward_tensor.to(torch.float32).sum(dim=-1).mean().detach().item()
-        )
+        reward_mean = reward_tensor.to(torch.float32).sum(dim=-1).mean().detach().item()
+        metrics["reward/reward_mean"] = reward_mean          # one dense series across phases
+        metrics[f"{phase_name}/reward_mean"] = reward_mean   # bookkeeping copy under the phase
         phase_batch.batch["token_level_scores"] = reward_tensor
         if phase_reward_extra_infos_dict:
             phase_batch.non_tensor_batch.update({k: np.array(v) for k, v in phase_reward_extra_infos_dict.items()})
-            metrics.update(
-                self._build_scorer_metrics(
-                    phase_reward_extra_infos_dict,
-                    **self._scorer_metric_kwargs(phase_name),
+            metrics.update(self._build_scorer_metrics(phase_reward_extra_infos_dict, phase_name))
+            if "phase_format_valid" in phase_reward_extra_infos_dict:
+                # As a batch tensor so it survives micro-batching: the actor's entropy
+                # advantage sets H_t = -1 on the tokens of a sample that failed this phase's
+                # schema rows before normalising (see alt_dp_actor).
+                phase_batch.batch["phase_format_valid"] = torch.tensor(
+                    np.asarray(phase_reward_extra_infos_dict["phase_format_valid"], dtype=np.float32)
                 )
-            )
         metrics.update(self._rollout_behavior_metrics(phase_batch))
 
         if self.config.algorithm.use_kl_in_reward:
@@ -892,7 +815,6 @@ class RayAlternatingGRPOTrainer(RayPPOTrainer):
         Rollouts always come from the policy as left by the previous iteration's optimizer step,
         because the prompt chunk is only fetched here and `generate_sequences` resyncs FSDP -> vLLM.
         """
-        phase_prefix = f"{phase_name}/"
         phase_cfg = self._phase_cfg(phase_name)
         phase_rollout_n = int(phase_cfg.group_size)
         phase_mask_key = self._PHASE_MASK_KEYS[phase_name]
@@ -913,15 +835,15 @@ class RayAlternatingGRPOTrainer(RayPPOTrainer):
 
             with _timer(f"{phase_name}_adv", timing_raw):
                 in_group_std, zero_std_frac = self._compute_in_group_reward_std(phase_batch)
-                metrics["policy/in_group_reward_std"] = in_group_std
-                metrics["policy/group_zero_std_frac"] = zero_std_frac
+                metrics["reward/in_group_std"] = in_group_std
+                metrics["reward/group_zero_std_frac"] = zero_std_frac
                 metrics.update(self._apply_tool_failure_before_grpo(phase_batch))
                 # The pair above is measured on the raw scores; this one is measured on what
                 # GRPO actually sees. They diverge exactly where the reward adjustment bites,
                 # so *_post is the number that says whether a group still carries gradient.
                 post_std, post_zero_std_frac = self._compute_in_group_reward_std(phase_batch)
-                metrics["policy/in_group_reward_std_post"] = post_std
-                metrics["policy/group_zero_std_frac_post"] = post_zero_std_frac
+                metrics["reward/in_group_std_post"] = post_std
+                metrics["reward/group_zero_std_frac_post"] = post_zero_std_frac
 
                 phase_batch = compute_advantage(
                     phase_batch,
@@ -970,9 +892,7 @@ class RayAlternatingGRPOTrainer(RayPPOTrainer):
                         phase_batch.meta_info["entropy_loss_mask_key"] = "entropy_reg_loss_mask"
                     actor_output = self.actor_rollout_wg.update_actor(phase_batch)
                 actor_output_metrics = reduce_metrics(actor_output.meta_info["metrics"])
-                metrics.update(self._prefix_phase_owned(actor_output_metrics, phase_prefix))
-                metrics.update(self._remap_to_policy(actor_output_metrics, self._ACTOR_TO_POLICY))
-                metrics.update({k: v for k, v in actor_output_metrics.items() if k.startswith("perf/")})
+                metrics.update(self._route_actor_metrics(actor_output_metrics, phase_name))
 
             rollout_data_dir = self.config.trainer.get("rollout_data_dir", None)
             if rollout_data_dir:
@@ -1010,19 +930,10 @@ class RayAlternatingGRPOTrainer(RayPPOTrainer):
                     # the pair (x, xi_K(x)), so val-core/* is a leader-only proxy for it --
                     # and best-checkpoint selection below inherits that. Flagged rather
                     # than silently reported, since the two are easy to conflate.
-                    metrics["training/val_evaluates_adapted_pair"] = 0.0
 
                     if bool(self.config.trainer.get("save_best_checkpoint", False)):
                         current_metric_key, current_metric_value = self._resolve_best_metric_from_val(val_metrics)
                         selector = self._canonical_best_metric_selector(self.config.trainer.best_checkpoint_metric)
-                        metrics["training/best_checkpoint_metric_selector_id"] = (
-                            0.0 if selector == "val-core/reward" else 1.0
-                        )
-                        metrics["training/best_checkpoint_metric_current"] = current_metric_value
-                        metrics["training/best_checkpoint_metric_best"] = self._best_metric_value
-                        metrics["training/best_checkpoint_metric_improved"] = float(
-                            current_metric_value > self._best_metric_value
-                        )
                         if current_metric_value > self._best_metric_value:
                             self._best_metric_value = current_metric_value
                             self._best_metric_step = self.global_steps
@@ -1036,8 +947,8 @@ class RayAlternatingGRPOTrainer(RayPPOTrainer):
                                 f"[best_checkpoint] updated: selector={selector}, "
                                 f"resolved_key={current_metric_key}, value={current_metric_value}, step={self.global_steps}"
                             )
-                        metrics["training/best_checkpoint_metric_best"] = self._best_metric_value
-                        metrics["training/best_checkpoint_metric_best_step"] = float(self._best_metric_step)
+                        metrics["train/best_checkpoint_value"] = self._best_metric_value
+                        metrics["train/best_checkpoint_step"] = float(self._best_metric_step)
 
                 if not saved_checkpoint_this_step and (is_last_step or save_due):
                     with _timer("save_checkpoint", timing_raw):
@@ -1045,12 +956,15 @@ class RayAlternatingGRPOTrainer(RayPPOTrainer):
 
         metrics.update(
             {
-                "training/global_step": self.global_steps,
-                "training/hl_cycle": hl_cycle,
+                "train/global_step": self.global_steps,
+                "train/hl_cycle": hl_cycle,
+                # Which phase this step trained; the shared series above are one policy's
+                # trajectory and this is the only marker of the alternation.
+                "train/phase": 1.0 if phase_name == "high_level" else 0.0,
             }
         )
         if self._shared_prompt_stream:
-            metrics["training/epoch"] = self._current_epoch
+            metrics["train/epoch"] = self._current_epoch
         timing_metrics = compute_timing_metrics(batch=phase_batch, timing_raw=timing_raw)
         if "timing_s/step" in timing_metrics:
             metrics["timing_s/step"] = timing_metrics["timing_s/step"]
@@ -1154,10 +1068,6 @@ class RayAlternatingGRPOTrainer(RayPPOTrainer):
 
     def _rollout_meta_info(self, phase_name: str) -> dict:
         """meta_info added to a phase batch before generation."""
-        return {}
-
-    def _scorer_metric_kwargs(self, phase_name: str) -> dict:
-        """Extra kwargs for _build_scorer_metrics."""
         return {}
 
     def _phase_meta_info(self, phase_name: str) -> dict:

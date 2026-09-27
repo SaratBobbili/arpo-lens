@@ -9,7 +9,7 @@
 """Per-step training-trace plotter for the ECHO recipe.
 
 Reads the JSONL traces produced by `RayECHOTrainer._dump_logging_data` under
-`{SAVE_PATH}/logging_data/{low_level,high_level,policy}/<metric>.jsonl` and overlays
+`{SAVE_PATH}/logging_data/<wandb key>.jsonl` (one file per logged key) and overlays
 all enabled metric series on a single PNG. Each enabled toggle below adds one
 line to the figure; flip multiple toggles on simultaneously to compare them on
 the same axes (x = global step, y = metric value or step-over-step gain).
@@ -40,85 +40,99 @@ OUTPUT_PNG = Path("./echo_training_plot.png")
 # the raw `value` field. Toggle independently of each other.
 # =============================================================================
 
-# --- Shared policy health (policy/*) -------------------------------------------
-PLOT_POLICY_REWARD = True
-PLOT_POLICY_REWARD_GAIN = True
-PLOT_POLICY_FORMAT_PENALTY = False
-PLOT_POLICY_FORMAT_PENALTY_GAIN = False
-PLOT_POLICY_IN_GROUP_REWARD_STD = False
-PLOT_POLICY_FORMAT_VALID_RATE = False
-PLOT_POLICY_F1_MEAN = False
-PLOT_POLICY_NO_TOOL_RATE = False
-PLOT_POLICY_ADVANTAGE_STD = False
-PLOT_POLICY_PPO_KL = False
-PLOT_POLICY_PG_CLIPFRAC = False
-PLOT_POLICY_GROUP_ZERO_STD_FRAC = False
-PLOT_POLICY_BUDGET_EXHAUSTED_RATE = False
-PLOT_POLICY_TOOL_CALLS_PER_TRAJ = False
-PLOT_POLICY_FAIL_ANSWER_COUNT_0 = False
-PLOT_POLICY_FAIL_UNCLOSED_TAG = False
-PLOT_POLICY_FAIL_NO_BOXED = False
-PLOT_POLICY_FAIL_OTHER = False
-PLOT_POLICY_RESPONSE_LENGTH_MEAN = False
-PLOT_POLICY_RESPONSE_LENGTH_CLIP = False
-PLOT_POLICY_TOOLS_TOTAL_CALLS = False
-PLOT_POLICY_TOOLS_SUCCESSFUL_CALLS = False
-PLOT_POLICY_ENTROPY = False
-
-# --- Phase-owned optimizer signals --------------------------------------------
+# --- Toggles: one per logged key; paths mirror the wandb keys exactly ---------------
+PLOT_REWARD_MEAN = True
+PLOT_REWARD_MEAN_GAIN = False
+PLOT_F1_MEAN = False
+PLOT_FORMAT_VALID_RATE = False
+PLOT_IN_GROUP_STD = False
+PLOT_IN_GROUP_STD_POST = False
+PLOT_GROUP_ZERO_STD_FRAC = False
+PLOT_FAIL_ANSWER_COUNT_0 = False
+PLOT_FAIL_UNCLOSED_TAG = False
+PLOT_FAIL_NO_BOXED = False
+PLOT_FAIL_OTHER = False
+PLOT_RESPONSE_LENGTH_MEAN = False
+PLOT_RESPONSE_LENGTH_CLIP = False
+PLOT_TOOL_CALLS_PER_TRAJ = False
+PLOT_NO_TOOL_RATE = False
+PLOT_BUDGET_EXHAUSTED_RATE = False
+PLOT_ENTROPY_REASONING = False
+PLOT_ENTROPY_TOOL = False
+PLOT_LL_REWARD_MEAN = False
+PLOT_HL_REWARD_MEAN = False
+PLOT_LL_GATE_PASS_RATE = False
+PLOT_HL_GATE_PASS_RATE = False
 PLOT_LL_PG_LOSS = False
 PLOT_HL_PG_LOSS = False
-PLOT_LL_ENTROPY_REG_LOSS = False
-PLOT_HL_ENTROPY_REG_LOSS = False
 PLOT_LL_GRAD_NORM = False
 PLOT_HL_GRAD_NORM = False
+PLOT_LL_PPO_KL = False
+PLOT_HL_PPO_KL = False
+PLOT_LL_PG_CLIPFRAC = False
+PLOT_HL_PG_CLIPFRAC = False
+PLOT_LL_ADVANTAGE_STD = False
+PLOT_HL_ADVANTAGE_STD = False
+PLOT_LL_ENTROPY_REG_LOSS = False
+PLOT_HL_ENTROPY_REG_LOSS = False
 PLOT_LL_OPEFO_LAMBDA = False
 PLOT_HL_OPEFO_LAMBDA = False
-PLOT_LL_OPEFO_DELTA_H_NET = False
-PLOT_HL_OPEFO_DELTA_H_NET = False
-PLOT_LL_ENTROPY_PHASE_MASK = False
-PLOT_HL_ENTROPY_PHASE_MASK = False
+PLOT_HL_RESPONSE_NORM = False
+PLOT_HL_RESPONSE_RATIO = False
+PLOT_HL_RESPONSE_COSINE = False
+PLOT_HL_AHO_SURROGATE = False
+PLOT_HL_AHO_OMEGA_ABSMEAN = False
+PLOT_VAL_CORE_REWARD = True
+PLOT_VAL_AUX_F1 = False
 
 # =============================================================================
 # Series registry. (toggle, jsonl_relative_path, label_in_legend, field).
 # =============================================================================
 
 SERIES = [
-    (PLOT_POLICY_REWARD,                 "policy/reward.jsonl",                      "policy reward",                 "value"),
-    (PLOT_POLICY_REWARD_GAIN,            "policy/reward.jsonl",                      "policy reward (gain)",          "gain"),
-    (PLOT_POLICY_FORMAT_PENALTY,         "policy/format_penalty.jsonl",              "policy format penalty",         "value"),
-    (PLOT_POLICY_FORMAT_PENALTY_GAIN,    "policy/format_penalty.jsonl",              "policy format penalty (gain)",  "gain"),
-    (PLOT_POLICY_IN_GROUP_REWARD_STD,    "policy/in_group_reward_std.jsonl",         "policy in_group_reward_std",    "value"),
-    (PLOT_POLICY_FORMAT_VALID_RATE,      "policy/format_valid_rate.jsonl",           "policy format_valid_rate",      "value"),
-    (PLOT_POLICY_F1_MEAN,                "policy/f1_mean.jsonl",                     "policy f1_mean",                "value"),
-    (PLOT_POLICY_NO_TOOL_RATE,           "policy/no_tool_rate.jsonl",                "policy no_tool_rate",           "value"),
-    (PLOT_POLICY_ADVANTAGE_STD,          "policy/advantage_std.jsonl",               "policy advantage_std",          "value"),
-    (PLOT_POLICY_ENTROPY,                "policy/entropy.jsonl",                     "policy entropy",                "value"),
-    (PLOT_POLICY_PPO_KL,                 "policy/ppo_kl.jsonl",                      "policy ppo_kl",                 "value"),
-    (PLOT_POLICY_PG_CLIPFRAC,            "policy/pg_clipfrac.jsonl",                 "policy pg_clipfrac",            "value"),
-    (PLOT_POLICY_GROUP_ZERO_STD_FRAC,    "policy/group_zero_std_frac.jsonl",         "policy group_zero_std_frac",    "value"),
-    (PLOT_POLICY_BUDGET_EXHAUSTED_RATE,  "policy/budget_exhausted_rate.jsonl",       "policy budget_exhausted_rate",  "value"),
-    (PLOT_POLICY_TOOL_CALLS_PER_TRAJ,    "policy/tool_calls_per_traj_mean.jsonl",    "policy tool_calls_per_traj",    "value"),
-    (PLOT_POLICY_FAIL_ANSWER_COUNT_0,    "policy/fail_answer_count_0.jsonl",         "policy fail answer_count=0",    "value"),
-    (PLOT_POLICY_FAIL_UNCLOSED_TAG,      "policy/fail_unclosed_tag.jsonl",           "policy fail unclosed_tag",      "value"),
-    (PLOT_POLICY_FAIL_NO_BOXED,          "policy/fail_no_boxed.jsonl",               "policy fail no_boxed",          "value"),
-    (PLOT_POLICY_FAIL_OTHER,             "policy/fail_other.jsonl",                  "policy fail other",             "value"),
-    (PLOT_POLICY_RESPONSE_LENGTH_MEAN,   "policy/response_length_mean.jsonl",        "policy response_length_mean",   "value"),
-    (PLOT_POLICY_RESPONSE_LENGTH_CLIP,   "policy/response_length_clip_ratio.jsonl",  "policy response_length_clip",   "value"),
-    (PLOT_POLICY_TOOLS_TOTAL_CALLS,      "policy/tools_total_calls.jsonl",           "policy tools_total_calls",      "value"),
-    (PLOT_POLICY_TOOLS_SUCCESSFUL_CALLS, "policy/tools_successful_calls.jsonl",      "policy tools_successful_calls", "value"),
-    (PLOT_LL_PG_LOSS,                    "low_level/pg_loss.jsonl",                  "LL pg_loss",                    "value"),
-    (PLOT_HL_PG_LOSS,                    "high_level/pg_loss.jsonl",                 "HL pg_loss",                    "value"),
-    (PLOT_LL_ENTROPY_REG_LOSS,           "low_level/entropy_reg_loss.jsonl",         "LL entropy_reg_loss",           "value"),
-    (PLOT_HL_ENTROPY_REG_LOSS,           "high_level/entropy_reg_loss.jsonl",        "HL entropy_reg_loss",           "value"),
-    (PLOT_LL_GRAD_NORM,                  "low_level/grad_norm.jsonl",                "LL grad_norm",                  "value"),
-    (PLOT_HL_GRAD_NORM,                  "high_level/grad_norm.jsonl",               "HL grad_norm",                  "value"),
-    (PLOT_LL_OPEFO_LAMBDA,               "low_level/opefo_lambda.jsonl",             "LL opefo_lambda",               "value"),
-    (PLOT_HL_OPEFO_LAMBDA,               "high_level/opefo_lambda.jsonl",            "HL opefo_lambda",               "value"),
-    (PLOT_LL_OPEFO_DELTA_H_NET,          "low_level/opefo_delta_H_net.jsonl",        "LL opefo_delta_H_net",          "value"),
-    (PLOT_HL_OPEFO_DELTA_H_NET,          "high_level/opefo_delta_H_net.jsonl",       "HL opefo_delta_H_net",          "value"),
-    (PLOT_LL_ENTROPY_PHASE_MASK,         "low_level/entropy_phase_mask.jsonl",       "LL entropy (phase mask)",       "value"),
-    (PLOT_HL_ENTROPY_PHASE_MASK,         "high_level/entropy_phase_mask.jsonl",      "HL entropy (phase mask)",       "value"),
+    (PLOT_REWARD_MEAN,             "reward/reward_mean.jsonl", 'reward_mean (shared)', "value"),
+    (PLOT_REWARD_MEAN_GAIN,        "reward/reward_mean.jsonl", 'reward_mean (gain)', "gain"),
+    (PLOT_F1_MEAN,                 "reward/f1_mean.jsonl", 'f1_mean', "value"),
+    (PLOT_FORMAT_VALID_RATE,       "reward/format_valid_rate.jsonl", 'format_valid_rate (whole schema)', "value"),
+    (PLOT_IN_GROUP_STD,            "reward/in_group_std.jsonl", 'in-group reward std', "value"),
+    (PLOT_IN_GROUP_STD_POST,       "reward/in_group_std_post.jsonl", 'in-group reward std (post GRPO adj.)', "value"),
+    (PLOT_GROUP_ZERO_STD_FRAC,     "reward/group_zero_std_frac.jsonl", 'zero-std group fraction', "value"),
+    (PLOT_FAIL_ANSWER_COUNT_0,     "reward/fail_answer_count_0.jsonl", 'fail answer_count=0', "value"),
+    (PLOT_FAIL_UNCLOSED_TAG,       "reward/fail_unclosed_tag.jsonl", 'fail unclosed_tag', "value"),
+    (PLOT_FAIL_NO_BOXED,           "reward/fail_no_boxed.jsonl", 'fail no_boxed', "value"),
+    (PLOT_FAIL_OTHER,              "reward/fail_other.jsonl", 'fail other', "value"),
+    (PLOT_RESPONSE_LENGTH_MEAN,    "rollout/response_length_mean.jsonl", 'response_length_mean', "value"),
+    (PLOT_RESPONSE_LENGTH_CLIP,    "rollout/response_length_clip_ratio.jsonl", 'response_length_clip_ratio', "value"),
+    (PLOT_TOOL_CALLS_PER_TRAJ,     "rollout/tool_calls_per_traj_mean.jsonl", 'tool_calls_per_traj', "value"),
+    (PLOT_NO_TOOL_RATE,            "rollout/no_tool_rate.jsonl", 'no_tool_rate', "value"),
+    (PLOT_BUDGET_EXHAUSTED_RATE,   "rollout/budget_exhausted_rate.jsonl", 'budget_exhausted_rate', "value"),
+    (PLOT_ENTROPY_REASONING,       "policy/entropy_reasoning.jsonl", 'entropy (think/answer tokens)', "value"),
+    (PLOT_ENTROPY_TOOL,            "policy/entropy_tool.jsonl", 'entropy (tool/search/python tokens)', "value"),
+    (PLOT_LL_REWARD_MEAN,          "low_level/reward_mean.jsonl", 'LL reward_mean', "value"),
+    (PLOT_HL_REWARD_MEAN,          "high_level/reward_mean.jsonl", 'HL reward_mean', "value"),
+    (PLOT_LL_GATE_PASS_RATE,       "low_level/gate_pass_rate.jsonl", 'LL gate_pass_rate', "value"),
+    (PLOT_HL_GATE_PASS_RATE,       "high_level/gate_pass_rate.jsonl", 'HL gate_pass_rate', "value"),
+    (PLOT_LL_PG_LOSS,              "low_level/actor/pg_loss.jsonl", 'LL pg_loss', "value"),
+    (PLOT_HL_PG_LOSS,              "high_level/actor/pg_loss.jsonl", 'HL pg_loss', "value"),
+    (PLOT_LL_GRAD_NORM,            "low_level/actor/grad_norm.jsonl", 'LL grad_norm', "value"),
+    (PLOT_HL_GRAD_NORM,            "high_level/actor/grad_norm.jsonl", 'HL grad_norm', "value"),
+    (PLOT_LL_PPO_KL,               "low_level/actor/ppo_kl.jsonl", 'LL ppo_kl', "value"),
+    (PLOT_HL_PPO_KL,               "high_level/actor/ppo_kl.jsonl", 'HL ppo_kl', "value"),
+    (PLOT_LL_PG_CLIPFRAC,          "low_level/actor/pg_clipfrac.jsonl", 'LL pg_clipfrac', "value"),
+    (PLOT_HL_PG_CLIPFRAC,          "high_level/actor/pg_clipfrac.jsonl", 'HL pg_clipfrac', "value"),
+    (PLOT_LL_ADVANTAGE_STD,        "low_level/actor/advantage_std.jsonl", 'LL advantage_std (as used)', "value"),
+    (PLOT_HL_ADVANTAGE_STD,        "high_level/actor/advantage_std.jsonl", 'HL advantage_std (as used)', "value"),
+    (PLOT_LL_ENTROPY_REG_LOSS,     "low_level/actor/entropy_reg_loss.jsonl", 'LL entropy_reg_loss', "value"),
+    (PLOT_HL_ENTROPY_REG_LOSS,     "high_level/actor/entropy_reg_loss.jsonl", 'HL entropy_reg_loss', "value"),
+    (PLOT_LL_OPEFO_LAMBDA,         "low_level/actor/opefo_lambda.jsonl", 'LL opefo_lambda', "value"),
+    (PLOT_HL_OPEFO_LAMBDA,         "high_level/actor/opefo_lambda.jsonl", 'HL opefo_lambda', "value"),
+    (PLOT_HL_RESPONSE_NORM,        "high_level/response/norm.jsonl", 'HL ||g_resp||', "value"),
+    (PLOT_HL_RESPONSE_RATIO,       "high_level/response/ratio.jsonl", 'HL ||g_resp|| / ||g_dir||', "value"),
+    (PLOT_HL_RESPONSE_COSINE,      "high_level/response/cosine.jsonl", 'HL cos(g_resp, g_dir)', "value"),
+    (PLOT_HL_AHO_SURROGATE,        "high_level/aho/surrogate.jsonl", 'HL aho surrogate', "value"),
+    (PLOT_HL_AHO_OMEGA_ABSMEAN,    "high_level/aho/omega_absmean.jsonl", 'HL aho |omega| mean', "value"),
+    (PLOT_VAL_CORE_REWARD,         "val-core/DR_grpo_mix/reward/mean@1.jsonl", 'val-core reward', "value"),
+    (PLOT_VAL_AUX_F1,              "val-aux/DR_grpo_mix/f1_score/mean@1.jsonl", 'val-aux f1', "value"),
 ]
 
 

@@ -94,15 +94,15 @@ print(" metrics:", {k: round(v, 3) for k, v in m.items()})
 assert len(set(b.non_tensor_batch["uid"])) == 2, "the infra-failed sample must be excised"
 assert np.allclose(adv[2], 0.0), "excised sample gets no gradient"
 assert adv[3] < 0, "the budget-exhausted one is still demoted"
-assert m["policy/budget_demoted_rate"] == 0.25 and m["policy/tool_failure_excised_rate"] == 0.25
-assert m["policy/budget_exhausted_invalid_rate"] == 0.5
+assert m["policy/budget_demoted_rate"] == 0.25 and m["rollout/tool_failure_excised_rate"] == 0.25
+assert m["policy/budget_failed_rate"] == 0.5
 
 print("=== excise mode must NOT report budget failures as infra failures ===")
 t = trainer("excise"); b = make_batch(SC, EX, FV)
 m = t._apply_tool_failure_before_grpo(b)
 print(" metrics:", {k: round(v, 3) for k, v in m.items()})
-assert m["policy/tool_failure_excised_rate"] == 0.0, m
-assert m["policy/budget_exhausted_invalid_rate"] == 0.5 and m["policy/budget_demoted_rate"] == 0.0
+assert m["rollout/tool_failure_excised_rate"] == 0.0, m
+assert m["policy/budget_failed_rate"] == 0.5 and m["policy/budget_demoted_rate"] == 0.0
 
 print("=== all-exhausted group (collapse state) still degenerate, as GRPO must be ===")
 t = trainer("in_group_zero")

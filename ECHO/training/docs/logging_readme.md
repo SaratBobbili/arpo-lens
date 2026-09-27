@@ -6,124 +6,118 @@ Metrics logged to wandb and JSONL under `<save_path>/logging_data/`.
 One outer cycle is `phases.low_level.num_iters` LL iterations then one HL
 iteration. Each iteration is its own global step.
 
-Namespaces:
+Namespaces (2026-09-27 layout). Keys are grouped by **what the number is computed
+on**, not by which phase's step it landed in: the policy is one object and every
+rollout is a full trajectory from it, so trajectory- and policy-level numbers are one
+dense series each, logged every step, with `train/phase` (0 follower, 1 leader) as
+the only marker of the alternation.
 
 | Prefix | Meaning |
 |---|---|
-| `policy/*` | Whole-policy health (no phase prefix). One curve for π_θ. |
-| `high_level/` / `low_level/` | Phase-owned optimizer / update only. |
-| `val-core/*` / `val-aux/*` | Held-out quality (global). |
-| `perf/*`, `timing_s/step` | Throughput (unprefixed). |
+| `reward/*` | Scorer outputs on this step's rollouts, one series across phases. |
+| `rollout/*` | Trajectory shape: lengths, tool calls, budget, infra excision. |
+| `policy/entropy_*` | Pre-update entropy of π_θ on the two token populations. |
+| `<phase>/…` | Only numbers whose value depends on that phase's gate, mask or advantage rule. |
+| `high_level/response/*`, `high_level/aho/*` | Leader-only estimator diagnostics. |
+| `val-core/*` / `val-aux/*` | Held-out quality (leader steps only). ARPO's split. |
+| `train/*`, `perf/*`, `timing_s/step` | Bookkeeping and throughput. |
 
-**ARPO** (`verl/trainer/ppo/`) — single-phase GRPO; flat keys (no phase /
-`policy/` split). See section 5.
+**ARPO** (`verl/trainer/ppo/`) — single-phase GRPO; flat keys. See section 5.
 
-JSONL dumps: `logging_data/policy/*.jsonl` for health;
-`logging_data/{high_level,low_level}/*.jsonl` for phase-owned keepers.
+JSONL dumps: `logging_data/<key>.jsonl`, one file per logged key, mirroring the
+wandb key exactly (`perf/*` and timing excluded).
 
 ---
 
 ## 1. Validation — primary quality dial
 
 Validation is **greedy** (1 answer per prompt), every `test_freq` outer cycles
-(always on the closing HL iteration).
+(always on the closing HL iteration), so it measures the bare leader after its step.
 
 | Metric | What it means |
 |---|---|
-| `val-core/<dataset>/reward/mean@1` | Mean task score (F1; `-1` on bad format). **Primary quality dial.** |
-| `val-aux/<dataset>/f1_score/mean@1` | F1 only (no `-1`; bad format → 0). |
-| `val-aux/<dataset>/format_valid/mean@1` | Fraction passing system_prompt_1 format gate. |
+| `val-core/<dataset>/reward/mean@1` | Mean task score under the leader's schema rows (F1; `-1` on a leader-owned format failure; +0.1 multi-tool bonus). **Primary quality dial**, and the default best-checkpoint selector. |
+| `val-aux/<dataset>/f1_score/mean@1` | Raw F1 (no `-1`, no bonus; bad format → 0). The number that lines up with external tables. |
+| `val-aux/<dataset>/format_valid/mean@1` | Whole-schema format pass rate. |
 | `val-aux/<dataset>/no_tool_calls/mean@1` | Fraction that never called `<search>` / `<python>`. Want ↓. |
 
 Training rollouts are temperature-1 with many samples; val is greedy, so
-val reward usually sits above training `policy/reward_mean`.
+val reward usually sits above training `reward/reward_mean`.
 
 ---
 
-## 2. Whole-policy health (`policy/*`)
+## 2. Shared series (`reward/*`, `rollout/*`, `policy/*`)
 
-Emitted every training step from whichever phase ran. Shared namespace → one
-wandb curve for π_θ.
+Emitted every training step from whichever phase ran.
 
 | Metric | What it means |
 |---|---|
-| `policy/reward_mean` | Mean scorer reward on this step's rollouts. |
-| `policy/f1_mean` | Mean F1 (zeros on non-matching / format-fail). |
-| `policy/bad_format_rate` | Fraction with `score < 0`. Want ↓. |
-| `policy/format_valid_rate` | Mean scorer `format_valid`. |
-| `policy/no_tool_rate` | Fraction with no tool calls. Want ↓. |
-| `policy/in_group_reward_std` | Within-prompt reward std (GRPO signal). ≈0 ⇒ dead groups. |
-| `policy/advantage_std` | Post-normalize advantage spread on response tokens. |
-| `policy/entropy` | Mean Shannon H on the **full response mask** (attention on response tokens — not phase `loss_mask`). True policy peakedness. |
-| `policy/ppo_kl` | KL vs rollout (old) policy. Blow-up ⇒ step too large. |
-| `policy/pg_clipfrac` | PPO clip hit rate (0 on pure OPEFO). |
-| `policy/response_length_mean` | Mean generated length. |
-| `policy/response_length_clip_ratio` | Fraction hitting `max_response_length`. |
-| `policy/group_zero_std_frac` | Fraction of GRPO groups whose members all score the same. Those contribute **zero gradient** — the sharpest read on a dying signal. |
-| `policy/tool_calls_per_traj_mean` | Mean `<search>`+`<python>` calls per trajectory. Batch-correct. |
-| `policy/budget_exhausted_rate` | Fraction that spent the whole `tools.call_limit`. Batch-correct. |
-| `policy/fail_answer_count_0` | Format failures with no `<answer>` at all. This was 0.43 at step 1 of the Sept-2026 runs — the tool-budget bug. |
-| `policy/fail_unclosed_tag` | Format failures from an unclosed tag. |
-| `policy/fail_no_boxed` | Format failures from a missing/malformed `\boxed{}`. |
-| `policy/fail_other` | Remaining format failures (ordering violations etc.). |
-| `policy/follower_return_mean` | Mean `R_L` (tool validity). On follower steps when `follower_return` is on; on leader steps too under `response_estimator: aho`. |
-| `policy/aho_follower_adv_zero_frac` | AHO: fraction of leader trajectories whose `A_L` is exactly 0 (zero-std `R_L` group or excised singleton). Those carry no response term. Batch-correct. |
-| `policy/aho_adv_product_mean` | AHO: mean of `A_H * A_L` over the leader batch — the sign the response term pushes with. Batch-correct. |
-| `policy/aho_weighted_reasoning_frac` | AHO: fraction of reasoning tokens with a non-zero weight (i.e. after the first tool call, in a row with `A_L != 0`). Batch-correct. |
-| `policy/aho_no_tool_traj_frac` | AHO: fraction of leader trajectories with no tool token at all (weight 0 throughout). Batch-correct. |
-| `policy/tools_total_calls` | `<search>` + `<python>` calls this step. **Rank-0 only** — see caveat below. |
-| `policy/tools_successful_calls` | Successful tool returns. **Rank-0 only.** |
+| `reward/reward_mean` | Mean scorer reward on this step's rollouts (F1, `-1` on a phase-owned format failure, +0.1 bonus). Differs between phases only through the gate. |
+| `reward/f1_mean` | Mean raw F1. Bookkeeping; `val-aux/f1_score` is the one to compare. |
+| `reward/format_valid_rate` | Whole-schema format pass rate — the same quantity on either phase's step. |
+| `reward/fail_answer_count_0` / `fail_unclosed_tag` / `fail_no_boxed` / `fail_other` | Whole-schema violation buckets from the scorer's `format_issues`, one bucket per sample by priority. This split is what exposed the tool-budget bug. |
+| `reward/in_group_std` / `in_group_std_post` | Within-prompt reward std before / after the GRPO reward adjustment. ≈0 ⇒ dead groups. |
+| `reward/group_zero_std_frac` / `_post` | Fraction of groups whose members all score the same — those carry **zero gradient**. |
+| `rollout/response_length_mean` / `response_length_clip_ratio` | Generated length; fraction hitting `max_response_length` (inflated by EOS-terminated samples). |
+| `rollout/tool_calls_per_traj_mean` | Mean `<search>`+`<python>` calls per trajectory. Batch-correct (per-sample arrays). |
+| `rollout/no_tool_rate` | Fraction with no tool call. |
+| `rollout/budget_exhausted_rate` | Fraction that spent the whole `tools.call_limit`. Batch-correct. |
+| `rollout/tool_failure_excised_rate` | Infra failures (search API retries spent) excised from GRPO. |
+| `policy/entropy_reasoning` | Mean Shannon H of the pre-update policy on think/answer tokens. |
+| `policy/entropy_tool` | Same on tool/search/python tokens. Both logged every step; together they are the one policy's entropy trajectory. |
 
-> **`tools/*` counters report a single data-parallel shard.** They ride in the rollout's
-> `meta_info`, and `DataProto.concat` keeps `meta_info` from rank 0 only
-> (`verl/protocol.py:710`), so with 8 GPUs they under-report by roughly 8x. At step 1 of
-> `echo7BInstruct_lr5e8` the logged `tools/call_limit_reached_count` was 127 while the rollout dump
-> held 1728 — which is a large part of why the tool-budget bug went unnoticed for six runs. Use
-> them for relative trends only. `policy/tool_calls_per_traj_mean` and
-> `policy/budget_exhausted_rate` are computed from per-sample arrays and are batch-correct.
->
-> `policy/rollout_probs_diff_mean` was removed: the ECHO rollout sets `self.logprobs = 0` and never
-> emits `rollout_log_probs`, so it could never fire. Re-add it together with vLLM logprobs if the
-> vLLM/actor mismatch check is ever needed.
+> The all-token entropy is no longer logged: the injected `<result>` spans (retrieved
+> text, ~1.2 nats vs ~0.1 for the model's own tokens) dominated it, so it tracked
+> search-cache coverage rather than the policy. The rollout's `tools/*` counters are not
+> logged either: they ride in `meta_info`, which `DataProto.concat` keeps from rank 0 only.
 >
 > **Ground truth for anything about reward or format is `<run>/rollout/<step>.jsonl`**, which holds
-> per-sample `score`, `reason`, `format_valid` and `f1_score`.
+> per-sample `score`, `reason`, `format_valid`, `phase_format_valid`, `format_issues` and `f1_score`.
 
 ---
 
-## 3. Phase-owned optimizer (`high_level/` \| `low_level/`)
+## 3. Phase-prefixed (`high_level/` \| `low_level/`)
 
-Only signals that differ by phase (independent AdamW / schedule / OPEFO /
-entropy reg). Prefixed so HL and LL stay separable.
+Only numbers whose value depends on which mask the loss ran under, which schema rows
+gated the score, or which advantage rule applied.
 
 | Metric | What it means |
 |---|---|
+| `<phase>/reward_mean` | Bookkeeping copy of `reward/reward_mean` under the phase that produced it. |
+| `<phase>/gate_pass_rate` | Fraction passing **this phase's** schema rows (leader: think/answer; follower: tool/search/python). |
+| `<phase>/budget_failed_rate` / `budget_demoted_rate` | Budget-exhausted samples that also failed this phase's gate; of those, how many stayed in their group under `in_group_zero`. |
 | `<phase>/actor/pg_loss` | Policy-gradient scalar minimized this step. |
-| `<phase>/actor/grad_norm` | Grad norm before clip. Spikes ⇒ instability; ~0 ⇒ no signal. |
+| `<phase>/actor/grad_norm` | Total grad norm **before** clipping (`clip_grad_norm_`'s return). > `grad_clip` ⇒ the step was rescaled. |
+| `<phase>/actor/step_skipped` | 1 when the norm was non-finite and the optimizer step was skipped. |
 | `<phase>/actor/lr` | That phase's AdamW / schedule LR. |
-| `<phase>/actor/entropy_reg_loss` | Entropy regularizer term when `reg_coeff > 0`. Compare `× reg_coeff` to `pg_loss`. |
-| `<phase>/actor/entropy_phase_mask` | Mean Shannon H over **that phase's loss mask** — the entropy of the tokens this phase actually optimizes (HL: think+answer, LL: tool+search+python). Always emitted; compare against the whole-policy `policy/entropy`. |
-| `<phase>/actor/opefo_lambda` | OPEFO λ* ∈ (−1,1) when `opefo.enabled`. |
-| `<phase>/actor/opefo_delta_H_net` | Masked sum of Theorem-1 ΔH. Toward 0 when balanced. |
-| `<phase>/actor/opefo_pos_mag` / `opefo_neg_mag` | Positive / \|negative\| ΔH masses for λ*. |
-| `high_level/actor/aho_surrogate` | AHO: the response surrogate `-(coef/tau) Σ A_H ω log π / N_tool`, mean over micro-batches (rank-0 via `meta_info`). |
-| `high_level/actor/aho_omega_absmean` / `aho_omega_absmax` | AHO: size of the per-token weight `ω = c_m A_L` on reasoning tokens. Grows with tool tokens before the token; scales with `A_L`. |
-| `high_level/actor/aho_weighted_frac` | AHO: fraction of reasoning tokens in the micro-batch with non-zero `ω`. |
-| `high_level/actor/aho_tau` | AHO: the temperature actually divided by (derived from the follower's entropy/KL coefficients unless `aho_tau` is set). |
+| `<phase>/actor/ppo_kl`, `pg_clipfrac`, `pg_clipfrac_lower` | Update stability on this phase's tokens. |
+| `<phase>/actor/advantage_mean` / `advantage_std` | Measured **inside the update** on the advantages actually used (after the entropy substitution / aepo rescaling), on the phase mask. |
+| `<phase>/actor/advantage_penalty_frac` | Entropy mode only: fraction of masked tokens carrying the `H_t = -1` format penalty. |
+| `<phase>/actor/entropy_reg_loss` | Entropy regularizer term when enabled (before the coefficient). |
+| `<phase>/actor/kl_loss` | KL-to-reference loss when `use_kl_loss`. |
+| `<phase>/actor/opefo_lambda`, `opefo_delta_H_net`, `opefo_pos_mag`, `opefo_neg_mag` | OPEFO diagnostics when enabled. |
+| `high_level/response/norm`, `direct_norm`, `ratio`, `cosine` | Response term vs direct gradient: ‖g_resp‖, ‖g_dir‖, their ratio, and cos(g_resp, g_dir). The empirical content of Proposition 1. |
+| `high_level/response/blocks`, `c_*`, `mem_*`, `follower_*`, `hvp_*`, `steps_K`, `groups` | Estimator internals (adjoint / AHO). |
+| `high_level/aho/surrogate` | AHO: the response surrogate, mean over micro-batches. |
+| `high_level/aho/omega_absmean` / `omega_absmax` | AHO: size of the per-token weight ω on reasoning tokens. |
+| `high_level/aho/weighted_frac`, `weighted_reasoning_frac`, `no_tool_traj_frac` | AHO: coverage of the weights over reasoning tokens / trajectories. |
+| `high_level/aho/adv_product_mean` | AHO: mean of `A_H * A_L` over the leader batch — the sign the response term pushes with. |
+| `high_level/aho/follower_adv_zero_frac` | AHO: fraction of leader trajectories with `A_L` exactly 0. |
+| `high_level/aho/follower_score_mean` | AHO: the leader batch scored under the follower's schema rows (what `A_L` is built from). |
 
 ---
 
-## 4. System / throughput
+## 4. System / bookkeeping
 
 | Metric | What it means |
 |---|---|
-| `training/global_step` | Optimizer step (every LL or HL iteration). Ends at `N_HL * (N_LL + 1)` (× epochs in shared mode). |
-| `training/hl_cycle` | Outer cycle index (0-based). `test_freq` / `save_freq` count these. |
+| `train/global_step` | Optimizer step (every LL or HL iteration). |
+| `train/phase` | 0 on a follower step, 1 on a leader step. |
+| `train/hl_cycle` | Outer cycle index (0-based). `test_freq` / `save_freq` count these. |
+| `train/epoch` | Epoch over the shared prompt stream. |
+| `train/best_checkpoint_value` / `best_checkpoint_step` | Best val selector value so far and the step that set it. |
 | `timing_s/step` | Wall time of one training step. |
-| `perf/throughput` | Tokens / second / GPU. |
-| `perf/mfu/actor` | Model FLOPs Utilization on the actor update. |
-| `perf/max_memory_allocated_gb` / `max_memory_reserved_gb` | Peak GPU memory. |
-| `perf/cpu_memory_used_gb` | Peak CPU RSS. |
+| `perf/throughput`, `perf/mfu/actor`, `perf/*memory*` | Throughput and memory. |
 
 ---
 
@@ -133,26 +127,27 @@ ARPO is single-phase GRPO. Flat keys map roughly as:
 
 | ECHO | ARPO |
 |---|---|
-| `policy/reward_mean`, `policy/f1_mean`, … | `reward/*` / `critic/score/*` (broader legacy set) |
-| `policy/entropy` (full response mask), plus `<phase>/actor/entropy_phase_mask` (phase mask) | `actor/entropy_loss` (often on `loss_mask` / `response_mask`) |
-| `policy/ppo_kl`, `policy/pg_clipfrac` | `actor/ppo_kl`, `actor/pg_clipfrac` |
+| `reward/reward_mean`, `reward/f1_mean`, … | `reward/*` / `critic/score/*` (broader legacy set) |
+| `policy/entropy_reasoning` / `policy/entropy_tool` | `actor/entropy_loss` (on `loss_mask` / `response_mask`) |
+| `<phase>/actor/ppo_kl`, `pg_clipfrac` | `actor/ppo_kl`, `actor/pg_clipfrac` |
 | `<phase>/actor/pg_loss`, `grad_norm`, `lr` | `actor/pg_loss`, `grad_norm`, `lr` (one optimizer) |
-| `val-core/...` | same |
+| `val-core/...`, `val-aux/...` | same |
 
-ECHO-only: nested LL/HL loop, `training/hl_cycle`, per-phase OPEFO /
-`entropy_reg_loss`, and the `policy/*` vs phase-owned split.
+ECHO-only: nested LL/HL loop, `train/phase`, `train/hl_cycle`, per-phase OPEFO /
+`entropy_reg_loss`, and the shared-vs-phase split.
 
-Scorer: both use F1 (+ optional +0.1 multi-tool bonus when correct and both
-tools appear), so `score` can reach `1.1`.
+Scorer: both use F1 with `-1` on a format failure and the +0.1 multi-tool bonus, but
+ECHO's gate is phase-owned (each phase fails only on its own tags) and its schema is
+prompt-5, so the two `val-core` curves are not directly comparable; compare `val-aux/f1_score`.
 
 ---
 
 ## TL;DR — which metrics to watch
 
-- **Getting better?** → `val-core/<dataset>/reward/mean@1`
-- **Format / tools sane?** → `policy/bad_format_rate` ↓, `policy/no_tool_rate` ↓, `policy/tool_calls_per_traj_mean` > 0
-- **Format failing — why?** → the `policy/fail_*` breakdown, not `bad_format_rate` alone. A single scalar hid the tool-budget bug for six runs.
-- **Reward / GRPO alive?** → `policy/reward_mean` ↑, `policy/in_group_reward_std` and `policy/advantage_std` not ≈ 0, `policy/group_zero_std_frac` low
-- **Policy peakedness?** → `policy/entropy` (full response mask) vs `<phase>/actor/entropy_phase_mask` (the tokens that phase actually optimizes). They differ; say which one you mean.
-- **Update stable?** → `policy/ppo_kl`, `policy/pg_clipfrac`; phase `grad_norm`
-- **Entropy reg / OPEFO?** → `<phase>/actor/entropy_reg_loss` when `reg_coeff > 0`; `<phase>/actor/opefo_{lambda,delta_H_net,pos_mag,neg_mag}` when enabled
+- **Getting better?** → `val-core/<dataset>/reward/mean@1`; `val-aux/<dataset>/f1_score/mean@1` for the external comparison
+- **Format / tools sane?** → `reward/format_valid_rate` ↑, `<phase>/gate_pass_rate` ↑, `rollout/no_tool_rate` ↓, `rollout/tool_calls_per_traj_mean` > 0
+- **Format failing — why?** → the `reward/fail_*` breakdown, then `<run>/rollout/<step>.jsonl` `format_issues`.
+- **Reward / GRPO alive?** → `reward/reward_mean` ↑, `reward/in_group_std_post` not ≈ 0, `reward/group_zero_std_frac_post` low, `<phase>/actor/advantage_std` not ≈ 0
+- **Policy peakedness?** → `policy/entropy_reasoning` and `policy/entropy_tool`, both every step.
+- **Update stable?** → `<phase>/actor/ppo_kl`, `pg_clipfrac`, `grad_norm` (pre-clip), `step_skipped`
+- **Response term doing anything?** → `high_level/response/ratio` (O(1) or smaller) and `high_level/response/cosine`

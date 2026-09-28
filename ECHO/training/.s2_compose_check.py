@@ -97,5 +97,5 @@ print("search cache:", search.params.cache_file)
 print(f"prompt batch/iteration: {batch}  sequences/iteration: {batch * cfg.phases.high_level.group_size}")
 print(f"optimizer steps/iteration: hl={batch // int(cfg.phases.high_level.ppo_mini_batch_size)} "
       f"ll={batch // int(cfg.phases.low_level.ppo_mini_batch_size)}")
-print("total global steps:", n_hl * (n_ll + 1))
+print("echo/aho round equation N_HL*(N_LL+1) per epoch:", n_hl * (n_ll + 1), "(alt_grpo: cycles/epoch = batches per pass // N_LL, steps = cycles * (N_LL + N_HL))")
 print("S2 COMPOSE OK")

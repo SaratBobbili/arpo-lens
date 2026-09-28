@@ -16,9 +16,10 @@ set -euo pipefail
 
 cd /scratch/user/saratb_tamu.edu/research/arpo-lens/ECHO/training
 
-# ALTERNATING-GRPO at ARPO's operating point: 128 prompts, mini 16, group 16
-# -> 8 optimizer steps per phase iteration. The high-level iteration re-rolls the
-# prompts the low-level phase just adapted on (same prompts, fresh rollouts).
+# ALTERNATING-GRPO at ARPO's operating point: 128 prompts, mini 16, group 8 per phase
+# -> 8 optimizer steps per phase iteration. One low-level then one high-level iteration
+# per cycle; the high-level iteration re-rolls the prompts the low-level phase just
+# adapted on (same prompts, fresh rollouts). See recipe/alt_grpo/profiles/config_alt_grpo.yaml.
 export EXPERIMENT_NAME=echo7B_sft1e6_alt_grpo_dispo_clips_v0
 export BASE_PROFILE=recipe/alt_grpo/profiles/config_alt_grpo.yaml
 # SFT warm-start; train_qwen7B_v2.sh passes this as actor_model_subpath= (overrides YAML).

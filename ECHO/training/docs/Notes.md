@@ -12,6 +12,9 @@ role-masked GRPO), `echo` (Algorithm 1, adjoint / exact estimators; also the res
 profile), `aho` (Algorithm 1 round structure with the AHO surrogate; a full copy, it never
 imports `recipe/echo`). A profile's `recipe:` key picks `python3 -m training.recipe.<name>.main`
 in `scripts/train.sh`; the hydra base stays in `config/`. No loop code is shared between recipes.
+The alt_grpo cycle is `ll_num_iters` low-level then `hl_num_iters` high-level iterations (1/1 in its
+profile, the April-May 2026 schema; the high-level iteration re-rolls the low-level prompts), with
+cycles per epoch = batches per pass // `ll_num_iters` and save/test_freq counting cycles.
 
 ## Training loop
 

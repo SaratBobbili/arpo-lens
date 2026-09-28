@@ -17,11 +17,15 @@ class AltGRPOWorker(PhaseWorkerBase):
         )
 
     def _phase_total_steps(self) -> dict:
-        """LR-scheduler horizons for this recipe's cycle: LL runs N_LL times per outer
-        cycle, HL once, for N_HL cycles per epoch."""
-        n_hl = int(self.config.phases.high_level.num_iters)
-        n_ll = int(self.config.phases.low_level.num_iters)
-        if bool(self.config.phases.get("shared_prompt_stream", False)):
-            e = int(self.config.total_epochs)
-            return {"high_level": e * n_hl, "low_level": e * n_hl * n_ll}
-        return {"high_level": n_hl, "low_level": n_hl * n_ll}
+        """LR-scheduler horizons, computed by AltGRPOTrainer._set_cycle_accounting from
+        the cycle shape and the prompt stream length (the worker cannot see the dataset)
+        and handed over in phases.<phase>.optim.total_training_steps."""
+        horizons = {}
+        for phase in ("high_level", "low_level"):
+            steps = self.config.phases[phase].optim.get("total_training_steps", None)
+            assert steps is not None and int(steps) > 0, (
+                f"phases.{phase}.optim.total_training_steps is unset: AltGRPOTrainer."
+                "_set_cycle_accounting must run before the workers are built"
+            )
+            horizons[phase] = int(steps)
+        return horizons

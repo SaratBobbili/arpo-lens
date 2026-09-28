@@ -3,9 +3,17 @@
 # This is NOT ARPO. It is the alternating baseline, run at the hyperparameters ARPO
 # uses, so its numbers are comparable to the published ARPO/GRPO/DAPO/RFPP results.
 # Those values are identical across every script in ARPO/scripts/:
-#   prompt_batch_size 128, ppo_mini_batch_size 16, group_size 16, ppo_epochs 1
-#   -> 128/16 = 8 optimizer steps per phase iteration, 16*16/8 = 32 seq/rank/step.
+#   prompt_batch_size 128, ppo_mini_batch_size 16, ppo_epochs 1
+#   -> 128/16 = 8 optimizer steps per phase iteration.
+# group_size is 8 per phase, the April-May 2026 split (rollout.n=16 shared 8/8 between
+# the phases): 1024 sequences per phase iteration, 16*8/8 = 16 seq/rank/step.
 # ppo_max_token_len_per_gpu 11264 is already ARPO's 2*(1536+4096).
+#
+# Loop (recipe/alt_grpo/trainer.py, the April-May 2026 schema): a cycle is
+# ll_num_iters low-level iterations then hl_num_iters high-level iterations, 1/1 here.
+# The high-level iteration re-rolls the prompts the low-level one adapted on, from the
+# updated policy, and computes its own old log-probs there. Cycles per epoch =
+# (10000 // 128) // ll_num_iters = 78; save_freq / test_freq count cycles.
 #
 # 128/16 divides evenly. The r3/r4 profiles inherited ARPO's mini=16 but took their
 # batch from the Algorithm-1 round equation (136), so 136/16 = 8.5 left them running a
@@ -54,8 +62,8 @@ search_class_path: verl.workers.agent.tools.search_tool.RagSearchTool
 brightdata_timeout: 90
 tool_call_limit: 5
 
-save_freq: 1
-test_freq: 1
+save_freq: 5
+test_freq: 5
 save_best_checkpoint: true
 best_checkpoint_metric: val-core/reward
 max_actor_ckpt_to_keep: 1
@@ -90,9 +98,10 @@ clip_ratio_low_neg: 10
 clip_ratio_high_neg: 100
 
 # --- high_level ---
-# shared stream batch: (10000 // (N_HL*(N_LL+1))) floored to a multiple of 8 ranks = 136 prompts (N=8 → 72 steps/epoch).
-hl_num_iters: 8
-hl_group_size: 16
+# Iterations per cycle (see the loop comment at the top). 1/1 = one low-level then one
+# high-level iteration per 128-prompt batch; 78 cycles per epoch.
+hl_num_iters: 1
+hl_group_size: 8
 hl_ppo_mini_batch_size: 16
 hl_lr: 1e-6
 high_level_advantage_algorithm: grpo
@@ -104,8 +113,8 @@ hl_entropy_normalization: token_pool
 hl_entropy_alpha: 0.2
 
 # --- low_level ---
-ll_num_iters: 8
-ll_group_size: 16
+ll_num_iters: 1
+ll_group_size: 8
 ll_ppo_mini_batch_size: 16
 ll_lr: 1e-6
 # AdamW for both phases. The SGD requirement is HYPERGRADIENT-only: it exists so that
@@ -118,7 +127,7 @@ ll_weight_decay: 0.01
 low_level_advantage_algorithm: entropy
 low_level_use_sign_cond_clip: True
 ll_kl_loss_coef: 0.000
-ll_entropy_enabled: grpo
+ll_entropy_enabled: false
 ll_entropy_reg_coeff: 0.0
 ll_entropy_normalization: token_pool
 ll_entropy_alpha: 0.2

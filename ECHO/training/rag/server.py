@@ -115,6 +115,11 @@ class CacheKeyRetriever:
         self.index = faiss.IndexFlatIP(self.dim)
         self.index.add(emb)
         print(f"FAISS IndexFlatIP built (dim={self.dim}, ntotal={self.index.ntotal})")
+        # The sidecar shares its GPU with the trainer (actor peaks at ~122 of 141 GB on H200);
+        # drop the allocator pool left over from batch-512 corpus encoding. Steady-state
+        # serving is single-query batches.
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         self._n_requests = 0
         self._n_hits = 0

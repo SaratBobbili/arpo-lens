@@ -270,9 +270,16 @@ cleanup_rag_sidecar() {
 
 if [[ "${SEARCH_CLASS_PATH}" == *RagSearchTool ]]; then
     RAG_SERVER_URL="${RAG_SERVER_URL:-http://127.0.0.1:5003}"
-    SIMILARITY_THRESHOLD="${SIMILARITY_THRESHOLD:-0.92}"
+    # 0.90, not the sidecar's 0.92: measured 2026-09-27 on the failed queries of alt_grpo_v0/echo_aho,
+    # e5 cosine >= 0.90 to the nearest cache key recovers 61% of misses (0.92: 36%) and every sampled
+    # pair in [0.90, 0.92) is the same question reworded; wrong-entity/wrong-relation matches
+    # (father->uncle, birth->death date) all sit below 0.90. Do not go lower.
+    SIMILARITY_THRESHOLD="${SIMILARITY_THRESHOLD:-0.90}"
     TOPK="${TOPK:-1}"
-    SOFT_FALLBACK="${SOFT_FALLBACK:-true}"
+    # Off: the fallback is the live Bing call, whose token has been dead (HTTP 401) since before
+    # 2026-09-24, so it can only add a failed HTTP round-trip per miss. A miss returns
+    # "No search results found." either way.
+    SOFT_FALLBACK="${SOFT_FALLBACK:-false}"
     RAG_REQUEST_TIMEOUT="${RAG_REQUEST_TIMEOUT:-30}"
     RAG_READY_TIMEOUT="${RAG_READY_TIMEOUT:-3600}"
     RAG_LOG="${SAVE_PATH}/rag_sidecar.log"

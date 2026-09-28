@@ -322,10 +322,10 @@ def compute_score(data_source, solution_str, ground_truth, extra_info=None):
     result["f1_score"] = f1_score
     print(f"f1_score: {f1_score}, answer: {answer}, ground_truth: {ground_truth}")
 
-    if f1_score > 0 and "</search>" in response and "</python>" in response:
-        result["score"] = f1_score + 0.1
-        result["reason"] = f"correct answer and calling search and python at the same time, get score: {f1_score + 0.1}"
-    elif f1_score > 0:
+    # No tool-usage bonus: ARPO's +0.1 for "search and python in the same trajectory"
+    # is hackable (the policy learns to fire every tool on every question, exhausting
+    # the call budget), so the task return is the answer F1 alone.
+    if f1_score > 0:
         result["score"] = f1_score
         result["reason"] = f"correct answer, get f1 score: {f1_score}"
     else:
@@ -382,10 +382,10 @@ if __name__ == "__main__":
         '<tool> Enough evidence to answer. </tool> '
         '<answer>\\boxed{12}</answer>'
     )
-    print("\n=== Multi tool (search+python bonus) ===")
+    print("\n=== Multi tool (no bonus: score is F1 alone) ===")
     r = compute_score("test", test_multi, "12")
     print(r)
-    assert r["score"] > 1.0
+    assert r["score"] == 1.0
 
     test_legacy_select = (
         '<select> Need search. <tool> "search" </tool> </select> '

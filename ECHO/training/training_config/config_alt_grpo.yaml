@@ -34,7 +34,8 @@ prompt_key: prompt
 train_files: rl_datasets/train_10k.parquet
 valid_files: rl_datasets/valid.parquet
 
-actor_model_subpath: checkpoints/Qwen2.5-7B-Instruct-lr1e8-ep1
+# Prefer ACTOR_MODEL_SUBPATH in scripts/sbatch_alt_grpo.sh; train_qwen7B_v2.sh overrides this.
+actor_model_subpath: checkpoints/Qwen2.5-7B-Instruct-lr1e6-ep3
 reward_manager: echo
 
 rollout_n: 16
@@ -49,7 +50,7 @@ rollout_name: vllm
 rollout_mode: sync_echo
 exclude_tag_tokens_from_phase_masks: false
 search_cache_file: search_cache_final_7B_d.json
-search_class_path: verl.workers.agent.tools.search_tool.BingSearchTool
+search_class_path: verl.workers.agent.tools.search_tool.RagSearchTool
 brightdata_timeout: 90
 tool_call_limit: 3
 
@@ -67,12 +68,12 @@ checkpoint_contents: "[model,extra]"
 # disable, not auto: these two arms crashed on the bf16 guard and left run dirs behind.
 # `auto` would sweep any global_step_* in the target dir back in, and the dir name is
 # derived from experiment_name, so a re-launch lands on top of the old one.
-resume_mode: disable
+resume_mode: auto
 
 shared_prompt_stream: true
 total_epochs: 4
 
-norm_adv_by_std_in_grpo: off
+norm_adv_by_std_in_grpo: on
 
 mask_tool: low
 mask_think: high
@@ -114,10 +115,10 @@ ll_optimizer: adamw
 # Standard decay on both phases. The zero-decay requirement is HYPERGRADIENT-only
 # (coupled decay puts an unmodelled lambda*I into d ghat/dx); no such term here.
 ll_weight_decay: 0.01
-low_level_advantage_algorithm: grpo
+low_level_advantage_algorithm: entropy
 low_level_use_sign_cond_clip: True
 ll_kl_loss_coef: 0.000
-ll_entropy_enabled: false
+ll_entropy_enabled: grpo
 ll_entropy_reg_coeff: 0.0
 ll_entropy_normalization: token_pool
 ll_entropy_alpha: 0.2

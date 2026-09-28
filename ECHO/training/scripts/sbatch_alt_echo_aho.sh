@@ -1,3 +1,17 @@
+#!/bin/bash
+#SBATCH -J aho_k8
+#SBATCH -p def
+#SBATCH -A prj-02-llm-reasoning-shakkottai
+#SBATCH -q standard
+#SBATCH -N 1
+#SBATCH --gres=gpu:H200:8
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=1857527M
+#SBATCH -t 2-00:00:00
+#SBATCH -o slurm-%x-%j.out
+#SBATCH -e slurm-%x-%j.err
+#
+# ECHO with the AHO response term, K = 8.  sbatch scripts/sbatch_alt_echo_aho.sh
 set -euo pipefail
 
 cd /scratch/user/saratb_tamu.edu/research/arpo-lens/ECHO/training
@@ -5,7 +19,7 @@ cd /scratch/user/saratb_tamu.edu/research/arpo-lens/ECHO/training
 # ECHO with the AHO response term (arXiv:2607.28849, GRPO variant): Algorithm 1's round
 # structure (K=8 follower steps on R_L from a common base, fresh leader batch, one leader
 # step, discard), with g_resp computed as one surrogate on the leader batch --
-#   reinforce each reasoning token with weight A_H * A_L * (tool tokens before it) / tau
+#   reinforce each reasoning token after the first tool call with weight coef * A_H * A_L / tau
 # -- instead of the adjoint sweep. One optimizer step per phase iteration (mini = prompt
 # batch = 128), as C.3 requires; the follower runs with entropy on (tau = ll_entropy_reg_coeff).
 # Everything algorithmic lives in the profile; see training_config/config_aho_k8.yaml.

@@ -34,7 +34,7 @@ exclude_tag_tokens_from_phase_masks: false
 search_cache_file: search_cache_echo_3B.json
 search_class_path: verl.workers.agent.tools.search_tool.RagSearchTool
 brightdata_timeout: 90
-tool_call_limit: 3
+tool_call_limit: 5
 
 save_freq: 1
 test_freq: 1

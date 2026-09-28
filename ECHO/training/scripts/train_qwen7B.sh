@@ -12,7 +12,7 @@ set -e
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 # Switch arms for all three scripts at once, e.g.
-#   BASE_PROFILE=training_config/config1.yaml EXPERIMENT_NAME=my_run bash train_qwen7B.sh
+#   BASE_PROFILE=recipe/echo/profiles/config1.yaml EXPERIMENT_NAME=my_run bash train_qwen7B.sh
 # config_r3.yaml   = response path off, alternating role-masked GRPO   <-- default
 # config1.yaml     = response path on (Algorithm 1 round structure + g_resp)
 #
@@ -21,7 +21,7 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 # resume_mode is auto, reusing any name resumes that directory instead of starting over.
 # That is how the response-off r3 arm came to resume global_step_63 of the response-on
 # run on 2026-09-20.
-BASE_PROFILE="${BASE_PROFILE:-training_config/config_r3.yaml}"
+BASE_PROFILE="${BASE_PROFILE:-recipe/echo/profiles/config_r3.yaml}"
 
 PROJECT_NAME="${PROJECT_NAME:-qwen25_7B}"
 EXPERIMENT_NAME="${EXPERIMENT_NAME:-echo7B_sft1e8_rl1e-6-r4}"

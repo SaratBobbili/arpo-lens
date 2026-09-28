@@ -11,8 +11,8 @@ import torch
 from hydra import compose, initialize_config_dir
 from torch.utils.data import Dataset
 
-from training.alt_ray_trainer import _PhaseDataloaders
-from training.echo_ray_trainer import RayECHOTrainer
+from training.core.phase_trainer import _PhaseDataloaders
+from training.recipe.echo.trainer import EchoTrainer as RayECHOTrainer
 
 OVERRIDES = [
     "algorithm.adv_estimator=grpo",

@@ -1,5 +1,7 @@
 #!/bin/bash
-# Usage: bash train.sh training_config/<config>.yaml [key=value ...]
+# Usage: bash train.sh recipe/<name>/profiles/<config>.yaml [key=value ...]
+# The profile's `recipe:` key (alt_grpo | echo | aho) picks the entrypoint,
+# python3 -m training.recipe.<name>.main; it must match the profile's directory.
 # Trailing key=value args override the profile; keys must be in VALID_LAUNCH_KEYS.
 set -e
 
@@ -49,7 +51,7 @@ VALID_LAUNCH_KEYS=(
     save_freq test_freq save_best_checkpoint best_checkpoint_metric max_actor_ckpt_to_keep resume_mode
     checkpoint_contents
     shared_prompt_stream total_epochs
-    algorithm prompt_batch_size
+    recipe prompt_batch_size
     hl_num_iters ll_num_iters hl_group_size ll_group_size
     hl_ppo_mini_batch_size ll_ppo_mini_batch_size
     hl_ppo_micro_batch_size_per_gpu ll_ppo_micro_batch_size_per_gpu
@@ -89,6 +91,18 @@ for override in "${LAUNCH_OVERRIDES[@]}"; do
     printf '%s\n' "${VALID_LAUNCH_KEYS[@]}" | grep -qxF -- "${key}" || { echo "Unknown launch override key: ${key}" >&2; exit 1; }
     eval "${key^^}=$(printf '%q' "${override#*=}")"
 done
+
+# The profile's recipe: key picks the entrypoint (training.recipe.<name>.main). No
+# default: a profile that does not say which recipe it belongs to must not launch, and
+# the key must agree with where the profile lives.
+case "${RECIPE:-}" in
+    alt_grpo|echo|aho) ;;
+    *) echo "recipe: must be one of alt_grpo, echo, aho (got '${RECIPE:-}')" >&2; exit 1 ;;
+esac
+[[ "$1" == "recipe/${RECIPE}/profiles/"*.yaml ]] || {
+    echo "profile $1 is not under recipe/${RECIPE}/profiles/; its recipe: key and its location disagree" >&2
+    exit 1
+}
 
 # Construct full paths from roots (defined in secrets.sh) + relative paths from config
 TRAIN_FILES="${ARPO_ROOT}/${TRAIN_FILES}"
@@ -163,7 +177,6 @@ ARGS=(
     actor_rollout_ref.rollout.tools.skip_training_on_budget_exhausted="${SKIP_TRAINING_ON_BUDGET_EXHAUSTED:-true}"
     actor_rollout_ref.rollout.tools.budget_exhausted_mode="${BUDGET_EXHAUSTED_MODE:-in_group_zero}"
     phases.shared_prompt_stream="${SHARED_PROMPT_STREAM:-true}"
-    phases.algorithm="${ALGORITHM:-hypergradient}"
     "phases.prompt_batch_size=${PROMPT_BATCH_SIZE:-128}"
     "phases.high_level.num_iters=${HL_NUM_ITERS}"
     "phases.low_level.num_iters=${LL_NUM_ITERS}"
@@ -270,9 +283,16 @@ cleanup_rag_sidecar() {
 
 if [[ "${SEARCH_CLASS_PATH}" == *RagSearchTool ]]; then
     RAG_SERVER_URL="${RAG_SERVER_URL:-http://127.0.0.1:5003}"
-    SIMILARITY_THRESHOLD="${SIMILARITY_THRESHOLD:-0.92}"
+    # 0.90, not the sidecar's 0.92: measured 2026-09-27 on the failed queries of alt_grpo_v0/echo_aho,
+    # e5 cosine >= 0.90 to the nearest cache key recovers 61% of misses (0.92: 36%) and every sampled
+    # pair in [0.90, 0.92) is the same question reworded; wrong-entity/wrong-relation matches
+    # (father->uncle, birth->death date) all sit below 0.90. Do not go lower.
+    SIMILARITY_THRESHOLD="${SIMILARITY_THRESHOLD:-0.90}"
     TOPK="${TOPK:-1}"
-    SOFT_FALLBACK="${SOFT_FALLBACK:-true}"
+    # Off: the fallback is the live Bing call, whose token has been dead (HTTP 401) since before
+    # 2026-09-24, so it can only add a failed HTTP round-trip per miss. A miss returns
+    # "No search results found." either way.
+    SOFT_FALLBACK="${SOFT_FALLBACK:-false}"
     RAG_REQUEST_TIMEOUT="${RAG_REQUEST_TIMEOUT:-30}"
     RAG_READY_TIMEOUT="${RAG_READY_TIMEOUT:-3600}"
     RAG_LOG="${SAVE_PATH}/rag_sidecar.log"
@@ -307,4 +327,5 @@ fi
 
 printf '%s\n' "${ARGS[@]:2}" > "${CONFIG_SNAPSHOT_DIR}/launch_hydra_overrides.txt"
 
-printf '%s\n' "${ARGS[@]}" > "/scratch/user/saratb_tamu.edu/research/arpo-lens/ECHO/training/.s2_dryrun_work/hydra_args.txt"
+echo "[train.sh] recipe=${RECIPE} -> python3 -m training.recipe.${RECIPE}.main (profile: $1)"
+printf '%s\n' "training.recipe.${RECIPE}.main" > "/scratch/user/saratb_tamu.edu/research/arpo-lens/ECHO/training/.s2_dryrun_work/module.txt"; printf '%s\n' "${ARGS[@]}" > "/scratch/user/saratb_tamu.edu/research/arpo-lens/ECHO/training/.s2_dryrun_work/hydra_args.txt"

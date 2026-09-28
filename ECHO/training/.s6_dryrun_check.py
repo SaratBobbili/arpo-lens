@@ -20,8 +20,8 @@ import torch
 from hydra import compose, initialize_config_dir
 from torch import nn
 
-from training import echo_response
-from training.echo_ray_trainer import RayECHOTrainer
+from training.recipe.echo import response as echo_response
+from training.recipe.echo.trainer import EchoTrainer as RayECHOTrainer
 from verl.utils.reward_score.deep_research_echo import compute_score, format_failures
 
 CONFIG_DIR = os.path.join(ECHO_TOP, "training", "config")
@@ -128,11 +128,11 @@ off._validate_response_config()
 # still reads True. Without the response gradient, discard-on = first-order MAML.
 import inspect
 
-from training.echo_dp_actor import DataParallelECHOActor
+from training.recipe.echo.actor import EchoActor as DataParallelECHOActor
 
 # The discard now rides a hook. Its own flag is parsed in _update_begin, and
 # DataParallelPhaseActor.update_policy fixes the ORDER the hooks fire in.
-from training.alt_dp_actor import DataParallelPhaseActor
+from training.core.phase_actor import PhaseActorBase as DataParallelPhaseActor
 
 begin = inspect.getsource(DataParallelECHOActor._update_begin)
 assert 'm.get("discard_follower"' in begin, "the discard must have its own flag"
@@ -188,7 +188,7 @@ CHAINED = (
     "<tool> c, chained </tool><python> 1 </python><result> 1 </result>"
     "<think> d </think><tool> e </tool><answer>\\boxed{42}</answer>"
 )
-assert format_failures(CHAINED) == [] and abs(compute_score("t", CHAINED, "42", LO)["score"] - 1.1) < 1e-9  # search+python bonus
+assert format_failures(CHAINED) == [] and abs(compute_score("t", CHAINED, "42", LO)["score"] - 1.0) < 1e-9  # no dual-tool bonus since 5deaff5
 THINK_ANSWER = "<think> a </think><answer>\\boxed{42}</answer>"
 assert compute_score("t", THINK_ANSWER, "42", HI)["score"] == -1 and compute_score("t", THINK_ANSWER, "42", LO)["score"] == 1.0
 TOOL_FIRST = GOOD.replace("<think> Need a lookup. </think>", "")
@@ -212,7 +212,7 @@ print("  4. one scorer, phase-owned gate: leader ignores tool-side failures, fol
 # (scores.unsqueeze(-1) * response_mask), which is equivalent for a single-role loss and
 # annihilates g_fol the moment two role masks come off one advantage. The unmasked
 # scalar is therefore carried alongside.
-from training.echo_core_algos import compute_grpo_outcome_advantage
+from training.core.core_algos import compute_grpo_outcome_advantage
 
 m_H = torch.tensor([[1.0, 1.0, 0.0, 0.0], [1.0, 1.0, 0.0, 0.0]])
 m_L = torch.tensor([[0.0, 0.0, 1.0, 1.0], [0.0, 0.0, 1.0, 1.0]])
@@ -334,11 +334,10 @@ import re
 import yaml
 
 ECHO_ROOT = os.path.join(ECHO_TOP, "training")
-PROFILE_DIR = os.path.join(ECHO_ROOT, "training_config")
+import glob
 profiles = {
-    name: yaml.safe_load(open(os.path.join(PROFILE_DIR, name)))
-    for name in sorted(os.listdir(PROFILE_DIR))
-    if name.endswith(".yaml")
+    os.path.relpath(path, ECHO_ROOT): yaml.safe_load(open(path))
+    for path in sorted(glob.glob(os.path.join(ECHO_ROOT, "recipe", "*", "profiles", "*.yaml")))
 }
 assert profiles, "no launch profiles found"
 
@@ -362,9 +361,9 @@ for script, text in scripts.items():
 for name, profile in profiles.items():
     if not profile.get("response_enabled", True):
         continue
-    # ALTERNATING-GRPO profiles never reach _validate_response_config: RayECHOTrainer
-    # owns that check, and phases.algorithm picks the other class tree.
-    if profile.get("algorithm", "hypergradient") != "hypergradient":
+    # alt_grpo profiles never reach _validate_response_config: the echo and aho
+    # recipe trainers own that check, and recipe: picks the entrypoint.
+    if profile["recipe"] == "alt_grpo":
         continue
     n_hl, n_ll = int(profile["hl_num_iters"]), int(profile["ll_num_iters"])
     world = int(profile["n_gpus_per_node"]) * int(profile["nnodes"])

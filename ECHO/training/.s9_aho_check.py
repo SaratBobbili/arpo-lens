@@ -2,8 +2,7 @@
 
 Run:  VERL_ROOT=<verl> python .s9_aho_check.py
 
-arXiv:2607.28849, GRPO variant, as implemented in echo_response / echo_dp_actor /
-echo_ray_trainer. Covers what can be checked without a GPU or a real run:
+arXiv:2607.28849, GRPO variant, as implemented in recipe/aho/{response,actor,trainer}.py. Covers what can be checked without a GPU or a real run:
   1. the per-token weights omega_m = c_m * A_L against a per-trajectory Python loop on
      hand-built mask rows (result spans, tag tokens, no-tool rows, pre-first-tool tokens,
      post-last-tool tokens, unequal call lengths, gamma < 1, padding);
@@ -30,10 +29,10 @@ import numpy as np
 import torch
 from hydra import compose, initialize_config_dir
 
-from training import echo_response
-from training.echo_core_algos import agg_loss, compute_grpo_outcome_advantage
-from training.echo_dp_actor import DataParallelECHOActor
-from training.echo_ray_trainer import RayECHOTrainer
+from training.recipe.aho import response as echo_response
+from training.core.core_algos import agg_loss, compute_grpo_outcome_advantage
+from training.recipe.aho.actor import AhoActor as DataParallelECHOActor
+from training.recipe.aho.trainer import AhoTrainer as RayECHOTrainer
 
 CONFIG_DIR = os.path.join(ECHO_TOP, "training", "config")
 torch.manual_seed(0)
@@ -215,7 +214,6 @@ AHO_BASE = [
 ]
 ok = _Probe(_compose(AHO_BASE))
 ok._validate_response_config()
-assert ok._response_estimator() == "aho" and ok._response_aho_enabled()
 assert abs(ok._aho_tau() - 0.01) < 1e-12, ok._aho_tau()
 print("  tau derived from the follower's entropy coefficient")
 
@@ -230,13 +228,11 @@ assert nominal._aho_derived_tau() == 0.0 and nominal._aho_tau() == 0.05
 print("  KL adds to tau; explicit tau overrides; nominal tau allowed with a warning")
 
 meta = ok._phase_meta_info("high_level")
-assert meta["response_estimator"] == "aho" and abs(meta["aho_tau"] - 0.01) < 1e-12 and meta["aho_gamma"] == 1.0
+assert abs(meta["aho_tau"] - 0.01) < 1e-12 and meta["aho_gamma"] == 1.0
+assert "response_estimator" not in meta and "response_exact" not in meta
 assert ok._rollout_meta_info("high_level")["compute_follower_score"] is True
 assert ok._rollout_meta_info("low_level")["compute_follower_score"] is False
-adj = _Probe(_compose([]))
-assert adj._rollout_meta_info("high_level")["compute_follower_score"] is False
-assert "aho_tau" not in adj._phase_meta_info("high_level")
-print("  meta_info carries the estimator; R_L is scored on the leader batch only under aho")
+print("  meta_info carries tau and gamma (no estimator switch); R_L is scored on the leader batch only")
 
 
 def _must_fail(overrides, needle):
@@ -258,11 +254,11 @@ _must_fail(["phases.response.curvature=true"], "phases.response.curvature")
 _must_fail(["phases.low_level.opefo.enabled=true"], "opefo")
 _must_fail(["phases.response.gradient=false"], "gradient=true")
 _must_fail(["phases.low_level.ppo_mini_batch_size=16"], "one optimizer step per low_level")
-try:
-    _Probe(_compose(["phases.response.estimator=bogus"]))._response_estimator()
-    raise SystemExit("FAIL: unknown estimator accepted")
-except AssertionError:
-    pass
+# This recipe IS the AHO estimator: the other estimators and a response-off run are
+# routing errors, not modes.
+_must_fail(["phases.response.estimator=adjoint"], "AHO estimator only")
+_must_fail(["phases.response.estimator=bogus"], "AHO estimator only")
+_must_fail(["phases.response.enabled=false"], "response.enabled=true")
 print("  every startup assert fires on the config it guards")
 
 # The follower SGD requirement is adjoint-only: aho on AdamW must validate.
@@ -270,13 +266,12 @@ adamw = _Probe(_compose(AHO_BASE + ["phases.low_level.optim.optimizer=adamw", "p
 adamw._validate_response_config()
 print("  AdamW follower accepted under aho (nothing is differentiated through the optimizer)")
 
-# Actor wiring: no records or snapshots under aho, both under adjoint.
+# Actor wiring: the aho recipe actor has no records, no snapshots and no g_fol pass at all.
 begin = inspect.getsource(DataParallelECHOActor._update_begin)
-assert 'estimator == "adjoint"' in begin.split('"stash_record"')[1].split("\n")[0], \
-    "stash_record must be gated on the adjoint estimator"
+assert "stash_record" not in begin, "the aho actor stashes nothing"
 crg = inspect.getsource(DataParallelECHOActor._compute_response_gradient)
-assert crg.index('r["estimator"] == "aho"') < crg.index("_leader_follower_direction("), \
-    "aho must return before stage 1 (no g_fol pass)"
+assert "_aho_response_gradient(" in crg and "_leader_follower_direction" not in crg, \
+    "aho computes g_resp from the leader batch alone (no g_fol pass)"
 keys = inspect.getsource(DataParallelECHOActor._extra_select_keys)
 assert "follower_scalar_advantages" in keys and "aho_token_weights" in keys
 assert "_aho_response_gradient" in vars(DataParallelECHOActor)
@@ -288,7 +283,7 @@ print("  actor: aho stashes nothing, skips g_fol, selects A_L and omega; trainer
 # as the base's _route_actor_metrics already routes "actor/response_*" and "actor/aho_*".
 import ast
 
-for fname in ("alt_ray_trainer.py", "alt_dp_actor.py"):
+for fname in ("core/phase_trainer.py", "core/phase_actor.py"):
     tree = ast.parse(open(os.path.join(ECHO_TOP, "training", fname)).read())
     idents = set()
     for node in ast.walk(tree):

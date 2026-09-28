@@ -18,14 +18,18 @@ source "${SCRIPTS_DIR}/train_qwen7B.sh"
 unset -f bash
 mapfile -t ARGV < "${WORK}/wrapper_argv.txt"
 [[ "${ARGV[0]}" == "${SCRIPTS_DIR}/train.sh" ]]
-[[ "${ARGV[1]}" == "training_config/config_r3.yaml" ]]
+[[ "${ARGV[1]}" == "recipe/echo/profiles/config_r3.yaml" ]]
 
 # 2) A train.sh copy that stops short of launching: no wandb login, scratch output root.
 sed -e 's|^wandb login.*|true|' \
     -e "s|^source .*secrets.sh\"|& ; OUTPUT_ROOT=\"${WORK}/out\"|" \
-    -e "s|^python3 -m training.main_echo.*|printf '%s\\\\n' \"\${ARGS[@]}\" > \"${WORK}/hydra_args.txt\"|" \
+    -e "s|^python3 -m \"training.recipe.*|printf '%s\\\\n' \"training.recipe.\${RECIPE}.main\" > \"${WORK}/module.txt\"; printf '%s\\\\n' \"\${ARGS[@]}\" > \"${WORK}/hydra_args.txt\"|" \
     "${SCRIPTS_DIR}/train.sh" > "${DRY_TRAIN}"
-bash "${DRY_TRAIN}" "${ARGV[@]:1}"
+# BingSearchTool keeps the dry copy from starting the RAG sidecar (and is what
+# .s2_compose_check.py asserts); every real profile uses RagSearchTool.
+bash "${DRY_TRAIN}" "${ARGV[@]:1}" search_class_path=verl.workers.agent.tools.search_tool.BingSearchTool
+# The profile's recipe: key selected the matching entrypoint.
+[[ "$(cat "${WORK}/module.txt")" == "training.recipe.echo.main" ]]
 
 # 3) Overrides won over the profile defaults, and untouched profile keys survived.
 #    Read the run identity out of the wrapper's OWN argv and the selected profile rather

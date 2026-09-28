@@ -91,7 +91,7 @@ for phase in ("high_level", "low_level"):
               f"{batch / mini:.2f} -> {batch // mini} full mini-batches plus a ragged "
               f"{batch % mini}-prompt tail")
 
-print("algorithm:", cfg.phases.algorithm)
+print("response.estimator:", cfg.phases.response.estimator)
 print("actor:", cfg.actor_rollout_ref.model.path)
 print("search cache:", search.params.cache_file)
 print(f"prompt batch/iteration: {batch}  sequences/iteration: {batch * cfg.phases.high_level.group_size}")

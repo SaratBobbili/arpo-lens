@@ -12,8 +12,8 @@ Run: conda activate arpo && PYTHONPATH=$VERL_ROOT:$ECHO_TOP python3 ECHO/trainin
 """
 import numpy as np, torch
 from omegaconf import OmegaConf
-from ECHO.training.echo_ray_trainer import RayECHOTrainer
-from ECHO.training.echo_core_algos import compute_grpo_outcome_advantage
+from ECHO.training.recipe.echo.trainer import EchoTrainer as RayECHOTrainer
+from ECHO.training.core.core_algos import compute_grpo_outcome_advantage
 from verl import DataProto
 
 

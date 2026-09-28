@@ -1,5 +1,7 @@
 #!/bin/bash
-# Usage: bash train.sh training_config/<config>.yaml [key=value ...]
+# Usage: bash train.sh recipe/<name>/profiles/<config>.yaml [key=value ...]
+# The profile's `recipe:` key (alt_grpo | echo | aho) picks the entrypoint,
+# python3 -m training.recipe.<name>.main; it must match the profile's directory.
 # Trailing key=value args override the profile; keys must be in VALID_LAUNCH_KEYS.
 set -e
 
@@ -49,7 +51,7 @@ VALID_LAUNCH_KEYS=(
     save_freq test_freq save_best_checkpoint best_checkpoint_metric max_actor_ckpt_to_keep resume_mode
     checkpoint_contents
     shared_prompt_stream total_epochs
-    algorithm prompt_batch_size
+    recipe prompt_batch_size
     hl_num_iters ll_num_iters hl_group_size ll_group_size
     hl_ppo_mini_batch_size ll_ppo_mini_batch_size
     hl_ppo_micro_batch_size_per_gpu ll_ppo_micro_batch_size_per_gpu
@@ -89,6 +91,18 @@ for override in "${LAUNCH_OVERRIDES[@]}"; do
     printf '%s\n' "${VALID_LAUNCH_KEYS[@]}" | grep -qxF -- "${key}" || { echo "Unknown launch override key: ${key}" >&2; exit 1; }
     eval "${key^^}=$(printf '%q' "${override#*=}")"
 done
+
+# The profile's recipe: key picks the entrypoint (training.recipe.<name>.main). No
+# default: a profile that does not say which recipe it belongs to must not launch, and
+# the key must agree with where the profile lives.
+case "${RECIPE:-}" in
+    alt_grpo|echo|aho) ;;
+    *) echo "recipe: must be one of alt_grpo, echo, aho (got '${RECIPE:-}')" >&2; exit 1 ;;
+esac
+[[ "$1" == "recipe/${RECIPE}/profiles/"*.yaml ]] || {
+    echo "profile $1 is not under recipe/${RECIPE}/profiles/; its recipe: key and its location disagree" >&2
+    exit 1
+}
 
 # Construct full paths from roots (defined in secrets.sh) + relative paths from config
 TRAIN_FILES="${ARPO_ROOT}/${TRAIN_FILES}"
@@ -163,7 +177,6 @@ ARGS=(
     actor_rollout_ref.rollout.tools.skip_training_on_budget_exhausted="${SKIP_TRAINING_ON_BUDGET_EXHAUSTED:-true}"
     actor_rollout_ref.rollout.tools.budget_exhausted_mode="${BUDGET_EXHAUSTED_MODE:-in_group_zero}"
     phases.shared_prompt_stream="${SHARED_PROMPT_STREAM:-true}"
-    phases.algorithm="${ALGORITHM:-hypergradient}"
     "phases.prompt_batch_size=${PROMPT_BATCH_SIZE:-128}"
     "phases.high_level.num_iters=${HL_NUM_ITERS}"
     "phases.low_level.num_iters=${LL_NUM_ITERS}"
@@ -314,4 +327,5 @@ fi
 
 printf '%s\n' "${ARGS[@]:2}" > "${CONFIG_SNAPSHOT_DIR}/launch_hydra_overrides.txt"
 
-python3 -m training.main_echo "${ARGS[@]}" 2>&1 | tee "${SAVE_PATH}/run.log"
+echo "[train.sh] recipe=${RECIPE} -> python3 -m training.recipe.${RECIPE}.main (profile: $1)"
+python3 -m "training.recipe.${RECIPE}.main" "${ARGS[@]}" 2>&1 | tee "${SAVE_PATH}/run.log"

@@ -1,6 +1,17 @@
 # ECHO training notes
 
-Launch template: `training_config/echo_3B_ll_hl_grpo.yaml` via `scripts/train.sh`.
+Launch template: `recipe/echo/profiles/echo_3B_ll_hl_grpo.yaml` via `scripts/train.sh`.
+
+Layout (since 2026-09-27): `core/` holds the shared, algorithm-free code (`phase_trainer.py`
+`PhaseTrainerBase`, `phase_actor.py` `PhaseActorBase`, `phase_workers.py` `PhaseWorkerBase`,
+`core_algos.py`, `reward_manager.py`). Each algorithm is a recipe under `recipe/<name>/` with
+its own `main.py`, `trainer.py` (the loop: fit, cycle structure, which prompts a phase
+iteration draws, step accounting), `workers.py`, `actor.py` and `response.py` where it has a
+response term, plus `profiles/*.yaml` and its `sbatch_*.sh`. Recipes: `alt_grpo` (alternating
+role-masked GRPO), `echo` (Algorithm 1, adjoint / exact estimators; also the response-off r3
+profile), `aho` (Algorithm 1 round structure with the AHO surrogate; a full copy, it never
+imports `recipe/echo`). A profile's `recipe:` key picks `python3 -m training.recipe.<name>.main`
+in `scripts/train.sh`; the hydra base stays in `config/`. No loop code is shared between recipes.
 
 ## Training loop
 
@@ -38,7 +49,7 @@ iteration fits. There is no prompt chunking / rollout-side accumulation.
 ## Per-phase optimizers
 
 Two `AdamW` instances (plus schedulers) over the **same** FSDP parameters, with
-independent moments and LR schedules, built in `echo_fsdp_workers`. Routing is by
+independent moments and LR schedules, built in `core/phase_workers.py` (`_build_phase_optimizer`). Routing is by
 `meta_info['phase']`. Scheduler horizons are derived: HL `= N_HL`,
 LL `= N_HL * N_LL`. Both are checkpointed through `_PhaseStateShim`; a
 checkpoint missing a phase fails loud on resume. `actor_rollout_ref.actor.optim`
@@ -68,8 +79,8 @@ unused by ECHO.
   reasoning before the first tool call gets weight 0; the reasoning after the last call is
   weighted (R_L is gated on the whole response's format). It targets the exact response
   `xi(x)`, evaluated at `y_K`, so its accuracy is `||y_K - xi(x)||`. Derivation and the
-  named approximations: `echo_response.py` module docstring. Launch profile:
-  `training_config/config_aho_k8.yaml`.
+  named approximations: `recipe/aho/response.py` module docstring. Launch profile:
+  `recipe/aho/profiles/config_aho_k8.yaml`.
 
 Both leave `p.grad = -g_resp` before the direct pass, so `high_level/actor/response_norm`,
 `response_to_direct_ratio` and `response_direct_cosine` mean the same thing under either.

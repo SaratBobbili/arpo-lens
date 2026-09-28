@@ -25,18 +25,19 @@ reward_model:
 # phases.low_level.num_iters low-level iterations and then one high-level iteration.
 # Every knob a phase owns lives here: prompt-stream length, GRPO group size,
 # PPO batch splits, optimizer/scheduler, rollout strategy and loss shaping.
-# Which algorithm to run. Picks the trainer/worker/actor class tree in main_echo.py.
-#   alternating   -> RayAlternatingGRPOTrainer: role-masked GRPO, two phases, no
-#                    response term. The high-level iteration re-rolls the prompts the
-#                    low-level phase just adapted on.
-#   hypergradient -> RayECHOTrainer: the above plus ECHO Algorithm 1 -- transient
-#                    follower, R_L follower return, g_dir + g_resp leader step.
-# phases.response.* is only read on the hypergradient path.
-# Lives under `phases` because verl already owns a top-level `algorithm` GROUP
-# (algorithm.adv_estimator, algorithm.kl_ctrl), which cannot also be a scalar.
+# Which recipe runs is chosen by the launch profile's `recipe:` key, which
+# scripts/train.sh turns into `python3 -m training.recipe.<name>.main`. There is no
+# runtime switch in this config.
+#   alt_grpo -> training/recipe/alt_grpo: role-masked GRPO, two phases, no response
+#               term. The high-level iteration re-rolls the prompts the low-level
+#               phase just adapted on.
+#   echo     -> training/recipe/echo: the above plus ECHO Algorithm 1 (adjoint / exact
+#               g_resp) -- transient follower, g_dir + g_resp leader step.
+#   aho      -> training/recipe/aho: Algorithm 1's round structure with the AHO
+#               g_resp surrogate.
+# phases.response.* is read only by the echo and aho recipes.
 
 phases:
-  algorithm: hypergradient
   # Prompts per phase iteration, for both algorithms. Must be a multiple of the rank
   # count. Was derived from N_HL*(N_LL+1), the Algorithm-1 round length, which is why an
   # alternating run inherited a bilevel batch size (136 rather than ARPO's 128, so
@@ -75,7 +76,7 @@ phases:
     # method is about -- reasoning changes the data the tool learner trains on.
     #
     # It implements the SAMPLING half of Eq. (35) only. Standing approximations, all named
-    # in echo_response's docstring: no fixed-data half (needs an HVP, which FSDP1 cannot
+    # in recipe/echo/response.py's docstring: no fixed-data half (needs an HVP, which FSDP1 cannot
     # provide), no cross-step coupling (v_s is held at g_fol), micro-batch blocks rather
     # than whole query groups, and eta_L as a plain scalar in `coef` rather than the
     # optimizer's derivative.
@@ -191,7 +192,7 @@ phases:
     #              advantage A_L where the derivation has a value. The whole term is then one
     #              surrogate on the LEADER batch: reinforce each reasoning token with weight
     #                  A_H * A_L * (number of tool tokens before it) / tau
-    #              (echo_response's module docstring has the derivation). One extra
+    #              (recipe/aho/response.py's module docstring has the derivation). One extra
     #              leader-batch pass per round; no records, snapshots, replay or HVP, so
     #              `exact`, `curvature`, `group_aligned`, `fd_rel` and `replay_fraction` are
     #              not read and the follower may stay on AdamW.
@@ -331,7 +332,7 @@ phases:
 
 actor_rollout_ref:
   # Worker groups are constructed from this subtree alone, so mirror the phase tree in.
-  # main_echo resolves the config before workers spawn, which materializes the copy.
+  # each recipe's main.py resolves the config before workers spawn, which materializes the copy.
   phases: ${phases}
   # Mirrored so phase LR schedulers can scale horizons by E when shared_prompt_stream.
   total_epochs: ${trainer.total_epochs}
